@@ -460,6 +460,13 @@ cp .env.example .env
 | `CPA_REQUEST_LOG_ACCESS_ENABLED` | 否 | `false` | 允许管理员通过 Keeper 查看和下载 CPA 请求日志；需要 CPA 中存在对应日志，内容可能包含请求或响应数据 |
 | `AUTH_SESSION_TTL` | 否 | `168h` | 登录 session 有效时长 |
 | `API_KEY_VIEWER_LOCAL_RANKING_ENABLED` | 否 | `false` | 允许 API Key 登录用户只读查看本地排行；Community 排行始终只读 |
+| `AUTH_TOTP_RESET` | 否 | `false` | 启动时清除管理员 TOTP 注册（丢失验证器后的恢复）；恢复后请删除该变量 |
+
+#### 两步验证（TOTP）
+
+登录后，在用量页设置中找到**两步验证**：点击**启用两步验证**，用验证器应用（Google Authenticator、1Password、Authy 等）扫描二维码，并输入当前 6 位动态码确认。此后管理员密码登录还需输入动态码。停用两步验证需要登录密码和有效动态码。
+
+丢失验证器时，设置 `AUTH_TOTP_RESET=true` 并重启 Keeper，仅凭密码登录，然后删除该变量并再次重启。动态码为 TOTP（30 秒步长，容忍 ±1 步）；若所有动态码均被拒绝，请检查服务器时钟。
 
 ### 时区与请求行为
 
@@ -519,6 +526,7 @@ Keeper 每天按配置时区在 04:30 自动归档超过 90 个本地自然日�
 - 浏览器 API 会脱敏 key 类字段，但 SQLite 数据库及其未加密备份仍包含原始数据。
 - 认证默认启用。若显式关闭，请在部署边界限制 Keeper 访问；公网访问应在反向代理层启用 HTTPS。
 - 登录 session hash 会保存在 SQLite 中，直到用户退出或超过 `AUTH_SESSION_TTL`。
+- TOTP 两步验证密钥与其它 Keeper 数据一样，以未加密形式存储在 SQLite 中。
 - CPAMC 使用独立的 embed session：优先使用 `HttpOnly` Cookie，不可用时回退到保存在浏览器 session storage 中的单标签页请求头 token。
 - 同源嵌入默认可用；跨域嵌入时，将 `CPA_PUBLIC_URL` 设置为用于 `frame-ancestors` 的公开 CPA/CPAMC 来源。
 - Redis inbox 消息成功后保留到当天结束，失败后保留 7 天。

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/subtle"
 	"net/http"
 	"strconv"
@@ -44,17 +45,35 @@ type AuthConfig struct {
 	FrameAncestorOrigins            []string
 	TrustedProxyCIDRs               []string
 	APIKeyViewerLocalRankingEnabled bool
+	TOTPReset                       bool
 }
+
+// TOTPProvider 是登录与管理端点需要的管理员 TOTP 能力，由 auth.TOTPManager 实现。
+type TOTPProvider interface {
+	Enrolled(context.Context) bool
+	HasPending(context.Context) bool
+	CreatePending(context.Context) (string, string, error)
+	ConfirmPending(context.Context, string) (bool, error)
+	Verify(context.Context, string) (bool, error)
+	Disable(context.Context) error
+}
+
+const (
+	totpCodeRequiredError = "totp_code_required"
+	invalidTOTPCodeError  = "invalid totp code"
+)
 
 type authHandler struct {
 	config            AuthConfig
 	sessions          *auth.SessionManager
 	cpaAPIKeyProvider service.CPAAPIKeyProvider
 	loginAttempts     *auth.LoginAttemptLimiter
+	totp              TOTPProvider
 }
 
 type loginRequest struct {
 	Password string `json:"password"`
+	TOTPCode string `json:"totp_code,omitempty"`
 }
 
 type apiKeyLoginRequest struct {
@@ -114,6 +133,12 @@ func NewAuthHandler(config AuthConfig, sessions *auth.SessionManager) *authHandl
 func (h *authHandler) setCPAAPIKeyProvider(provider service.CPAAPIKeyProvider) {
 	if h != nil {
 		h.cpaAPIKeyProvider = provider
+	}
+}
+
+func (h *authHandler) SetTOTPProvider(provider TOTPProvider) {
+	if h != nil {
+		h.totp = provider
 	}
 }
 
@@ -298,6 +323,23 @@ func (h *authHandler) login(c *gin.Context) {
 	if !passwordMatches {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid password"})
 		return
+	}
+	// TOTP 校验失败不重置登录限流，动态码猜测同样消耗每来源预算。
+	if h.totp != nil && h.totp.Enrolled(c.Request.Context()) {
+		code := strings.TrimSpace(request.TOTPCode)
+		if code == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": totpCodeRequiredError})
+			return
+		}
+		valid, err := h.totp.Verify(c.Request.Context(), code)
+		if err != nil {
+			writeInternalError(c, "verify totp code failed", err)
+			return
+		}
+		if !valid {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": invalidTOTPCodeError})
+			return
+		}
 	}
 	h.loginAttempts.Reset(clientKey)
 
