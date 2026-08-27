@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, appPath, createUsageEventRequestLogDownloadURL, deleteAuthFiles, exportUsageEvents, fetchAnalysis, fetchAnalysisLatency, fetchAuthSessions, fetchCodexQuotaHistory, fetchCpaApiKeyOptions, fetchCpaApiKeys, fetchCpaApiKeySettings, fetchKeyActivity, fetchKeyOverview, fetchKeyOverviewRealtime, fetchQuotaAutoRefreshSettings, fetchUsageActivity, fetchUsageOverview, fetchUsageOverviewRealtime, fetchUsageQuotaCache, fetchUsageQuotaInspectionStatus, fetchUsageQuotaResetCredits, fetchUpdateCheck, fetchUsageEventModelFilterOptions, fetchUsageEventRequestLog, fetchUsageEventSourceFilterOptions, fetchUsageEvents, fetchUsageIdentities, fetchUsageIdentitiesPage, fetchUsageQuotaRefreshTask, fetchVersion, loginWithCPAAPIKey, logout, refreshUsageQuotas, resetUsageQuota, revokeAuthSession, setAuthFilesDisabled, startUsageQuotaInspection, updateAuthSessionAlias, updateCpaApiKeyAlias, updateQuotaAutoRefreshSettings } from '../api';
+import { ApiError, appPath, confirmTOTP, createUsageEventRequestLogDownloadURL, deleteAuthFiles, disableTOTP, exportUsageEvents, fetchAnalysis, fetchAnalysisLatency, fetchAuthSessions, fetchCodexQuotaHistory, fetchCpaApiKeyOptions, fetchCpaApiKeys, fetchCpaApiKeySettings, fetchKeyActivity, fetchKeyOverview, fetchKeyOverviewRealtime, fetchQuotaAutoRefreshSettings, fetchTOTPStatus, fetchUsageActivity, fetchUsageOverview, fetchUsageOverviewRealtime, fetchUsageQuotaCache, fetchUsageQuotaInspectionStatus, fetchUsageQuotaResetCredits, fetchUpdateCheck, fetchUsageEventModelFilterOptions, fetchUsageEventRequestLog, fetchUsageEventSourceFilterOptions, fetchUsageEvents, fetchUsageIdentities, fetchUsageIdentitiesPage, fetchUsageQuotaRefreshTask, fetchVersion, login, loginWithCPAAPIKey, logout, refreshUsageQuotas, resetUsageQuota, revokeAuthSession, setAuthFilesDisabled, setupTOTP, startUsageQuotaInspection, updateAuthSessionAlias, updateCpaApiKeyAlias, updateQuotaAutoRefreshSettings } from '../api';
 
 const headerValue = (init: RequestInit | undefined, name: string): string | null => new Headers(init?.headers).get(name);
 
@@ -1072,5 +1072,71 @@ describe('fetchUsageEvents', () => {
     expect(response.updateAvailable).toBe(true);
     expect(parsed.pathname).toBe('/api/v1/update/check');
     expect(init).toMatchObject({ credentials: 'include', signal });
+  });
+
+  it('sends totp_code with the password login when provided', async () => {
+    vi.stubGlobal('window', { __APP_BASE_PATH__: undefined });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 204,
+      json: async () => ({}),
+    } as Response);
+
+    await login('secret', '123456');
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(new URL(String(url), 'http://localhost').pathname).toBe('/api/v1/auth/login');
+    expect(JSON.parse(String(init?.body))).toEqual({ password: 'secret', totp_code: '123456' });
+    fetchMock.mockRestore();
+  });
+
+  it('omits totp_code when no code is provided', async () => {
+    vi.stubGlobal('window', { __APP_BASE_PATH__: undefined });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 204,
+      json: async () => ({}),
+    } as Response);
+
+    await login('secret');
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(String(init?.body))).toEqual({ password: 'secret' });
+    fetchMock.mockRestore();
+  });
+
+  it('loads TOTP status from the management endpoint', async () => {
+    vi.stubGlobal('window', { __APP_BASE_PATH__: undefined });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ enabled: true, pending: false }),
+    } as Response);
+
+    const status = await fetchTOTPStatus();
+
+    expect(status).toEqual({ enabled: true, pending: false });
+    expect(new URL(String(fetchMock.mock.calls[0][0]), 'http://localhost').pathname).toBe('/api/v1/auth/totp');
+    fetchMock.mockRestore();
+  });
+
+  it('posts TOTP setup, confirm, and disable to their endpoints', async () => {
+    vi.stubGlobal('window', { __APP_BASE_PATH__: undefined });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ otpauth_uri: 'otpauth://totp/x', secret: 'JBSWY3DPEHPK3PXP' }),
+    } as Response);
+
+    await setupTOTP();
+    await confirmTOTP('123456');
+    await disableTOTP('secret', '123456');
+
+    expect(new URL(String(fetchMock.mock.calls[0][0]), 'http://localhost').pathname).toBe('/api/v1/auth/totp/setup');
+    expect(new URL(String(fetchMock.mock.calls[1][0]), 'http://localhost').pathname).toBe('/api/v1/auth/totp/confirm');
+    expect(new URL(String(fetchMock.mock.calls[2][0]), 'http://localhost').pathname).toBe('/api/v1/auth/totp/disable');
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({ code: '123456' });
+    expect(JSON.parse(String(fetchMock.mock.calls[2][1]?.body))).toEqual({ password: 'secret', code: '123456' });
+    fetchMock.mockRestore();
   });
 });

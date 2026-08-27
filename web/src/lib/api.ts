@@ -226,16 +226,19 @@ async function activateEmbedSessionFallback(response: Response): Promise<void> {
   }
 }
 
-export async function login(password: string): Promise<void> {
+export const TOTP_CODE_REQUIRED_ERROR = 'totp_code_required'
+
+export async function login(password: string, totpCode = ''): Promise<void> {
   if (isCPAMCEmbed()) {
     clearEmbedSessionToken()
   }
+  const body = totpCode ? { password, totp_code: totpCode } : { password }
   const response = await apiFetch(apiPath('/auth/login'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ password }),
+    body: JSON.stringify(body),
   })
   if (!response.ok) {
     await parseApiError(response, `Failed to login: ${response.status}`)
@@ -270,6 +273,58 @@ export async function logout(): Promise<void> {
     }
   } finally {
     clearEmbedSessionToken()
+  }
+}
+
+export interface TOTPStatusResponse {
+  enabled: boolean
+  pending: boolean
+}
+
+export interface TOTPSetupResponse {
+  otpauth_uri: string
+  secret: string
+}
+
+export async function fetchTOTPStatus(): Promise<TOTPStatusResponse> {
+  const response = await apiFetch(apiPath('/auth/totp'))
+  if (!response.ok) {
+    await parseApiError(response, `Failed to load TOTP status: ${response.status}`)
+  }
+  return await response.json() as TOTPStatusResponse
+}
+
+export async function setupTOTP(): Promise<TOTPSetupResponse> {
+  const response = await apiFetch(apiPath('/auth/totp/setup'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to start TOTP setup: ${response.status}`)
+  }
+  return await response.json() as TOTPSetupResponse
+}
+
+export async function confirmTOTP(code: string): Promise<void> {
+  const response = await apiFetch(apiPath('/auth/totp/confirm'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to confirm TOTP setup: ${response.status}`)
+  }
+}
+
+export async function disableTOTP(password: string, code: string): Promise<void> {
+  const response = await apiFetch(apiPath('/auth/totp/disable'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password, code }),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to disable TOTP: ${response.status}`)
   }
 }
 
