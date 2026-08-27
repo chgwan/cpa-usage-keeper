@@ -103,6 +103,8 @@ export function TOTPSettingsCard() {
         )}
       </div>
 
+      {setupError && !setup && <p className={styles.totpHint}>{setupError}</p>}
+
       <Modal
         open={Boolean(setup)}
         title={t('usage_stats.totp_setup_title')}
@@ -138,7 +140,12 @@ export function TOTPSettingsCard() {
       <Modal
         open={disableOpen}
         title={t('usage_stats.totp_disable_title')}
-        onClose={() => setDisableOpen(false)}
+        onClose={() => {
+          setDisableOpen(false);
+          setDisablePassword('');
+          setDisableCode('');
+          setDisableError('');
+        }}
         closeDisabled={busy}
       >
         <div className={styles.totpFieldStack}>
