@@ -333,6 +333,7 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 		BasePath:             cfg.AppBasePath,
 		FrameAncestorOrigins: frameAncestorOrigins(cfg),
 		TrustedProxyCIDRs:    cfg.TrustedProxyCIDRs,
+		TOTPReset:            cfg.AuthTOTPReset,
 	}
 	authHandler := api.NewAuthHandler(authConfig, sessionManager)
 	if cfg.AuthEnabled {

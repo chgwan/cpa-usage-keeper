@@ -69,6 +69,9 @@ func TestTOTPSetupBlockedWhileResetActive(t *testing.T) {
 	if resp.Code != http.StatusConflict {
 		t.Fatalf("expected 409 while reset active, got %d %s", resp.Code, resp.Body.String())
 	}
+	if !strings.Contains(resp.Body.String(), "totp reset is active") {
+		t.Fatalf("expected totp reset guard error, got %s", resp.Body.String())
+	}
 }
 
 func TestTOTPSetupConfirmDisableCycle(t *testing.T) {
