@@ -135,6 +135,7 @@ func NewRouter(
 	registerErrorEventRoutes(adminProtected, errorEventProvider)
 	registerAuthFileManagementRoutes(adminProtected, authFilesProvider)
 	registerAuthSessionManagementRoutes(adminProtected, authHandler)
+	registerTOTPManagementRoutes(adminProtected, authHandler)
 	registerCPAAPIKeyRoutes(adminProtected, cpaAPIKeyProvider)
 	registerPricingRoutes(adminProtected, pricingProvider)
 	registerQuotaRoutes(adminProtected, quotaProvider)

@@ -35,6 +35,7 @@ import {
   useCredentialsTabData,
   type CredentialDetailSelection,
 } from '@/components/usage';
+import { TOTPSettingsCard } from '@/components/usage/TOTPSettingsCard';
 import {
   RequestEventsDetailsCard,
   REQUEST_EVENT_COLUMN_IDS,
@@ -2239,6 +2240,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                   onLogout={handleRevokeAuthSession}
                   onSaveAlias={handleSaveAuthSessionAlias}
                 />
+                <TOTPSettingsCard />
                 <ApiKeySettingsCard
                   apiKeys={apiKeySettings}
                   loading={apiKeySettingsLoading}

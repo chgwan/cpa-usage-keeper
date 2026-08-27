@@ -135,6 +135,18 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 	if err != nil {
 		return nil, failInitialization(logCloser, err)
 	}
+	// AUTH_TOTP_RESET 帮助丢失验证器的管理员恢复：启动即清除 TOTP 注册，恢复后删除变量并重启。
+	if cfg.AuthTOTPReset {
+		if err := auth.NewTOTPManager(db).ResetAll(context.Background()); err != nil {
+			if readDB != db {
+				_ = closeGormDB(readDB)
+			}
+			_ = closeGormDB(db)
+			_ = logCloser.Close()
+			return nil, fmt.Errorf("reset admin totp enrollment: %w", err)
+		}
+		logrus.Warn("AUTH_TOTP_RESET is set: admin TOTP enrollment cleared; remove the variable and restart Keeper")
+	}
 	// Ranking 完全复用现有 app_settings 和统一 DB；构造阶段不访问中心，默认 disabled 没有外部请求。
 	rankingService, err := ranking.NewService(ranking.NewStore(db), ranking.NewAggregator(db), ranking.NewClient())
 	if err != nil {
@@ -321,8 +333,12 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 		BasePath:             cfg.AppBasePath,
 		FrameAncestorOrigins: frameAncestorOrigins(cfg),
 		TrustedProxyCIDRs:    cfg.TrustedProxyCIDRs,
+		TOTPReset:            cfg.AuthTOTPReset,
 	}
 	authHandler := api.NewAuthHandler(authConfig, sessionManager)
+	if cfg.AuthEnabled {
+		authHandler.SetTOTPProvider(auth.NewTOTPManager(db))
+	}
 
 	return &App{
 		Config: &cfg,

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { getRoleHomePath, shouldNormalizeRolePath } from './App';
+import { getRoleHomePath, resolveAdminLoginError, shouldNormalizeRolePath } from './App';
+import { ApiError } from './lib/api';
 
 const appSource = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
 const appStylesSource = readFileSync(new URL('./App.css', import.meta.url), 'utf8');
@@ -33,5 +34,15 @@ describe('App role route normalization', () => {
   it('lets app pages fill the space above the shared footer', () => {
     expect(appStylesSource).toMatch(/\.app-main\s*\{[\s\S]*?display:\s*flex;/);
     expect(appStylesSource).toMatch(/\.app-main\s*\{[\s\S]*?flex-direction:\s*column;/);
+  });
+});
+
+describe('App admin login error mapping', () => {
+  it('classifies every admin login failure into its error kind', () => {
+    expect(resolveAdminLoginError(new ApiError('totp_code_required', 401))).toBe('totp_required');
+    expect(resolveAdminLoginError(new ApiError('invalid totp code', 401))).toBe('invalid_totp');
+    expect(resolveAdminLoginError(new ApiError('invalid password', 401))).toBe('invalid_password');
+    expect(resolveAdminLoginError(new ApiError('boom', 500))).toBe('login_failed');
+    expect(resolveAdminLoginError(new Error('x'))).toBe('login_failed');
   });
 });

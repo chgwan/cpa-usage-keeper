@@ -24,21 +24,31 @@ type LoginErrors = {
 
 interface LoginPageProps extends LoginErrors {
   loading?: boolean;
-  onPasswordSubmit: (password: string) => Promise<void>;
+  totpRequired?: boolean;
+  onPasswordSubmit: (password: string, totpCode: string) => Promise<void>;
   onAPIKeySubmit: (apiKey: string) => Promise<void>;
 }
+
+export const shouldShowTOTPCodeField = (mode: LoginMode, totpRequired: boolean): boolean => (
+  mode === 'admin' && totpRequired
+);
+
+export const isAdminLoginFormValid = (password: string, totpCode: string, totpRequired: boolean): boolean => (
+  Boolean(password.trim()) && (!totpRequired || Boolean(totpCode.trim()))
+);
 
 export const getLoginErrorForMode = (mode: LoginMode, { adminError = '', apiKeyError = '' }: LoginErrors) => (
   mode === 'api_key' ? apiKeyError : adminError
 );
 
-export function LoginPage({ loading = false, adminError = '', apiKeyError = '', onPasswordSubmit, onAPIKeySubmit }: LoginPageProps) {
+export function LoginPage({ loading = false, totpRequired = false, adminError = '', apiKeyError = '', onPasswordSubmit, onAPIKeySubmit }: LoginPageProps) {
   const { t } = useTranslation();
   const theme = useThemeStore((state) => state.theme);
   const setTheme = useThemeStore((state) => state.setTheme);
   const [mode, setMode] = useState<LoginMode>('admin');
   const [password, setPassword] = useState('');
   const [apiKey, setApiKey] = useState('');
+  const [totpCode, setTOTPCode] = useState('');
   const activeError = getLoginErrorForMode(mode, { adminError, apiKeyError });
   const themeOptions = useMemo(
     () => THEME_OPTIONS.map((option) => ({ ...option, label: t(option.labelKey) })),
@@ -51,10 +61,10 @@ export function LoginPage({ loading = false, adminError = '', apiKeyError = '', 
       await onAPIKeySubmit(apiKey);
       return;
     }
-    await onPasswordSubmit(password);
+    await onPasswordSubmit(password, totpCode);
   };
 
-  const canSubmit = mode === 'api_key' ? Boolean(apiKey.trim()) : Boolean(password.trim());
+  const canSubmit = mode === 'api_key' ? Boolean(apiKey.trim()) : isAdminLoginFormValid(password, totpCode, Boolean(totpRequired));
 
   return (
     <div className={styles.pageShell} data-keeper-page="login">
@@ -143,6 +153,19 @@ export function LoginPage({ loading = false, adminError = '', apiKeyError = '', 
                   disabled={loading}
                 />
                 <p className={styles.formHint}>{t('auth.password_hint')}</p>
+                {shouldShowTOTPCodeField(mode, Boolean(totpRequired)) && (
+                  <Input
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    maxLength={8}
+                    label={t('auth.totp_code_label')}
+                    placeholder={t('auth.totp_code_placeholder')}
+                    value={totpCode}
+                    onChange={(event) => setTOTPCode(event.target.value)}
+                    disabled={loading}
+                  />
+                )}
               </>
             )}
             <Button type="submit" fullWidth loading={loading} disabled={!canSubmit}>

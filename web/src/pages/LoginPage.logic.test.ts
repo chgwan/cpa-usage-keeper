@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { getLoginErrorForMode } from './LoginPage';
+import { getLoginErrorForMode, isAdminLoginFormValid, shouldShowTOTPCodeField } from './LoginPage';
 
 const source = readFileSync(new URL('./LoginPage.tsx', import.meta.url), 'utf8');
 const stylesSource = readFileSync(new URL('./LoginPage.module.scss', import.meta.url), 'utf8');
@@ -27,5 +27,20 @@ describe('LoginPage mode-specific errors', () => {
     expect(stylesSource).toMatch(/\.pageShell\s*\{[\s\S]*?flex:\s*1\s+1\s+auto;/);
     expect(stylesSource).toMatch(/\.pageShell\s*\{[\s\S]*?min-height:\s*0;/);
     expect(stylesSource).not.toMatch(/\.pageShell\s*\{[\s\S]*?min-height:\s*100v?h;/);
+  });
+});
+
+describe('LoginPage TOTP code field', () => {
+  it('shows the code field only for admin mode when the server asked for it', () => {
+    expect(shouldShowTOTPCodeField('admin', true)).toBe(true);
+    expect(shouldShowTOTPCodeField('admin', false)).toBe(false);
+    expect(shouldShowTOTPCodeField('api_key', true)).toBe(false);
+  });
+
+  it('requires a code only when the field is visible', () => {
+    expect(isAdminLoginFormValid('pw', '123456', true)).toBe(true);
+    expect(isAdminLoginFormValid('pw', '', true)).toBe(false);
+    expect(isAdminLoginFormValid('pw', '', false)).toBe(true);
+    expect(isAdminLoginFormValid('', '123456', true)).toBe(false);
   });
 });

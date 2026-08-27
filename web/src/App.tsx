@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import './index.css';
 import './App.css';
 import './embed/cpamcEmbed.css';
-import { ApiError, appPath, clearEmbedSessionToken, getSession, login, loginWithCPAAPIKey } from './lib/api';
+import { ApiError, appPath, clearEmbedSessionToken, getSession, login, loginWithCPAAPIKey, TOTP_CODE_REQUIRED_ERROR } from './lib/api';
 import type { AuthRole, AuthSessionAPIKeySummary } from './lib/types';
 import { AppFooter } from './components/AppFooter';
 import { KeyOverviewPage } from './pages/KeyOverviewPage';
@@ -39,12 +39,22 @@ export const shouldNormalizeRolePath = (
   isEmbeddedInCPAMC = false,
 ): boolean => currentPath !== getRoleTargetPath(role, currentPath, isEmbeddedInCPAMC);
 
+export type AdminLoginErrorKind = 'totp_required' | 'invalid_totp' | 'invalid_password' | 'login_failed';
+
+export const resolveAdminLoginError = (error: unknown): AdminLoginErrorKind => {
+  if (error instanceof ApiError && error.message === TOTP_CODE_REQUIRED_ERROR) return 'totp_required';
+  if (error instanceof ApiError && error.message === 'invalid totp code') return 'invalid_totp';
+  if (error instanceof ApiError && error.status === 401) return 'invalid_password';
+  return 'login_failed';
+};
+
 function App() {
   const { t } = useTranslation();
   const [authState, setAuthState] = useState<AuthState>('checking');
   const [authRole, setAuthRole] = useState<AuthRole | null>(null);
   const [sessionAPIKey, setSessionAPIKey] = useState<AuthSessionAPIKeySummary | undefined>();
   const [adminLoginError, setAdminLoginError] = useState('');
+  const [totpRequired, setTOTPRequired] = useState(false);
   const [apiKeyLoginError, setAPIKeyLoginError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const clearUsageStats = useUsageStatsStore((state) => state.clearUsageStats);
@@ -92,11 +102,12 @@ function App() {
     window.history.replaceState(null, '', appPath(targetPath) + cpamcEmbedSearch());
   }, [authRole, authState, isEmbeddedInCPAMC]);
 
-  const handlePasswordLogin = useCallback(async (password: string) => {
+  const handlePasswordLogin = useCallback(async (password: string, totpCode = '') => {
     setSubmitting(true);
     setAdminLoginError('');
+    setTOTPRequired(false);
     try {
-      await login(password);
+      await login(password, totpCode);
       const session = await loadSession();
       if (!session.authenticated) {
         setAdminLoginError(t('auth.login_failed'));
@@ -107,10 +118,20 @@ function App() {
       const targetPath = getRoleTargetPath(session.role ?? 'admin', currentPath, isEmbeddedInCPAMC);
       window.history.replaceState(null, '', appPath(targetPath) + cpamcEmbedSearch());
     } catch (error) {
-      if (error instanceof ApiError && error.status === 401) {
-        setAdminLoginError(t('auth.invalid_password'));
-      } else {
-        setAdminLoginError(t('auth.login_failed'));
+      switch (resolveAdminLoginError(error)) {
+        case 'totp_required':
+          setTOTPRequired(true);
+          setAdminLoginError('');
+          break;
+        case 'invalid_totp':
+          setTOTPRequired(true);
+          setAdminLoginError(t('auth.invalid_totp_code'));
+          break;
+        case 'invalid_password':
+          setAdminLoginError(t('auth.invalid_password'));
+          break;
+        default:
+          setAdminLoginError(t('auth.login_failed'));
       }
       clearSession();
     } finally {
@@ -148,7 +169,7 @@ function App() {
   if (authState === 'checking') {
     page = <div className="app-checking" aria-busy="true" />;
   } else if (authState === 'unauthenticated') {
-    page = <LoginPage loading={submitting} adminError={adminLoginError} apiKeyError={apiKeyLoginError} onPasswordSubmit={handlePasswordLogin} onAPIKeySubmit={handleAPIKeyLogin} />;
+    page = <LoginPage loading={submitting} totpRequired={totpRequired} adminError={adminLoginError} apiKeyError={apiKeyLoginError} onPasswordSubmit={handlePasswordLogin} onAPIKeySubmit={handleAPIKeyLogin} />;
   } else if (authRole === 'api_key_viewer') {
     page = <KeyOverviewPage apiKey={sessionAPIKey} onAuthRequired={clearSession} />;
   } else {
