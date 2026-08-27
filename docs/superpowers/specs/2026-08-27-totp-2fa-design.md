@@ -27,7 +27,10 @@ so this spec covers only the 2FA half.
   access (`AUTH_TOTP_RESET` covers lockout).
 - WebAuthn/passkeys, email OTP.
 - Changes to `POST /auth/api-key-login` (API-key viewer / CPAMC embed path).
-  That login is a bearer credential; TOTP would break embed flows.
+  Reconsidered during spec review and explicitly rejected: sharing the
+  admin's single TOTP secret with API-key holders would leak the operator's
+  second factor, and per-key TOTP is a separate, much larger multi-user
+  feature. The API key itself remains that path's credential.
 - Encrypting the TOTP secret at rest (see Security notes).
 - HTTPS work of any kind (already shipped).
 
