@@ -395,6 +395,13 @@ For cross-origin CPAMC embedding, `CPA_PUBLIC_URL` must be a complete `http://` 
 | `AUTH_ENABLED` | No | `true` | Enable login protection |
 | `LOGIN_PASSWORD` | When auth is enabled | - | Login password |
 | `AUTH_SESSION_TTL` | No | `168h` | Login session lifetime |
+| `AUTH_TOTP_RESET` | No | `false` | Clear the admin TOTP enrollment at startup (lockout recovery); remove after resetting |
+
+#### Two-Factor Authentication (TOTP)
+
+After logging in, open the usage page settings and find **Two-Factor Authentication**: click **Enable 2FA**, scan the QR code with an authenticator app (Google Authenticator, 1Password, Authy, ...), and enter the current 6-digit code to confirm. From then on, the admin password login also asks for an authenticator code. Disabling 2FA requires the login password plus a valid code.
+
+If you lose your authenticator, set `AUTH_TOTP_RESET=true`, restart Keeper, log in with the password alone, then remove the variable and restart again. Codes are TOTP (30 s steps, ±1 step tolerance); if every code is rejected, check the server clock.
 
 ### Timezone And Request Behavior
 
@@ -452,6 +459,7 @@ Security and data notes:
 - Browser APIs redact key-like fields, but the SQLite database and its unencrypted backups contain original data.
 - Authentication is enabled by default. If it is explicitly disabled, restrict Keeper access at the deployment boundary; terminate public HTTPS at a reverse proxy.
 - Login session hashes persist in SQLite until logout or `AUTH_SESSION_TTL` expiry.
+- The TOTP 2FA secret is stored unencrypted in SQLite, like other Keeper data.
 - CPAMC uses a separate embed session: an `HttpOnly` cookie when available, or a per-tab header token in browser session storage as a fallback.
 - Same-origin embedding works by default. For cross-origin embedding, set `CPA_PUBLIC_URL` to the public CPA/CPAMC origin used for `frame-ancestors`.
 - Redis inbox messages are retained through the current day after success or for 7 days after failure.
