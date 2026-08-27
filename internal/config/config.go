@@ -97,6 +97,8 @@ type Config struct {
 	AuthEnabled bool
 	// LoginPassword 是启用登录保护时使用的登录密码。
 	LoginPassword string
+	// AuthTOTPReset 为 true 时启动阶段清除管理员 TOTP 注册，用于丢失验证器后的恢复。
+	AuthTOTPReset bool
 	// AuthSessionTTL 是登录 session 有效时长。
 	AuthSessionTTL time.Duration
 }
@@ -211,6 +213,10 @@ func Load(options LoadOptions) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	authTOTPReset, err := getBool("AUTH_TOTP_RESET", false)
+	if err != nil {
+		return nil, err
+	}
 	trustedProxyCIDRs, err := getCIDRs("TRUSTED_PROXY_CIDRS")
 	if err != nil {
 		return nil, err
@@ -273,6 +279,7 @@ func Load(options LoadOptions) (*Config, error) {
 		LogRetentionDays:           logRetentionDays,
 		AuthEnabled:                authEnabled,
 		LoginPassword:              strings.TrimSpace(os.Getenv("LOGIN_PASSWORD")),
+		AuthTOTPReset:              authTOTPReset,
 		AuthSessionTTL:             authSessionTTL,
 	}
 	if appHost := strings.TrimSpace(options.AppHost); appHost != "" {
