@@ -180,7 +180,8 @@ func TestTOTPManagerDisableAndResetAllClearState(t *testing.T) {
 	}
 
 	// Re-enroll, then ResetAll must clear it too.
-	if _, _, err := manager.CreatePending(ctx); err != nil {
+	_, secret, err = manager.CreatePending(ctx)
+	if err != nil {
 		t.Fatalf("create pending: %v", err)
 	}
 	code, err = totp.GenerateCode(secret, now)
