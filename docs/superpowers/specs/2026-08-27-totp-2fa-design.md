@@ -109,8 +109,8 @@ so enrollment status is not leaked to strangers.
 
 ### Enrollment API (`internal/api/auth.go`, behind `adminMiddleware`)
 
-Routes registered in `authHandler.registerRoutes` alongside the existing
-auth routes (final paths under `/auth/totp…`):
+Routes registered on the admin-protected group alongside the
+session-management routes (final paths under `/auth/totp…`):
 
 - `GET /auth/totp` → `{"enabled": bool, "pending": bool}`
 - `POST /auth/totp/setup` → `{"otpauth_uri": string, "secret": string}`
