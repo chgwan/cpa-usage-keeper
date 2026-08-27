@@ -4408,3 +4408,46 @@
     grid-template-columns: max-content;
   }
 }
+
+.totpRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.totpHint {
+  margin: 4px 0 0;
+  font-size: 13px;
+  opacity: 0.75;
+}
+
+.totpFieldStack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.totpQRWrap {
+  display: flex;
+  justify-content: center;
+  padding: 12px;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.totpSecretWrap {
+  margin: 4px 0;
+}
+
+.totpSecretLabel {
+  font-size: 12px;
+  opacity: 0.75;
+  margin-bottom: 4px;
+}
+
+.totpSecret {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  word-break: break-all;
+}
