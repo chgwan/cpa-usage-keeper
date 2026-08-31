@@ -6,11 +6,14 @@ import (
 
 	"cpa-usage-keeper/internal/entities"
 	"cpa-usage-keeper/internal/helper"
-	"cpa-usage-keeper/internal/keypolicy"
 
 	"gorm.io/gorm"
 	"gorm.io/plugin/dbresolver"
 )
+
+// activeEnforcementState 与 keypolicy.StateActive 同值。keypolicy 的执行 runner 需要引用本包的
+// 策略仓储函数，本包因此禁止反向 import keypolicy，状态字面量只能在这里单独声明。
+const activeEnforcementState = "active"
 
 func SyncCPAAPIKeys(db *gorm.DB, keys []string, syncedAt time.Time) error {
 	seen := make(map[string]struct{}, len(keys))
@@ -113,7 +116,7 @@ func SyncCPAAPIKeys(db *gorm.DB, keys []string, syncedAt time.Time) error {
 func policyHeldKeyIDs(tx *gorm.DB) (map[int64]struct{}, error) {
 	var ids []int64
 	if err := tx.Model(&entities.CPAAPIKeyPolicy{}).
-		Where("enforcement_state <> ?", string(keypolicy.StateActive)).
+		Where("enforcement_state <> ?", activeEnforcementState).
 		Pluck("cpa_api_key_id", &ids).Error; err != nil {
 		return nil, err
 	}
