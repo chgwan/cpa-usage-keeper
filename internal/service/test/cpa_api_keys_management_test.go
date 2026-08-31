@@ -112,8 +112,18 @@ func TestCreateCPAAPIKeyAppendsToCPAAndLocal(t *testing.T) {
 
 func TestCreateCPAAPIKeyRejectsDuplicateCustomKey(t *testing.T) {
 	provider, _, _ := newManagementTestEnv(t)
-	if _, _, err := provider.CreateCPAAPIKey(context.Background(), "", "sk-existing"); err == nil {
-		t.Fatal("expected duplicate custom key to be rejected")
+	_, _, err := provider.CreateCPAAPIKey(context.Background(), "", "sk-existing")
+	if !errors.Is(err, service.ErrInvalidInput) {
+		t.Fatalf("expected duplicate custom key rejected as ErrInvalidInput, got %v", err)
+	}
+}
+
+// TestCreateCPAAPIKeyRejectsInvalidCustomKeyWithSentinel 验证自定义 key 校验失败同样带 ErrInvalidInput。
+func TestCreateCPAAPIKeyRejectsInvalidCustomKeyWithSentinel(t *testing.T) {
+	provider, _, _ := newManagementTestEnv(t)
+	_, _, err := provider.CreateCPAAPIKey(context.Background(), "", "has whitespace")
+	if !errors.Is(err, service.ErrInvalidInput) {
+		t.Fatalf("expected invalid custom key rejected as ErrInvalidInput, got %v", err)
 	}
 }
 
@@ -202,8 +212,9 @@ func TestSaveCPAAPIKeyPolicyValidatesLimits(t *testing.T) {
 	provider, _, _ := newManagementTestEnv(t)
 	created, _, _ := provider.CreateCPAAPIKey(context.Background(), "", "")
 	bad := keypolicy.Limits{{Type: "bogus", Window: keypolicy.LimitWindowDaily, Value: 1}}
-	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), created.ID, bad, true); err == nil {
-		t.Fatal("expected invalid limits to be rejected")
+	err := provider.SaveCPAAPIKeyPolicy(context.Background(), created.ID, bad, true)
+	if !errors.Is(err, service.ErrInvalidInput) {
+		t.Fatalf("expected invalid limits rejected as ErrInvalidInput, got %v", err)
 	}
 }
 

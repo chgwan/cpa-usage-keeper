@@ -28,6 +28,9 @@ var ErrCPARequestFailed = errors.New("cpa request failed")
 // ErrKeyDisabled 标记 key 当前处于禁用态，重新生成等操作被拒，路由层映射为 409。
 var ErrKeyDisabled = errors.New("api key is disabled")
 
+// ErrInvalidInput 标记请求参数校验失败（自定义 key 非法、key 重复、限额非法），路由层映射为 400。
+var ErrInvalidInput = errors.New("invalid input")
+
 // CPAAPIKeyManagementProvider 是 api-key 生命周期与限额策略的服务接口。
 type CPAAPIKeyManagementProvider interface {
 	// CreateCPAAPIKey 新建 key 并返回完整值；完整值只在此处返回一次。
@@ -183,14 +186,14 @@ func (s *cpaAPIKeyManagementService) CreateCPAAPIKey(ctx context.Context, keyAli
 		}
 		newKey = generated
 	} else if err := validateCustomKey(newKey); err != nil {
-		return entities.CPAAPIKey{}, "", err
+		return entities.CPAAPIKey{}, "", fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	}
 	current, err := s.fetchCPAKeyList(ctx)
 	if err != nil {
 		return entities.CPAAPIKey{}, "", err
 	}
 	if slices.Contains(current, newKey) {
-		return entities.CPAAPIKey{}, "", errors.New("api key already exists")
+		return entities.CPAAPIKey{}, "", fmt.Errorf("%w: api key already exists", ErrInvalidInput)
 	}
 	// 全量 PUT 只发刚 GET 到的列表加新 key，绝不凭空构造列表。
 	next := append(current, newKey)
@@ -377,7 +380,7 @@ func (s *cpaAPIKeyManagementService) SaveCPAAPIKeyPolicy(ctx context.Context, id
 		return err
 	}
 	if err := limits.Validate(); err != nil {
-		return err
+		return fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	}
 	encoded := "[]"
 	if len(limits) > 0 {

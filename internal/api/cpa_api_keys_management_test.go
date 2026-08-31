@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,6 +23,7 @@ import (
 type stubManagementProvider struct {
 	createErr    error
 	regenErr     error
+	saveErr      error
 	policyView   service.CPAAPIKeyPolicyView
 	limitsIn     keypolicy.Limits
 	summaries    map[int64]service.CPAAPIKeyPolicySummary
@@ -50,10 +52,17 @@ func (s *stubManagementProvider) GetCPAAPIKeyPolicy(_ context.Context, _ int64) 
 	return s.policyView, nil
 }
 
-// SaveCPAAPIKeyPolicy 复刻真实服务“先校验再保存”的契约，让非法限额在桩上同样走 400 语义。
+// SaveCPAAPIKeyPolicy 复刻真实服务“先校验再保存”的契约：非法限额包装 ErrInvalidInput 走 400，
+// saveErr 用于注入基础设施错误验证未知错误的 500 语义。
 func (s *stubManagementProvider) SaveCPAAPIKeyPolicy(_ context.Context, _ int64, limits keypolicy.Limits, _ bool) error {
 	s.limitsIn = limits
-	return limits.Validate()
+	if s.saveErr != nil {
+		return s.saveErr
+	}
+	if err := limits.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", service.ErrInvalidInput, err)
+	}
+	return nil
 }
 
 func (s *stubManagementProvider) ListCPAAPIKeyEnforcementLogs(_ context.Context, _ int64, _ int) ([]entities.APIKeyEnforcementLog, error) {
@@ -167,6 +176,25 @@ func TestPolicyRouteRejectsInvalidLimits(t *testing.T) {
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", response.Code)
+	}
+}
+
+// TestManagementRouteMapsUnknownErrorsTo500 验证非哨兵错误按基础设施故障处理：
+// 返回统一 500 文案，不把内部错误细节泄漏给客户端。
+func TestManagementRouteMapsUnknownErrorsTo500(t *testing.T) {
+	router := newManagementTestRouter(&stubManagementProvider{saveErr: errors.New("database exploded")})
+	response := httptest.NewRecorder()
+	body := `{"enabled": true, "limits": []}`
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/usage/api-keys/9/policy", bytes.NewReader([]byte(body)))
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", response.Code)
+	}
+	if strings.Contains(response.Body.String(), "database exploded") {
+		t.Fatalf("internal error detail must not leak, got %s", response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "internal server error") {
+		t.Fatalf("expected unified internal error body, got %s", response.Body.String())
 	}
 }
 

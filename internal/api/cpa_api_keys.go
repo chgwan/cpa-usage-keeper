@@ -15,6 +15,7 @@ import (
 	"cpa-usage-keeper/internal/timeutil"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
 
@@ -326,9 +327,13 @@ func writeManagementError(c *gin.Context, message string, err error) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid api key id"})
 	case errors.Is(err, gorm.ErrRecordNotFound):
 		c.JSON(http.StatusNotFound, gin.H{"error": "api key not found"})
-	default:
-		// 校验类错误（限额非法、自定义 key 非法、key 重复）都走 400。
+	case errors.Is(err, service.ErrInvalidInput):
+		// 校验类错误（限额非法、自定义 key 非法、key 重复）带哨兵，原文可安全返回 400。
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	default:
+		// 其余未知错误按基础设施故障处理：记录日志并返回统一 500，不向客户端泄漏内部细节。
+		logrus.WithError(err).Error(message)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 	}
 }
 
