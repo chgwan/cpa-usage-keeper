@@ -89,7 +89,7 @@ func newManagementTestEnv(t *testing.T) (service.CPAAPIKeyManagementProvider, *f
 	server := httptest.NewServer(fake.handler(t))
 	t.Cleanup(server.Close)
 	client := cpa.NewClient(server.URL, "mgmt", 5*time.Second, false)
-	return service.NewCPAAPIKeyManagementService(db, client, nil), fake, db
+	return service.NewCPAAPIKeyManagementService(db, client, nil, nil), fake, db
 }
 
 func TestCreateCPAAPIKeyAppendsToCPAAndLocal(t *testing.T) {
@@ -225,7 +225,7 @@ func TestCPAWriteFailureSurfacesAsSentinelError(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	db := openManagementTestDB(t)
-	provider := service.NewCPAAPIKeyManagementService(db, cpa.NewClient(server.URL, "mgmt", 5*time.Second, false), nil)
+	provider := service.NewCPAAPIKeyManagementService(db, cpa.NewClient(server.URL, "mgmt", 5*time.Second, false), nil, nil)
 	if _, _, err := provider.CreateCPAAPIKey(context.Background(), "", ""); !errors.Is(err, service.ErrCPARequestFailed) {
 		t.Fatalf("expected ErrCPARequestFailed, got %v", err)
 	}

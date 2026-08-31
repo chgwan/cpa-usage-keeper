@@ -220,8 +220,11 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 	})
 	// 单 writer aggregation runner 只维护 rollups/Identity，并在 App.Run 时主动追平。
 	usageAggregationRunner := poller.NewUsageAggregationRunner(db)
+	// keyMutationMutex 串行化管理服务与限额 runner 的全量列表 PUT：任何一方的 GET→PUT
+	// 序列都必须独占，否则交错执行会静默丢失对方刚写入 CPA 的 key。
+	keyMutationMutex := &sync.Mutex{}
 	// api key 限额执行 runner 与管理服务共用同一个 CPA client 和价格目录。
-	keyPolicyRunner := keypolicy.NewRunner(db, cpaClient, pricingCatalog, time.Minute, logrus.StandardLogger())
+	keyPolicyRunner := keypolicy.NewRunner(db, cpaClient, pricingCatalog, time.Minute, logrus.StandardLogger(), keyMutationMutex)
 	// syncService 仍然是 metadata 和 usage 处理共享的业务服务入口。
 	syncService := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{
 		BaseURL: cfg.CPABaseURL,
@@ -323,8 +326,8 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 		OnDisplayNameChanged: quotaService.UpdateUsageIdentityDisplayNameSnapshot,
 	})
 	cpaAPIKeyService := service.NewCPAAPIKeyService(db)
-	// 生命周期与限额策略服务复用同一个 DB、CPA client 和价格目录，Task 8 的执行 runner 沿用同一实例语义。
-	cpaAPIKeyManagementService := service.NewCPAAPIKeyManagementService(db, cpaClient, pricingCatalog)
+	// 生命周期与限额策略服务复用同一个 DB、CPA client 和价格目录，并与限额 runner 共享 key 变更互斥锁。
+	cpaAPIKeyManagementService := service.NewCPAAPIKeyManagementService(db, cpaClient, pricingCatalog, keyMutationMutex)
 	authFilesManagementService := service.NewAuthFilesManagementService(cpaClient)
 	if cfg.TLSSkipVerify {
 		logrus.WithField("cpa_base_url", cfg.CPABaseURL).Warn("TLS certificate verification is disabled for CPA and Redis queue connections")

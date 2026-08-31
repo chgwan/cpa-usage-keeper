@@ -72,8 +72,9 @@ type cpaAPIKeyManagementService struct {
 	db     *gorm.DB
 	client *cpa.Client
 	store  *keypolicy.Store
-	// mu 串行化所有 key 写操作，避免 Keeper 自己跟自己竞态全量 PUT。
-	mu sync.Mutex
+	// keyMutations 串行化所有 key 写操作，避免 Keeper 自己跟自己竞态全量 PUT；
+	// 与 keypolicy runner 注入同一实例，双方的 GET→PUT 序列才能互斥。
+	keyMutations sync.Locker
 	// logger 输出审计写入失败等不阻断主流程的告警。
 	logger logrus.FieldLogger
 	// now 可注入，测试用。
@@ -81,13 +82,18 @@ type cpaAPIKeyManagementService struct {
 }
 
 // NewCPAAPIKeyManagementService 组装生命周期服务；catalog 允许为 nil（费用恒 0）。
-func NewCPAAPIKeyManagementService(db *gorm.DB, client *cpa.Client, catalog *pricing.Catalog) CPAAPIKeyManagementProvider {
+// keyMutations 为 nil 时使用独享锁；生产 App 必须与 runner 共享同一实例。
+func NewCPAAPIKeyManagementService(db *gorm.DB, client *cpa.Client, catalog *pricing.Catalog, keyMutations sync.Locker) CPAAPIKeyManagementProvider {
+	if keyMutations == nil {
+		keyMutations = &sync.Mutex{}
+	}
 	return &cpaAPIKeyManagementService{
-		db:     db,
-		client: client,
-		store:  keypolicy.NewStore(db, catalog),
-		logger: logrus.StandardLogger(),
-		now:    time.Now,
+		db:           db,
+		client:       client,
+		store:        keypolicy.NewStore(db, catalog),
+		keyMutations: keyMutations,
+		logger:       logrus.StandardLogger(),
+		now:          time.Now,
 	}
 }
 
@@ -176,8 +182,8 @@ func (s *cpaAPIKeyManagementService) writeEnforcementLog(cpaAPIKeyID int64, acti
 }
 
 func (s *cpaAPIKeyManagementService) CreateCPAAPIKey(ctx context.Context, keyAlias string, customKey string) (entities.CPAAPIKey, string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.keyMutations.Lock()
+	defer s.keyMutations.Unlock()
 	newKey := strings.TrimSpace(customKey)
 	if newKey == "" {
 		generated, err := generateAPIKey()
@@ -217,8 +223,8 @@ func (s *cpaAPIKeyManagementService) CreateCPAAPIKey(ctx context.Context, keyAli
 }
 
 func (s *cpaAPIKeyManagementService) RegenerateCPAAPIKey(ctx context.Context, id int64) (entities.CPAAPIKey, string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.keyMutations.Lock()
+	defer s.keyMutations.Unlock()
 	row, err := repository.FindActiveCPAAPIKeyByID(s.db, id)
 	if err != nil {
 		return entities.CPAAPIKey{}, "", err
@@ -249,8 +255,8 @@ func (s *cpaAPIKeyManagementService) RegenerateCPAAPIKey(ctx context.Context, id
 }
 
 func (s *cpaAPIKeyManagementService) DeleteCPAAPIKey(ctx context.Context, id int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.keyMutations.Lock()
+	defer s.keyMutations.Unlock()
 	row, err := repository.FindActiveCPAAPIKeyByID(s.db, id)
 	if err != nil {
 		return err
@@ -284,8 +290,8 @@ func (s *cpaAPIKeyManagementService) DeleteCPAAPIKey(ctx context.Context, id int
 }
 
 func (s *cpaAPIKeyManagementService) DisableCPAAPIKey(ctx context.Context, id int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.keyMutations.Lock()
+	defer s.keyMutations.Unlock()
 	row, err := repository.FindActiveCPAAPIKeyByID(s.db, id)
 	if err != nil {
 		return err
@@ -317,8 +323,8 @@ func (s *cpaAPIKeyManagementService) DisableCPAAPIKey(ctx context.Context, id in
 }
 
 func (s *cpaAPIKeyManagementService) RestoreCPAAPIKey(ctx context.Context, id int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.keyMutations.Lock()
+	defer s.keyMutations.Unlock()
 	row, err := repository.FindActiveCPAAPIKeyByID(s.db, id)
 	if err != nil {
 		return err
@@ -374,8 +380,8 @@ func (s *cpaAPIKeyManagementService) GetCPAAPIKeyPolicy(ctx context.Context, id 
 }
 
 func (s *cpaAPIKeyManagementService) SaveCPAAPIKeyPolicy(ctx context.Context, id int64, limits keypolicy.Limits, enabled bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.keyMutations.Lock()
+	defer s.keyMutations.Unlock()
 	if _, err := repository.FindActiveCPAAPIKeyByID(s.db, id); err != nil {
 		return err
 	}

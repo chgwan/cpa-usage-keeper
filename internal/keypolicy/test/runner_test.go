@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +27,8 @@ type fakeCPAAPIKeys struct {
 	deleteFail bool
 	// onDelete 在 DELETE 处理入口回调，用来快照调用瞬间数据库里的策略状态。
 	onDelete func()
+	// aroundGet 包裹 GET 的响应写出，用来观测并发或在写出前后阻塞请求。
+	aroundGet func(serve func())
 }
 
 func (f *fakeCPAAPIKeys) handler(t *testing.T) http.HandlerFunc {
@@ -34,7 +37,12 @@ func (f *fakeCPAAPIKeys) handler(t *testing.T) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.Method {
 		case http.MethodGet:
-			_ = json.NewEncoder(w).Encode(map[string]any{"api-keys": f.keys})
+			serve := func() { _ = json.NewEncoder(w).Encode(map[string]any{"api-keys": f.keys}) }
+			if f.aroundGet != nil {
+				f.aroundGet(serve)
+				return
+			}
+			serve()
 		case http.MethodPut:
 			var body struct {
 				Items []string `json:"items"`
@@ -126,7 +134,7 @@ func TestRunnerDisablesKeyOnBreachAndRestoresAfterWindowFlip(t *testing.T) {
 	if err := db.Create(&other).Error; err != nil {
 		t.Fatalf("seed other key: %v", err)
 	}
-	runner := keypolicy.NewRunner(db, client, nil, time.Minute, logrus.New())
+	runner := keypolicy.NewRunner(db, client, nil, time.Minute, logrus.New(), nil)
 	if err := runner.EvaluateOnce(context.Background()); err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -172,7 +180,7 @@ func TestRunnerNeverDisablesLastKey(t *testing.T) {
 	server := startFakeCPA(t, fake)
 	client := newCPAClient(t, server)
 	seedLimitedKey(t, db, "sk-only", 100, 500)
-	runner := keypolicy.NewRunner(db, client, nil, time.Minute, logrus.New())
+	runner := keypolicy.NewRunner(db, client, nil, time.Minute, logrus.New(), nil)
 	if err := runner.EvaluateOnce(context.Background()); err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -201,7 +209,7 @@ func TestRunnerKeepsManualDisableAcrossEvaluations(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("set manual state: %v", err)
 	}
-	runner := keypolicy.NewRunner(db, client, nil, time.Minute, logrus.New())
+	runner := keypolicy.NewRunner(db, client, nil, time.Minute, logrus.New(), nil)
 	if err := runner.EvaluateOnce(context.Background()); err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -230,7 +238,7 @@ func TestRunnerWritesDisabledStateBeforeCPADeleteAndRetriesAfterFailure(t *testi
 		statesAtDelete = append(statesAtDelete, policy.EnforcementState)
 	}
 	fake.deleteFail = true
-	runner := keypolicy.NewRunner(db, client, nil, time.Minute, logrus.New())
+	runner := keypolicy.NewRunner(db, client, nil, time.Minute, logrus.New(), nil)
 	if err := runner.EvaluateOnce(context.Background()); err != nil {
 		t.Fatalf("evaluate with failing delete: %v", err)
 	}
@@ -268,5 +276,121 @@ func TestRunnerWritesDisabledStateBeforeCPADeleteAndRetriesAfterFailure(t *testi
 	logs, _ = repository.ListAPIKeyEnforcementLogs(db, keyID, 10)
 	if len(logs) == 0 || logs[0].Action != "disabled" || logs[0].Reason != "limit_breached" {
 		t.Fatalf("expected disabled audit after retry, got %+v", logs)
+	}
+}
+
+// TestRunnerReDisablesKeyStillPresentInCPA 覆盖崩溃窗口遗留态：状态已是 disabled_by_quota
+// 但 key 仍在 CPA 服务，每轮评估必须幂等重发 DELETE 收敛，且成功时不再刷审计。
+func TestRunnerReDisablesKeyStillPresentInCPA(t *testing.T) {
+	db := newKeypolicyTestDB(t)
+	fake := &fakeCPAAPIKeys{keys: []string{"sk-zombie", "sk-buddy"}}
+	server := startFakeCPA(t, fake)
+	client := newCPAClient(t, server)
+	keyID := seedLimitedKey(t, db, "sk-zombie", 100, 150)
+	// 直接落库模拟崩溃窗口：状态先写成功，DELETE 尚未发出。
+	if err := repository.UpdateCPAAPIKeyPolicyRuntime(db, keyID,
+		string(keypolicy.StateDisabledByQuota), keypolicy.WindowKey(keypolicy.DailyWindow(time.Now())), time.Now()); err != nil {
+		t.Fatalf("seed disabled state: %v", err)
+	}
+	runner := keypolicy.NewRunner(db, client, nil, time.Minute, logrus.New(), nil)
+	if err := runner.EvaluateOnce(context.Background()); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if len(fake.keys) != 1 || fake.keys[0] != "sk-buddy" {
+		t.Fatalf("expected lingering key removed from CPA, got %v", fake.keys)
+	}
+	policy, err := repository.FindCPAAPIKeyPolicy(db, keyID)
+	if err != nil || policy.EnforcementState != string(keypolicy.StateDisabledByQuota) {
+		t.Fatalf("expected state to stay disabled_by_quota, got %+v err %v", policy, err)
+	}
+	// 幂等收敛成功不产生任何新审计。
+	logs, _ := repository.ListAPIKeyEnforcementLogs(db, keyID, 10)
+	if len(logs) != 0 {
+		t.Fatalf("expected no audit spam on idempotent re-disable, got %+v", logs)
+	}
+}
+
+// TestRunnerRestoreWaitsForSharedKeyMutationLock 验证恢复的全量 PUT 与管理员写操作共用同一把锁：
+// 管理端持锁期间 runner 不得发出 PUT，锁释放后才把 key 加回 CPA。
+func TestRunnerRestoreWaitsForSharedKeyMutationLock(t *testing.T) {
+	db := newKeypolicyTestDB(t)
+	fake := &fakeCPAAPIKeys{keys: []string{"sk-bystander"}}
+	server := startFakeCPA(t, fake)
+	client := newCPAClient(t, server)
+	keyID := seedLimitedKey(t, db, "sk-torn", 100, 10)
+	if err := repository.UpdateCPAAPIKeyPolicyRuntime(db, keyID,
+		string(keypolicy.StateDisabledByQuota), "2000-01-01", time.Now()); err != nil {
+		t.Fatalf("seed disabled state: %v", err)
+	}
+	shared := &sync.Mutex{}
+	runner := keypolicy.NewRunner(db, client, nil, time.Minute, logrus.New(), shared)
+
+	// 模拟管理员 Create/Restore 正在进行（整个 GET→PUT 序列持锁）。
+	shared.Lock()
+	done := make(chan error, 1)
+	go func() { done <- runner.EvaluateOnce(context.Background()) }()
+	time.Sleep(200 * time.Millisecond)
+	if len(fake.keys) != 1 || fake.keys[0] != "sk-bystander" {
+		shared.Unlock()
+		t.Fatalf("restore PUT must wait for the shared key mutation lock, got %v", fake.keys)
+	}
+	shared.Unlock()
+	if err := <-done; err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if len(fake.keys) != 2 {
+		t.Fatalf("expected key restored after lock release, got %v", fake.keys)
+	}
+	policy, err := repository.FindCPAAPIKeyPolicy(db, keyID)
+	if err != nil || policy.EnforcementState != string(keypolicy.StateActive) {
+		t.Fatalf("expected active state after restore, got %+v err %v", policy, err)
+	}
+}
+
+// TestRunnerEvaluateOnceIsSingleFlight 验证并发调用 EvaluateOnce 不会交错收敛：
+// 第一轮的 CPA GET 阻塞期间，第二轮必须等在 evalMu 上而不是同时打到 CPA。
+func TestRunnerEvaluateOnceIsSingleFlight(t *testing.T) {
+	db := newKeypolicyTestDB(t)
+	fake := &fakeCPAAPIKeys{keys: []string{"sk-sf", "sk-mate"}}
+	server := startFakeCPA(t, fake)
+	client := newCPAClient(t, server)
+	seedLimitedKey(t, db, "sk-sf", 100, 10)
+	runner := keypolicy.NewRunner(db, client, nil, time.Minute, logrus.New(), nil)
+
+	gate := make(chan struct{})
+	var mu sync.Mutex
+	inFlight, maxInFlight := 0, 0
+	fake.aroundGet = func(serve func()) {
+		mu.Lock()
+		inFlight++
+		if inFlight > maxInFlight {
+			maxInFlight = inFlight
+		}
+		mu.Unlock()
+		serve()
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		// gate 关闭前每个 GET 都停在写完响应之后、返回之前。
+		<-gate
+	}
+	first := make(chan error, 1)
+	second := make(chan error, 1)
+	go func() { first <- runner.EvaluateOnce(context.Background()) }()
+	time.Sleep(150 * time.Millisecond)
+	go func() { second <- runner.EvaluateOnce(context.Background()) }()
+	time.Sleep(150 * time.Millisecond)
+	mu.Lock()
+	observed := maxInFlight
+	mu.Unlock()
+	close(gate)
+	if observed > 1 {
+		t.Fatalf("expected single-flight evaluation, saw %d concurrent CPA gets", observed)
+	}
+	if err := <-first; err != nil {
+		t.Fatalf("first evaluate: %v", err)
+	}
+	if err := <-second; err != nil {
+		t.Fatalf("second evaluate: %v", err)
 	}
 }

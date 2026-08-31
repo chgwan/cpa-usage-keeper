@@ -2,6 +2,7 @@ package keypolicy
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"cpa-usage-keeper/internal/cpa"
@@ -13,8 +14,12 @@ import (
 	"gorm.io/gorm"
 )
 
-// skippedLogDedupWindow 控制 skipped_last_key 审计的写入频率，避免每分钟刷屏。
-const skippedLogDedupWindow = 10 * time.Minute
+const (
+	// skippedLogDedupWindow 控制 skipped_last_key 审计的写入频率，避免每分钟刷屏。
+	skippedLogDedupWindow = 10 * time.Minute
+	// keyPolicyDebounceInterval 合并连续 usage 提交唤醒，窗口内后续唤醒不重置计时。
+	keyPolicyDebounceInterval = 5 * time.Second
+)
 
 // Runner 周期性评估启用策略，并把 CPA key 状态收敛到目标态。
 type Runner struct {
@@ -24,22 +29,33 @@ type Runner struct {
 	interval time.Duration
 	logger   logrus.FieldLogger
 	now      func() time.Time
+	// keyMutations 与管理服务共享同一把 key 变更互斥锁，串行化双方的全量列表 PUT。
+	keyMutations sync.Locker
+	// evalMu 保证同一时刻只有一轮评估在收敛 CPA 状态。
+	evalMu sync.Mutex
 	// wake 是容量 1 的缓冲 channel，把任意多次唤醒合并成一个待处理信号。
 	wake chan struct{}
+	// debounceInterval 是唤醒后等待静默的 one-shot 窗口长度。
+	debounceInterval time.Duration
 }
 
 // NewRunner 构造执行器；interval 同时是兜底 tick 周期。
-func NewRunner(db *gorm.DB, client *cpa.Client, catalog *pricing.Catalog, interval time.Duration, logger logrus.FieldLogger) *Runner {
+// keyMutations 必须与管理服务注入同一实例，nil 时退化为独享锁（仅测试使用）。
+func NewRunner(db *gorm.DB, client *cpa.Client, catalog *pricing.Catalog, interval time.Duration, logger logrus.FieldLogger, keyMutations sync.Locker) *Runner {
 	if interval <= 0 {
 		interval = time.Minute
 	}
 	if logger == nil {
 		logger = logrus.StandardLogger()
 	}
+	if keyMutations == nil {
+		keyMutations = &sync.Mutex{}
+	}
 	return &Runner{
 		db: db, client: client, store: NewStore(db, catalog),
 		interval: interval, logger: logger.WithField("runner", "keypolicy"),
 		now: time.Now, wake: make(chan struct{}, 1),
+		keyMutations: keyMutations, debounceInterval: keyPolicyDebounceInterval,
 	}
 }
 
@@ -57,18 +73,39 @@ func (r *Runner) wakeNow() {
 	}
 }
 
-// Run 阻塞运行：先立即评估一次，之后按唤醒或 interval 推进。
+// Run 阻塞运行：先立即评估一次自愈历史状态；之后唤醒只进入 debounce 静默窗口，
+// 窗口到期（复用 usage aggregation runner 的 arm/不 reset 语义）或兜底 ticker 触发评估。
 func (r *Runner) Run(ctx context.Context) error {
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
 	r.evaluateSafe(ctx)
+	var debounce *time.Timer
 	for {
+		if debounce == nil {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-r.wake:
+				// 第一个唤醒进入静默窗口，窗口内的后续唤醒被容量 1 的 channel 自然吸收。
+				debounce = time.NewTimer(r.debounceInterval)
+			case <-ticker.C:
+				r.evaluateSafe(ctx)
+			}
+			continue
+		}
 		select {
 		case <-ctx.Done():
+			debounce.Stop()
 			return nil
-		case <-r.wake:
+		case <-debounce.C:
+			debounce = nil
 			r.evaluateSafe(ctx)
+		case <-r.wake:
+			// 已有待处理评估：吸收唤醒但不重置计时，保证最迟 5 秒必然执行。
 		case <-ticker.C:
+			// 兜底 tick 已经评估过，取消未触发的 debounce 避免紧接着二次评估。
+			debounce.Stop()
+			debounce = nil
 			r.evaluateSafe(ctx)
 		}
 	}
@@ -92,7 +129,10 @@ func (r *Runner) shouldWriteSkippedLog(cpaAPIKeyID int64, now time.Time) bool {
 }
 
 // EvaluateOnce 单轮评估：查询用量 → 判定 → 与 CPA 实际状态收敛。
+// evalMu 串行化整轮收敛，防止并发调用者交错出两次 DELETE / 两次全量 PUT。
 func (r *Runner) EvaluateOnce(ctx context.Context) error {
+	r.evalMu.Lock()
+	defer r.evalMu.Unlock()
 	rows, err := repository.ListEnabledCPAAPIKeyPolicies(r.db)
 	if err != nil {
 		return err
@@ -137,7 +177,16 @@ func (r *Runner) reconcileRow(ctx context.Context, row repository.CPAAPIKeyPolic
 			windowKey = WindowKey(monthly)
 		}
 		if state == StateDisabledByQuota {
-			// 已经禁用，只刷新评估时间。
+			// 状态已禁用但 key 可能仍在 CPA 服务：禁用流程在状态写成功后、DELETE 完成前崩溃，
+			// 或 DELETE 失败且状态回滚写也失败，都会停留在这个格点。每轮对在场 key 幂等重发
+			// DELETE 收敛——成功不写状态不刷审计，失败才落 failed/retry 等下一轮重试。
+			if present[row.APIKey] {
+				if _, err := r.client.DeleteManagementAPIKey(ctx, row.APIKey); err != nil {
+					r.logger.WithError(err).WithField("cpa_api_key_id", row.CPAAPIKeyID).Warn("re-disable api key in cpa failed")
+					r.writeLog(row.CPAAPIKeyID, "failed", "retry", breach, err.Error())
+					return
+				}
+			}
 			_ = repository.UpdateCPAAPIKeyPolicyRuntime(r.db, row.CPAAPIKeyID, string(state), row.DisabledWindowKey, now)
 			return
 		}
@@ -184,8 +233,12 @@ func (r *Runner) reconcileRow(ctx context.Context, row repository.CPAAPIKeyPolic
 }
 
 // restoreKey 用 GET→追加→PUT 把 key 加回 CPA；key 已在 CPA 时幂等跳过。
+// 全量 PUT 与管理服务的 Create/Restore 共享同一把 keyMutations 锁：GET 与 PUT 必须原子，
+// 否则与管理员的 GET→追加→PUT 交错会静默丢弃对方刚写入的 key。
 // PUT 成功但随后的状态更新失败时，下一轮仍处于 disabled_by_quota，会再次进入这里并直接跳过 PUT。
 func (r *Runner) restoreKey(ctx context.Context, row repository.CPAAPIKeyPolicyRow, daily, monthly Window, now time.Time) error {
+	r.keyMutations.Lock()
+	defer r.keyMutations.Unlock()
 	current, err := r.client.FetchManagementAPIKeys(ctx)
 	if err != nil {
 		return err
