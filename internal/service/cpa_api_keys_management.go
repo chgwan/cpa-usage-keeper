@@ -296,7 +296,17 @@ func (s *cpaAPIKeyManagementService) DisableCPAAPIKey(ctx context.Context, id in
 	if err != nil {
 		return err
 	}
-	// 先 GET：重复禁用或外部删除时 key 已不在 CPA，跳过 DELETE 直接落禁用状态，避免无谓的 404/502。
+	// TOCTOU：周期 metadata sync 不持有本服务的互斥锁。必须先把 disabled_manual 落库
+	//（sync 的策略保护立即生效），再向 CPA 发 DELETE；若先删后写，两次写之间的 sync tick
+	// 会因为状态仍是 active 把本地行软删掉，管理员看到的是 key 凭空消失而不是“手动禁用”。
+	if _, err := s.ensurePolicyRow(id); err != nil {
+		return err
+	}
+	if err := repository.UpdateCPAAPIKeyPolicyLifecycle(s.db, id, string(keypolicy.StateDisabledManual), "", true, s.now()); err != nil {
+		return err
+	}
+	// 先 GET 再决定是否 DELETE：重复禁用或外部删除时 key 已不在 CPA，跳过 DELETE 直接成功。
+	// DELETE 失败时状态已是 disabled_manual：本地行被策略保护、key 仍可见，重试禁用即可收敛。
 	current, err := s.fetchCPAKeyList(ctx)
 	if err != nil {
 		return err
@@ -305,18 +315,6 @@ func (s *cpaAPIKeyManagementService) DisableCPAAPIKey(ctx context.Context, id in
 		if _, err := s.client.DeleteManagementAPIKey(ctx, row.APIKey); err != nil {
 			return fmt.Errorf("%w: delete api key: %v", ErrCPARequestFailed, err)
 		}
-	}
-	if _, err := s.ensurePolicyRow(id); err != nil {
-		return err
-	}
-	policy, err := repository.FindCPAAPIKeyPolicy(s.db, id)
-	if err != nil {
-		return err
-	}
-	policy.AdminDisabled = true
-	policy.EnforcementState = string(keypolicy.StateDisabledManual)
-	if err := repository.UpsertCPAAPIKeyPolicy(s.db, &policy); err != nil {
-		return err
 	}
 	s.writeEnforcementLog(id, "disabled", "admin_action", "")
 	return nil
@@ -343,14 +341,8 @@ func (s *cpaAPIKeyManagementService) RestoreCPAAPIKey(ctx context.Context, id in
 	if _, err := s.ensurePolicyRow(id); err != nil {
 		return err
 	}
-	policy, err := repository.FindCPAAPIKeyPolicy(s.db, id)
-	if err != nil {
-		return err
-	}
-	policy.AdminDisabled = false
-	policy.EnforcementState = string(keypolicy.StateActive)
-	policy.DisabledWindowKey = ""
-	if err := repository.UpsertCPAAPIKeyPolicy(s.db, &policy); err != nil {
+	// 定向写生命周期状态：整行 upsert 会把读取时的运行时字段原样写回，同样存在覆盖并发写的问题。
+	if err := repository.UpdateCPAAPIKeyPolicyLifecycle(s.db, id, string(keypolicy.StateActive), "", false, s.now()); err != nil {
 		return err
 	}
 	s.writeEnforcementLog(id, "restored", "admin_action", "")
@@ -396,14 +388,13 @@ func (s *cpaAPIKeyManagementService) SaveCPAAPIKeyPolicy(ctx context.Context, id
 		}
 		encoded = string(raw)
 	}
-	policy, err := s.ensurePolicyRow(id)
-	if err != nil {
+	if _, err := s.ensurePolicyRow(id); err != nil {
 		return err
 	}
-	policy.Limits = encoded
-	policy.Enabled = enabled
-	// 保存策略时若此前被手动禁用则保持；仅清除超限禁用的标记由 runner 恢复流程处理。
-	return repository.UpsertCPAAPIKeyPolicy(s.db, &policy)
+	// 定向更新配置列：整行 upsert 会把读取时的 enforcement_state/admin_disabled/
+	// last_evaluated_at 原样写回，覆盖 runner 在读与写之间落下的并发禁用（保存期间
+	// runner 不持有 keyMutations）。禁用态是否解除由 runner 的恢复流程独立裁决。
+	return repository.UpdateCPAAPIKeyPolicyConfig(s.db, id, encoded, enabled)
 }
 
 func (s *cpaAPIKeyManagementService) ListCPAAPIKeyEnforcementLogs(_ context.Context, id int64, limit int) ([]entities.APIKeyEnforcementLog, error) {

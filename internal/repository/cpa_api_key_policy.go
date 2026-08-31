@@ -79,6 +79,34 @@ func UpdateCPAAPIKeyPolicyRuntime(db *gorm.DB, cpaAPIKeyID int64, state string, 
 		}).Error
 }
 
+// UpdateCPAAPIKeyPolicyConfig 只更新管理员可编辑的配置列（limits/enabled）。
+// 绝不触碰 runner 拥有的 enforcement_state / admin_disabled / disabled_window_key /
+// last_evaluated_at：读-改-写整行回写会把读取时的旧运行时值复活，覆盖 runner 在
+// 读与写之间落下的并发禁用（runner 的禁用路径不持有管理服务的互斥锁）。
+func UpdateCPAAPIKeyPolicyConfig(db *gorm.DB, cpaAPIKeyID int64, limits string, enabled bool) error {
+	return db.Clauses(dbresolver.Write).Model(&entities.CPAAPIKeyPolicy{}).
+		Where("cpa_api_key_id = ?", cpaAPIKeyID).
+		Updates(map[string]any{
+			"limits":     limits,
+			"enabled":    enabled,
+			"updated_at": time.Now(),
+		}).Error
+}
+
+// UpdateCPAAPIKeyPolicyLifecycle 写手动禁用/恢复的目标运行时状态：enforcement_state、
+// admin_disabled、disabled_window_key、last_evaluated_at 一次落库，limits/enabled 永不触碰。
+func UpdateCPAAPIKeyPolicyLifecycle(db *gorm.DB, cpaAPIKeyID int64, state string, disabledWindowKey string, adminDisabled bool, lastEvaluatedAt time.Time) error {
+	return db.Clauses(dbresolver.Write).Model(&entities.CPAAPIKeyPolicy{}).
+		Where("cpa_api_key_id = ?", cpaAPIKeyID).
+		Updates(map[string]any{
+			"enforcement_state":   state,
+			"admin_disabled":      adminDisabled,
+			"disabled_window_key": disabledWindowKey,
+			"last_evaluated_at":   lastEvaluatedAt,
+			"updated_at":          time.Now(),
+		}).Error
+}
+
 // DeleteCPAAPIKeyPolicy 在 key 被删除时清掉策略行。
 func DeleteCPAAPIKeyPolicy(db *gorm.DB, cpaAPIKeyID int64) error {
 	return db.Clauses(dbresolver.Write).Where("cpa_api_key_id = ?", cpaAPIKeyID).

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"cpa-usage-keeper/internal/cpa"
+	"cpa-usage-keeper/internal/entities"
 	"cpa-usage-keeper/internal/keypolicy"
 	"cpa-usage-keeper/internal/repository"
 	"cpa-usage-keeper/internal/service"
@@ -21,6 +22,8 @@ import (
 // fakeCPAAPIKeys 模拟 CPA api-keys 管理接口的内存实现。
 type fakeCPAAPIKeys struct {
 	keys []string
+	// onDelete 在 DELETE 已把 key 移出内存列表之后回调，用来在服务写入后续状态前插入竞态动作。
+	onDelete func()
 }
 
 func (f *fakeCPAAPIKeys) handler(t *testing.T) http.HandlerFunc {
@@ -64,6 +67,9 @@ func (f *fakeCPAAPIKeys) handler(t *testing.T) http.HandlerFunc {
 			for i, key := range f.keys {
 				if key == value {
 					f.keys = append(f.keys[:i], f.keys[i+1:]...)
+					if f.onDelete != nil {
+						f.onDelete()
+					}
 					_, _ = w.Write([]byte(`{"status":"ok"}`))
 					return
 				}
@@ -215,6 +221,90 @@ func TestSaveCPAAPIKeyPolicyValidatesLimits(t *testing.T) {
 	err := provider.SaveCPAAPIKeyPolicy(context.Background(), created.ID, bad, true)
 	if !errors.Is(err, service.ErrInvalidInput) {
 		t.Fatalf("expected invalid limits rejected as ErrInvalidInput, got %v", err)
+	}
+}
+
+// injectRunnerDisableOnPolicyRead 在服务读取策略行之后、写回之前注入一次 runner 式禁用：
+// runner 的禁用路径不持有 keyMutations，这正是线上“读-改-写整行回写覆盖并发禁用”的交错点。
+// GORM 的 After("gorm:query") 钩子在 rows 关闭后执行，此时可安全复用同一连接池写入。
+func injectRunnerDisableOnPolicyRead(t *testing.T, db *gorm.DB, cpaAPIKeyID int64) {
+	t.Helper()
+	var fired bool
+	err := db.Callback().Query().After("gorm:query").Register("test:runner_disable_race", func(tx *gorm.DB) {
+		if fired {
+			return
+		}
+		if _, ok := tx.Statement.Dest.(*entities.CPAAPIKeyPolicy); !ok {
+			return
+		}
+		fired = true
+		if err := db.Model(&entities.CPAAPIKeyPolicy{}).Where("cpa_api_key_id = ?", cpaAPIKeyID).
+			Updates(map[string]any{
+				"enforcement_state":   string(keypolicy.StateDisabledByQuota),
+				"disabled_window_key": "2026-08-31",
+				"last_evaluated_at":   time.Now(),
+				"updated_at":          time.Now(),
+			}).Error; err != nil {
+			t.Errorf("inject runner disable: %v", err)
+		}
+	})
+	if err != nil {
+		t.Fatalf("register race hook: %v", err)
+	}
+}
+
+// TestSaveCPAAPIKeyPolicyKeepsRunnerOwnedColumns 验证保存策略只写配置列：
+// 与 runner 并发禁用交错时，enforcement_state/admin_disabled/last_evaluated_at 不能被读到的旧值复活。
+func TestSaveCPAAPIKeyPolicyKeepsRunnerOwnedColumns(t *testing.T) {
+	provider, _, db := newManagementTestEnv(t)
+	created, _, _ := provider.CreateCPAAPIKey(context.Background(), "", "")
+	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), created.ID, nil, true); err != nil {
+		t.Fatalf("seed policy: %v", err)
+	}
+	injectRunnerDisableOnPolicyRead(t, db, created.ID)
+	newLimits := keypolicy.Limits{{Type: keypolicy.LimitTypeTokens, Window: keypolicy.LimitWindowDaily, Value: 42}}
+	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), created.ID, newLimits, false); err != nil {
+		t.Fatalf("save policy: %v", err)
+	}
+	policy, err := repository.FindCPAAPIKeyPolicy(db, created.ID)
+	if err != nil {
+		t.Fatalf("load policy: %v", err)
+	}
+	if policy.EnforcementState != string(keypolicy.StateDisabledByQuota) {
+		t.Fatalf("runner disable must survive concurrent policy save, got state %q", policy.EnforcementState)
+	}
+	if policy.LastEvaluatedAt == nil {
+		t.Fatal("runner-written last_evaluated_at must not be clobbered by policy save")
+	}
+	if policy.AdminDisabled {
+		t.Fatalf("runner disable does not set admin flag, got %+v", policy)
+	}
+	if policy.Enabled || !strings.Contains(policy.Limits, "42") {
+		t.Fatalf("config columns must still update, got %+v", policy)
+	}
+}
+
+// TestDisableCPAAPIKeySurvivesSyncBetweenDeleteAndState 复现手动禁用的 TOCTOU 窗口：
+// CPA DELETE 已生效、disabled_manual 尚未落库时插入一个 metadata sync tick，
+// 本地行不能被软删（否则管理员看到的不是“手动禁用”而是 key 凭空消失）。
+func TestDisableCPAAPIKeySurvivesSyncBetweenDeleteAndState(t *testing.T) {
+	provider, fake, db := newManagementTestEnv(t)
+	created, _, _ := provider.CreateCPAAPIKey(context.Background(), "", "")
+	fake.onDelete = func() {
+		// 此时 key 已被移出 CPA 列表，而服务还没写禁用状态：这正是 reap 窗口。
+		if err := repository.SyncCPAAPIKeys(db, fake.keys, time.Now()); err != nil {
+			t.Errorf("simulate metadata sync: %v", err)
+		}
+	}
+	if err := provider.DisableCPAAPIKey(context.Background(), created.ID); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if _, err := repository.FindActiveCPAAPIKeyByID(db, created.ID); err != nil {
+		t.Fatalf("sync between cpa delete and state write must not reap the key row: %v", err)
+	}
+	policy, err := repository.FindCPAAPIKeyPolicy(db, created.ID)
+	if err != nil || policy.EnforcementState != string(keypolicy.StateDisabledManual) || !policy.AdminDisabled {
+		t.Fatalf("expected manual-disabled policy, got %+v err %v", policy, err)
 	}
 }
 
