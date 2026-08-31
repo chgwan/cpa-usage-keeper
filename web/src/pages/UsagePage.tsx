@@ -821,6 +821,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const [apiKeySettingsSavingId, setApiKeySettingsSavingId] = useState<string | null>(null);
   const apiKeySettingsRequestControllerRef = useRef<AbortController | null>(null);
   const [policyModalKeyId, setPolicyModalKeyId] = useState<string | null>(null);
+  const [policyModalFallbackLabel, setPolicyModalFallbackLabel] = useState('');
   const [authSessions, setAuthSessions] = useState<AuthManagedSessionItem[]>([]);
   const [authSessionsLoading, setAuthSessionsLoading] = useState(false);
   const [authSessionsError, setAuthSessionsError] = useState('');
@@ -1139,16 +1140,23 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     }) ?? false
   ), [runApiKeyLifecycle]);
 
-  // 配额策略弹窗只记录 key id，展示用的 label 从设置列表解析；保存成功后弹窗自身重拉策略，
-  // 这里再刷新设置列表让进度条与状态徽章立即跟进。
+  // 配额策略弹窗的存活只跟随 policyModalKeyId：列表刷新失败（会清空 apiKeySettings）或条目暂时
+  // 消失时不能卸掉正在编辑的弹窗，也不允许它在下一次列表加载成功时自行复活。label 打开时从列表
+  // 捕获一次兜底，之后列表里解析到新值优先用新值。
   const openApiKeyPolicyModal = useCallback((id: string) => {
+    const item = apiKeySettings.find((entry) => entry.id === id);
+    setPolicyModalFallbackLabel(item?.keyAlias?.trim() || item?.label || item?.displayKey || '');
     setPolicyModalKeyId(id);
-  }, []);
+  }, [apiKeySettings]);
   const policyModalItem = useMemo(
     () => (policyModalKeyId === null ? null : apiKeySettings.find((item) => item.id === policyModalKeyId) ?? null),
     [apiKeySettings, policyModalKeyId],
   );
-  const policyModalLabel = policyModalItem?.keyAlias?.trim() || policyModalItem?.label || policyModalItem?.displayKey || '';
+  const policyModalLabel = policyModalItem?.keyAlias?.trim()
+    || policyModalItem?.label
+    || policyModalItem?.displayKey
+    || policyModalFallbackLabel
+    || t('usage_stats.api_key_policy_title');
 
   const handleRevokeAuthSession = useCallback(async (session: AuthManagedSessionItem) => {
     setAuthSessionRevokingId(session.id);
@@ -2355,9 +2363,9 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
         requestLogDownloading={requestLogDownloading}
         onClose={handleCredentialDetailClose}
       />
-      {policyModalItem && (
+      {policyModalKeyId !== null && (
         <ApiKeyPolicyModal
-          apiKeyId={policyModalItem.id}
+          apiKeyId={policyModalKeyId}
           apiKeyLabel={policyModalLabel}
           onClose={() => setPolicyModalKeyId(null)}
           onSaved={() => {

@@ -184,11 +184,14 @@ export function ApiKeyPolicyModal({ apiKeyId, apiKeyLabel, onClose, onSaved, onN
       <div className={styles.apiKeyPolicyStack}>
         <div className={styles.apiKeyPolicyHeader}>
           <span className={styles.apiKeyPolicyKeyLabel} title={apiKeyLabel}>{apiKeyLabel}</span>
-          <span
-            className={`${styles.apiKeyBadge} ${enforcementState !== 'active' ? styles.apiKeyBadgeBreached : ''}`.trim()}
-          >
-            {stateBadge}
-          </span>
+          {/* 徽章只反映已取到的策略状态：加载中或加载失败时不展示，避免闪现 “Active”。 */}
+          {!loading && policy && (
+            <span
+              className={`${styles.apiKeyBadge} ${enforcementState !== 'active' ? styles.apiKeyBadgeBreached : ''}`.trim()}
+            >
+              {stateBadge}
+            </span>
+          )}
         </div>
 
         {loading ? (
