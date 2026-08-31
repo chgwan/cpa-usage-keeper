@@ -2046,6 +2046,74 @@
   justify-content: center;
 }
 
+.apiKeySettingsHeaderActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.apiKeyCreateButton {
+  justify-content: center;
+}
+
+.apiKeyBadge {
+  align-self: flex-start;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
+  border-radius: $radius-full;
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--bg-primary) 82%, transparent);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.apiKeyBadgeBreached {
+  color: var(--danger-badge-text, #991b1b);
+  background: var(--danger-badge-bg, #fee2e2);
+  border-color: var(--danger-badge-border, #fca5a5);
+}
+
+.apiKeyCreateForm,
+.apiKeyRevealStack,
+.apiKeyConfirmStack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.apiKeyRevealStack p,
+.apiKeyConfirmStack p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.apiKeyRevealWarning {
+  color: var(--warning-color, #b45309);
+}
+
+.apiKeyRevealKeyRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.apiKeyRevealKey {
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: $radius-md;
+  border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
+  background: color-mix(in srgb, var(--bg-primary) 82%, transparent);
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  word-break: break-all;
+}
+
 .sessionSettingsCard:global(.card) {
   height: auto;
   min-height: auto;
