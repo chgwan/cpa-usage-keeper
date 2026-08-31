@@ -87,6 +87,8 @@ const (
 	migrationRebuildQuotaHistory = "20260822_rebuild_quota_history"
 	// migrationAddAuthSessionAlias 保存单个管理员会话的可选辨识名称。
 	migrationAddAuthSessionAlias = "20260824_add_auth_session_alias"
+	// migrationCreateAPIKeyPolicies 创建 API Key 限额策略表和执行审计表。
+	migrationCreateAPIKeyPolicies = "20260831_create_api_key_policies"
 )
 
 type schemaMigration struct {
@@ -211,6 +213,7 @@ func orderedMigrations() []databaseMigration {
 		// 破坏性清空与通用表创建必须和版本标记处于同一个默认事务。
 		{version: migrationRebuildQuotaHistory, run: rebuildQuotaHistoryMigration},
 		{version: migrationAddAuthSessionAlias, run: addAuthSessionAliasMigration},
+		{version: migrationCreateAPIKeyPolicies, run: createAPIKeyPoliciesMigration},
 	}
 }
 
