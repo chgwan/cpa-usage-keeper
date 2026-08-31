@@ -215,40 +215,44 @@ func TestCPAAPIKeyListRouteAttachesPolicySummaries(t *testing.T) {
 		},
 	}})
 
-	response := httptest.NewRecorder()
-	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/usage/api-keys", nil))
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
-	}
-	var parsed struct {
-		Items []struct {
-			Policy *struct {
-				Enabled          bool   `json:"enabled"`
-				EnforcementState string `json:"enforcementState"`
-				Tightest         *struct {
-					Type  string  `json:"type"`
-					Value float64 `json:"value"`
-					Used  float64 `json:"used"`
-					Ratio float64 `json:"ratio"`
-				} `json:"tightest"`
-			} `json:"policy"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(response.Body.Bytes(), &parsed); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if len(parsed.Items) != 2 {
-		t.Fatalf("expected two rows, got %+v", parsed.Items)
-	}
-	if parsed.Items[0].Policy == nil || !parsed.Items[0].Policy.Enabled || parsed.Items[0].Policy.Tightest == nil {
-		t.Fatalf("expected enriched policy summary on first row, got %+v", parsed.Items[0].Policy)
-	}
-	if parsed.Items[0].Policy.Tightest.Value != 100 || parsed.Items[0].Policy.Tightest.Used != 40 || parsed.Items[0].Policy.Tightest.Ratio != 0.4 {
-		t.Fatalf("expected tightest limit detail, got %+v", parsed.Items[0].Policy.Tightest)
-	}
-	// 没有策略行的 key 输出默认徽标：enabled=false、active、无限额。
-	if parsed.Items[1].Policy == nil || parsed.Items[1].Policy.Enabled || parsed.Items[1].Policy.EnforcementState != "active" || parsed.Items[1].Policy.Tightest != nil {
-		t.Fatalf("expected default policy summary on second row, got %+v", parsed.Items[1].Policy)
+	// 展示列表与设置列表走同一套徽标附加逻辑，两个端点的行都必须携带 policy。
+	for _, path := range []string{"/api/v1/usage/api-keys", "/api/v1/usage/api-keys/settings"} {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d: %s", path, response.Code, response.Body.String())
+		}
+		var parsed struct {
+			Items []struct {
+				APIKey string `json:"apiKey"`
+				Policy *struct {
+					Enabled          bool   `json:"enabled"`
+					EnforcementState string `json:"enforcementState"`
+					Tightest         *struct {
+						Type  string  `json:"type"`
+						Value float64 `json:"value"`
+						Used  float64 `json:"used"`
+						Ratio float64 `json:"ratio"`
+					} `json:"tightest"`
+				} `json:"policy"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &parsed); err != nil {
+			t.Fatalf("%s: decode response: %v", path, err)
+		}
+		if len(parsed.Items) != 2 {
+			t.Fatalf("%s: expected two rows, got %+v", path, parsed.Items)
+		}
+		if parsed.Items[0].Policy == nil || !parsed.Items[0].Policy.Enabled || parsed.Items[0].Policy.Tightest == nil {
+			t.Fatalf("%s: expected enriched policy summary on first row, got %+v", path, parsed.Items[0].Policy)
+		}
+		if parsed.Items[0].Policy.Tightest.Value != 100 || parsed.Items[0].Policy.Tightest.Used != 40 || parsed.Items[0].Policy.Tightest.Ratio != 0.4 {
+			t.Fatalf("%s: expected tightest limit detail, got %+v", path, parsed.Items[0].Policy.Tightest)
+		}
+		// 没有策略行的 key 输出默认徽标：enabled=false、active、无限额。
+		if parsed.Items[1].Policy == nil || parsed.Items[1].Policy.Enabled || parsed.Items[1].Policy.EnforcementState != "active" || parsed.Items[1].Policy.Tightest != nil {
+			t.Fatalf("%s: expected default policy summary on second row, got %+v", path, parsed.Items[1].Policy)
+		}
 	}
 }
 
@@ -259,13 +263,15 @@ func TestCPAAPIKeyListRouteOmitsPolicyWhenSummaryFails(t *testing.T) {
 		{ID: 1, APIKey: "sk-alpha123456"},
 	}}, &stubManagementProvider{summariesErr: errors.New("summary boom")})
 
-	response := httptest.NewRecorder()
-	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/usage/api-keys", nil))
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
-	}
-	// 汇总失败只降级徽标，不阻断列表，也不输出半空的 policy 字段。
-	if strings.Contains(response.Body.String(), `"policy"`) {
-		t.Fatalf("expected policy field to be omitted, got %s", response.Body.String())
+	for _, path := range []string{"/api/v1/usage/api-keys", "/api/v1/usage/api-keys/settings"} {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d: %s", path, response.Code, response.Body.String())
+		}
+		// 汇总失败只降级徽标，不阻断列表，也不输出半空的 policy 字段。
+		if strings.Contains(response.Body.String(), `"policy"`) {
+			t.Fatalf("%s: expected policy field to be omitted, got %s", path, response.Body.String())
+		}
 	}
 }

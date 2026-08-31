@@ -762,11 +762,11 @@ export interface CpaApiKeyDisplayItem {
   displayKey: string
   label: string
   lastSyncedAt: string | null
+  policy?: ApiKeyPolicySummary
 }
 
 export interface CpaApiKeySettingsItem extends CpaApiKeyDisplayItem {
   apiKey: string
-  policy?: ApiKeyPolicySummary
 }
 
 export type ApiKeyLimitType = 'requests' | 'tokens' | 'cost'

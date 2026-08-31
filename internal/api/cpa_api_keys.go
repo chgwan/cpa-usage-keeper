@@ -42,6 +42,8 @@ type cpaAPIKeySettingsResponse struct {
 	DisplayKey   string  `json:"displayKey"`
 	Label        string  `json:"label"`
 	LastSyncedAt *string `json:"lastSyncedAt"`
+	// Policy 与展示列表一致：徽标用策略摘要；管理服务不可用或汇总失败时省略。
+	Policy *cpaAPIKeyPolicySummaryResponse `json:"policy,omitempty"`
 }
 
 type cpaAPIKeySettingsListResponse struct {
@@ -71,7 +73,7 @@ func registerCPAAPIKeyRoutes(router gin.IRoutes, provider service.CPAAPIKeyProvi
 	})
 
 	router.GET("/usage/api-keys/settings", func(c *gin.Context) {
-		rows, err := listCPAAPIKeySettingsRows(c, provider)
+		rows, err := listCPAAPIKeySettingsRows(c, provider, managementProvider)
 		if err != nil {
 			return
 		}
@@ -123,6 +125,38 @@ func registerCPAAPIKeyRoutes(router gin.IRoutes, provider service.CPAAPIKeyProvi
 	})
 }
 
+// fetchCPAAPIKeyPolicySummaries 拉取策略摘要映射；管理服务未配置或汇总失败时返回 nil，
+// 调用方据此整体省略 policy 字段（徽标降级，绝不拖垮列表本身）。
+func fetchCPAAPIKeyPolicySummaries(ctx context.Context, managementProvider service.CPAAPIKeyManagementProvider) map[int64]service.CPAAPIKeyPolicySummary {
+	if managementProvider == nil {
+		return nil
+	}
+	summaries, err := managementProvider.ListCPAAPIKeyPolicySummaries(ctx)
+	if err != nil {
+		return nil
+	}
+	return summaries
+}
+
+// attachCPAAPIKeyPolicySummaries 是两个列表端点共用的行构建器：基础行转换后统一附加策略徽标。
+// summaries 为 nil 时省略 policy；没有摘要行的 key（未启用策略）输出默认徽标。
+func attachCPAAPIKeyPolicySummaries[T any](rows []entities.CPAAPIKey, summaries map[int64]service.CPAAPIKeyPolicySummary, toRow func(entities.CPAAPIKey, *cpaAPIKeyPolicySummaryResponse) T) []T {
+	response := make([]T, 0, len(rows))
+	for _, row := range rows {
+		policy := (*cpaAPIKeyPolicySummaryResponse)(nil)
+		if summaries != nil {
+			summary, ok := summaries[row.ID]
+			if !ok {
+				// 没有启用策略行的 key 输出默认徽标。
+				summary = service.CPAAPIKeyPolicySummary{Enabled: false, EnforcementState: string(keypolicy.StateActive)}
+			}
+			policy = toCPAAPIKeyPolicySummaryResponse(summary)
+		}
+		response = append(response, toRow(row, policy))
+	}
+	return response
+}
+
 func listCPAAPIKeyRows(c *gin.Context, provider service.CPAAPIKeyProvider, managementProvider service.CPAAPIKeyManagementProvider) ([]cpaAPIKeyResponse, error) {
 	if provider == nil {
 		return []cpaAPIKeyResponse{}, nil
@@ -132,30 +166,15 @@ func listCPAAPIKeyRows(c *gin.Context, provider service.CPAAPIKeyProvider, manag
 		writeInternalError(c, "list api keys failed", err)
 		return nil, err
 	}
-	// 汇总失败只降级徽标字段，绝不拖垮整个列表。
-	var summaries map[int64]service.CPAAPIKeyPolicySummary
-	if managementProvider != nil {
-		if fetched, err := managementProvider.ListCPAAPIKeyPolicySummaries(c.Request.Context()); err == nil {
-			summaries = fetched
-		}
-	}
-	response := make([]cpaAPIKeyResponse, 0, len(rows))
-	for _, row := range rows {
+	summaries := fetchCPAAPIKeyPolicySummaries(c.Request.Context(), managementProvider)
+	return attachCPAAPIKeyPolicySummaries(rows, summaries, func(row entities.CPAAPIKey, policy *cpaAPIKeyPolicySummaryResponse) cpaAPIKeyResponse {
 		item := toCPAAPIKeyResponse(row)
-		if summaries != nil {
-			summary, ok := summaries[row.ID]
-			if !ok {
-				// 没有启用策略行的 key 输出默认徽标。
-				summary = service.CPAAPIKeyPolicySummary{Enabled: false, EnforcementState: string(keypolicy.StateActive)}
-			}
-			item.Policy = toCPAAPIKeyPolicySummaryResponse(summary)
-		}
-		response = append(response, item)
-	}
-	return response, nil
+		item.Policy = policy
+		return item
+	}), nil
 }
 
-func listCPAAPIKeySettingsRows(c *gin.Context, provider service.CPAAPIKeyProvider) ([]cpaAPIKeySettingsResponse, error) {
+func listCPAAPIKeySettingsRows(c *gin.Context, provider service.CPAAPIKeyProvider, managementProvider service.CPAAPIKeyManagementProvider) ([]cpaAPIKeySettingsResponse, error) {
 	if provider == nil {
 		return []cpaAPIKeySettingsResponse{}, nil
 	}
@@ -164,11 +183,12 @@ func listCPAAPIKeySettingsRows(c *gin.Context, provider service.CPAAPIKeyProvide
 		writeInternalError(c, "list api key settings failed", err)
 		return nil, err
 	}
-	response := make([]cpaAPIKeySettingsResponse, 0, len(rows))
-	for _, row := range rows {
-		response = append(response, toCPAAPIKeySettingsResponse(row))
-	}
-	return response, nil
+	summaries := fetchCPAAPIKeyPolicySummaries(c.Request.Context(), managementProvider)
+	return attachCPAAPIKeyPolicySummaries(rows, summaries, func(row entities.CPAAPIKey, policy *cpaAPIKeyPolicySummaryResponse) cpaAPIKeySettingsResponse {
+		item := toCPAAPIKeySettingsResponse(row)
+		item.Policy = policy
+		return item
+	}), nil
 }
 
 func listCPAAPIKeyOptionRows(c *gin.Context, provider service.CPAAPIKeyProvider) ([]cpaAPIKeyOption, error) {
