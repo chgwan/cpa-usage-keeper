@@ -75,6 +75,8 @@ CPA Usage Keeper 是面向 [CLIProxyAPI（CPA）](https://github.com/router-for-
 - 监控 Auth Files 与 AI Providers 的用量、健康状态和限额，支持健康巡检与限额刷新
 - 可选择加入社区排名，按综合得分、Token、请求量、缓存率、平均 TTFT/延迟或峰值 TPM/RPM 对比表现
 - 为单个 CPA API Key 提供独立的只读用量视图
+- 在 Dashboard 中管理 CPA API Key：新建、重新生成（保留别名和配额策略）、禁用、恢复和删除，全部通过 CPA 原生管理接口完成
+- 可选的按 Key 用量配额（请求次数 / Tokens / 费用，按今日或本月窗口统计），超出限额时自动从 CPA 移除对应的 API Key，并在窗口重置后自动恢复
 - 自动同步 CPA Auth Files、API Keys 和 AI Providers，并维护模型价格用于成本估算
 - 支持 Docker/Docker Compose、Homebrew、二进制和 systemd 部署，并可启用密码保护
 - 通过 CPA 插件将 Keeper Dashboard 嵌入 CPAMC
@@ -402,6 +404,18 @@ cp .env.example .env
 登录后，在用量页设置中找到**两步验证**：点击**启用两步验证**，用验证器应用（Google Authenticator、1Password、Authy 等）扫描二维码，并输入当前 6 位动态码确认。此后管理员密码登录还需输入动态码。停用两步验证需要登录密码和有效动态码。
 
 丢失验证器时，设置 `AUTH_TOTP_RESET=true` 并重启 Keeper，仅凭密码登录，然后删除该变量并再次重启。动态码为 TOTP（30 秒步长，容忍 ±1 步）；若所有动态码均被拒绝，请检查服务器时钟。
+
+### API Key 管理与配额
+
+可以在用量页设置中管理 API Key。新建 API Key 时完整值只显示一次。重新生成会替换 CPA 中的 key 值，本地保留别名、配额策略和排名头像；历史用量仍归属旧的 key 字符串。
+
+每个 API Key 都可以配置用量限额：请求次数、Tokens 或估算费用（USD），并分别按 `TZ` 日历的今日或本月窗口统计。任一已配置限额被触发后，Keeper 会把这个 API Key 从 CPA 移除，使用它的请求会在几秒内失败；窗口重置（或用量回落到限额以下）后，这个 API Key 会被自动加回。注意：
+
+- CPA 中最后一个 API Key 永远不会被自动禁用。
+- 执行是响应式的：从超限到移除之间发出的请求仍然会成功，Keeper 不在请求链路中。
+- 费用限额基于已配置的模型价格，未定价的模型按 0 计。
+- 手动禁用的 API Key 会保持禁用状态，直到在界面中恢复。
+- 所有执行动作都会按 API Key 记录，并可在配额弹窗中查看。
 
 ### 时区与请求行为
 
