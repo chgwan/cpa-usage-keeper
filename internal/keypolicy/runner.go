@@ -152,14 +152,31 @@ func (r *Runner) EvaluateOnce(ctx context.Context) error {
 	for _, key := range currentKeys.Payload.APIKeys {
 		present[key] = true
 	}
+	round := &roundState{remaining: len(currentKeys.Payload.APIKeys), present: present}
 	for _, row := range rows {
-		r.reconcileRow(ctx, row, usage[row.CPAAPIKeyID], present, len(currentKeys.Payload.APIKeys), daily, monthly, now)
+		r.reconcileRow(ctx, row, usage[row.CPAAPIKeyID], round, daily, monthly, now)
 	}
 	return nil
 }
 
+// roundState 是单轮评估共享的可变 CPA 视图。每条策略看到的 key 数量必须反映本轮
+// 已发生的删除：若各分支沿用轮首快照，CPA=[A,B] 双双超限时 A 删除成功后 B 仍按
+// 旧计数 2 放行，最后一个 key 会被删空，所有客户端立即断连。
+type roundState struct {
+	// remaining 是 CPA 当前 key 数量；收缩到 1 时任何自动 DELETE 都必须跳过。
+	remaining int
+	// present 记录 key 是否仍在 CPA 服务里，DELETE 成功后立即移除。
+	present map[string]bool
+}
+
+// shrink 只在 DELETE 成功后收缩轮内视图；失败路径绝不调用，下一轮以全新 GET 重建真相。
+func (s *roundState) shrink(apiKey string) {
+	delete(s.present, apiKey)
+	s.remaining--
+}
+
 // reconcileRow 把单条策略收敛到目标态，所有分支独立容错。
-func (r *Runner) reconcileRow(ctx context.Context, row repository.CPAAPIKeyPolicyRow, usage UsageByWindow, present map[string]bool, cpaKeyCount int, daily, monthly Window, now time.Time) {
+func (r *Runner) reconcileRow(ctx context.Context, row repository.CPAAPIKeyPolicyRow, usage UsageByWindow, round *roundState, daily, monthly Window, now time.Time) {
 	limits, err := ParseLimits(row.Limits)
 	if err != nil {
 		r.logger.WithError(err).WithField("cpa_api_key_id", row.CPAAPIKeyID).Warn("parse api key limits failed")
@@ -180,18 +197,27 @@ func (r *Runner) reconcileRow(ctx context.Context, row repository.CPAAPIKeyPolic
 			// 状态已禁用但 key 可能仍在 CPA 服务：禁用流程在状态写成功后、DELETE 完成前崩溃，
 			// 或 DELETE 失败且状态回滚写也失败，都会停留在这个格点。每轮对在场 key 幂等重发
 			// DELETE 收敛——成功不写状态不刷审计，失败才落 failed/retry 等下一轮重试。
-			if present[row.APIKey] {
+			if round.present[row.APIKey] {
+				// 补发 DELETE 同样受 last-key 守卫：残留 key 已是 CPA 最后一个时不能删空。
+				if round.remaining <= 1 {
+					if r.shouldWriteSkippedLog(row.CPAAPIKeyID, now) {
+						r.writeLog(row.CPAAPIKeyID, "skipped_last_key", "limit_breached", breach, "last remaining api key")
+					}
+					_ = repository.UpdateCPAAPIKeyPolicyRuntime(r.db, row.CPAAPIKeyID, string(state), row.DisabledWindowKey, now)
+					return
+				}
 				if _, err := r.client.DeleteManagementAPIKey(ctx, row.APIKey); err != nil {
 					r.logger.WithError(err).WithField("cpa_api_key_id", row.CPAAPIKeyID).Warn("re-disable api key in cpa failed")
 					r.writeLog(row.CPAAPIKeyID, "failed", "retry", breach, err.Error())
 					return
 				}
+				round.shrink(row.APIKey)
 			}
 			_ = repository.UpdateCPAAPIKeyPolicyRuntime(r.db, row.CPAAPIKeyID, string(state), row.DisabledWindowKey, now)
 			return
 		}
-		// 最后一个 key 永不自动禁用。
-		if cpaKeyCount <= 1 {
+		// 最后一个 key 永不自动禁用；计数取轮内实时值，本轮早先的删除已经收缩。
+		if round.remaining <= 1 {
 			if r.shouldWriteSkippedLog(row.CPAAPIKeyID, now) {
 				r.writeLog(row.CPAAPIKeyID, "skipped_last_key", "limit_breached", breach, "last remaining api key")
 			}
@@ -206,7 +232,7 @@ func (r *Runner) reconcileRow(ctx context.Context, row repository.CPAAPIKeyPolic
 			r.logger.WithError(err).WithField("cpa_api_key_id", row.CPAAPIKeyID).Warn("update api key policy state failed")
 			return
 		}
-		if present[row.APIKey] {
+		if round.present[row.APIKey] {
 			if _, err := r.client.DeleteManagementAPIKey(ctx, row.APIKey); err != nil {
 				r.logger.WithError(err).WithField("cpa_api_key_id", row.CPAAPIKeyID).Warn("disable api key in cpa failed")
 				// 状态回滚为 active：key 仍留在 CPA，下一轮评估会再次尝试删除并重新落禁用状态。
@@ -216,6 +242,7 @@ func (r *Runner) reconcileRow(ctx context.Context, row repository.CPAAPIKeyPolic
 				r.writeLog(row.CPAAPIKeyID, "failed", "retry", breach, err.Error())
 				return
 			}
+			round.shrink(row.APIKey)
 		}
 		r.writeLog(row.CPAAPIKeyID, "disabled", "limit_breached", breach, "")
 		return

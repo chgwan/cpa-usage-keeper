@@ -197,6 +197,68 @@ func TestRunnerNeverDisablesLastKey(t *testing.T) {
 	}
 }
 
+// TestRunnerKeepsLastKeyWhenTwoKeysBreachInSameRound 复现同轮双超限竞态：
+// CPA=[A,B] 同时超限时，A 删除成功后轮内计数必须收缩，B 必须命中 last-key 守卫被跳过，
+// 绝不能出现两个 key 都被删光、所有客户端立即断连的结局。
+func TestRunnerKeepsLastKeyWhenTwoKeysBreachInSameRound(t *testing.T) {
+	db := newKeypolicyTestDB(t)
+	fake := &fakeCPAAPIKeys{keys: []string{"sk-round-a", "sk-round-b"}}
+	server := startFakeCPA(t, fake)
+	client := newCPAClient(t, server)
+	idA := seedLimitedKey(t, db, "sk-round-a", 100, 150)
+	idB := seedLimitedKey(t, db, "sk-round-b", 100, 150)
+	runner := keypolicy.NewRunner(db, client, nil, time.Minute, logrus.New(), nil)
+	if err := runner.EvaluateOnce(context.Background()); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	// 策略按 cpa_api_key_id 升序收敛：A 先被禁用并删除，B 是最后一个 key 必须留在 CPA。
+	policyA, err := repository.FindCPAAPIKeyPolicy(db, idA)
+	if err != nil || policyA.EnforcementState != string(keypolicy.StateDisabledByQuota) {
+		t.Fatalf("expected first breached key disabled_by_quota, got %+v err %v", policyA, err)
+	}
+	policyB, err := repository.FindCPAAPIKeyPolicy(db, idB)
+	if err != nil || policyB.EnforcementState != string(keypolicy.StateActive) {
+		t.Fatalf("expected last key to stay active, got %+v err %v", policyB, err)
+	}
+	if len(fake.keys) != 1 || fake.keys[0] != "sk-round-b" {
+		t.Fatalf("exactly the first breached key may be removed, got %v", fake.keys)
+	}
+	logs, _ := repository.ListAPIKeyEnforcementLogs(db, idB, 10)
+	if len(logs) == 0 || logs[0].Action != "skipped_last_key" {
+		t.Fatalf("expected skipped_last_key audit for last key, got %+v", logs)
+	}
+}
+
+// TestRunnerReDisableSkipsWhenKeyIsLastRemaining 验证幂等补发 DELETE 同样受 last-key 守卫：
+// 残留 disabled_by_quota 状态的 key 是 CPA 里最后一个 key 时不能被补发删除删空。
+func TestRunnerReDisableSkipsWhenKeyIsLastRemaining(t *testing.T) {
+	db := newKeypolicyTestDB(t)
+	fake := &fakeCPAAPIKeys{keys: []string{"sk-zombie-last"}}
+	server := startFakeCPA(t, fake)
+	client := newCPAClient(t, server)
+	keyID := seedLimitedKey(t, db, "sk-zombie-last", 100, 150)
+	// 直接落库模拟崩溃窗口：状态先写成功，DELETE 尚未发出，且它是 CPA 里唯一的 key。
+	if err := repository.UpdateCPAAPIKeyPolicyRuntime(db, keyID,
+		string(keypolicy.StateDisabledByQuota), keypolicy.WindowKey(keypolicy.DailyWindow(time.Now())), time.Now()); err != nil {
+		t.Fatalf("seed disabled state: %v", err)
+	}
+	runner := keypolicy.NewRunner(db, client, nil, time.Minute, logrus.New(), nil)
+	if err := runner.EvaluateOnce(context.Background()); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if len(fake.keys) != 1 || fake.keys[0] != "sk-zombie-last" {
+		t.Fatalf("last remaining key must not be re-deleted, got %v", fake.keys)
+	}
+	policy, err := repository.FindCPAAPIKeyPolicy(db, keyID)
+	if err != nil || policy.EnforcementState != string(keypolicy.StateDisabledByQuota) {
+		t.Fatalf("expected state to stay disabled_by_quota, got %+v err %v", policy, err)
+	}
+	logs, _ := repository.ListAPIKeyEnforcementLogs(db, keyID, 10)
+	if len(logs) == 0 || logs[0].Action != "skipped_last_key" {
+		t.Fatalf("expected skipped_last_key audit, got %+v", logs)
+	}
+}
+
 func TestRunnerKeepsManualDisableAcrossEvaluations(t *testing.T) {
 	db := newKeypolicyTestDB(t)
 	fake := &fakeCPAAPIKeys{keys: []string{}}
