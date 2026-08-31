@@ -39,6 +39,10 @@ func (f *fakeCPAAPIKeys) handler(t *testing.T) http.HandlerFunc {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
+			// 空 items 的 PUT 会清空 CPA 全部 key，服务层永远不允许发出。
+			if len(body.Items) == 0 {
+				t.Errorf("must never PUT an empty key list")
+			}
 			f.keys = body.Items
 			_, _ = w.Write([]byte(`{"status":"ok"}`))
 		case http.MethodPatch:
@@ -213,5 +217,82 @@ func TestCPAWriteFailureSurfacesAsSentinelError(t *testing.T) {
 	provider := service.NewCPAAPIKeyManagementService(db, cpa.NewClient(server.URL, "mgmt", 5*time.Second, false), nil)
 	if _, _, err := provider.CreateCPAAPIKey(context.Background(), "", ""); !errors.Is(err, service.ErrCPARequestFailed) {
 		t.Fatalf("expected ErrCPARequestFailed, got %v", err)
+	}
+}
+
+// simulateMetadataSync 用 CPA 当前列表跑一次与周期 metadata sync 相同的本地落地逻辑。
+func simulateMetadataSync(t *testing.T, db *gorm.DB, fake *fakeCPAAPIKeys) {
+	t.Helper()
+	if err := repository.SyncCPAAPIKeys(db, fake.keys, time.Now()); err != nil {
+		t.Fatalf("simulate metadata sync: %v", err)
+	}
+}
+
+func TestDisabledKeySurvivesMetadataSyncAndRestores(t *testing.T) {
+	provider, fake, db := newManagementTestEnv(t)
+	created, fullKey, _ := provider.CreateCPAAPIKey(context.Background(), "", "")
+	if err := provider.DisableCPAAPIKey(context.Background(), created.ID); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	// 模拟周期 metadata sync：CPA 列表已不含被禁 key，本地行不能被误标删除。
+	simulateMetadataSync(t, db, fake)
+	if _, err := repository.FindActiveCPAAPIKeyByID(db, created.ID); err != nil {
+		t.Fatalf("sync must not soft-delete policy-held key: %v", err)
+	}
+	// sync 之后恢复必须仍然可用，且 key 回到 CPA。
+	if err := provider.RestoreCPAAPIKey(context.Background(), created.ID); err != nil {
+		t.Fatalf("restore after sync: %v", err)
+	}
+	if len(fake.keys) != 2 || fake.keys[1] != fullKey {
+		t.Fatalf("expected key re-added to CPA, got %v", fake.keys)
+	}
+	policy, err := repository.FindCPAAPIKeyPolicy(db, created.ID)
+	if err != nil || policy.EnforcementState != string(keypolicy.StateActive) || policy.AdminDisabled {
+		t.Fatalf("expected active policy after restore, got %+v err %v", policy, err)
+	}
+}
+
+func TestDisableCPAAPIKeyToleratesAlreadyAbsentKey(t *testing.T) {
+	provider, fake, db := newManagementTestEnv(t)
+	created, _, _ := provider.CreateCPAAPIKey(context.Background(), "", "")
+	if err := provider.DisableCPAAPIKey(context.Background(), created.ID); err != nil {
+		t.Fatalf("first disable: %v", err)
+	}
+	// 第二次禁用时 key 已不在 CPA，GET-first 语义下必须直接成功而不是 404/502。
+	if err := provider.DisableCPAAPIKey(context.Background(), created.ID); err != nil {
+		t.Fatalf("second disable: %v", err)
+	}
+	if len(fake.keys) != 1 {
+		t.Fatalf("expected CPA list untouched, got %v", fake.keys)
+	}
+	policy, err := repository.FindCPAAPIKeyPolicy(db, created.ID)
+	if err != nil || policy.EnforcementState != string(keypolicy.StateDisabledManual) || !policy.AdminDisabled {
+		t.Fatalf("expected manual-disabled policy, got %+v err %v", policy, err)
+	}
+}
+
+func TestDeleteCPAAPIKeyAfterDisableMarksRowDeleted(t *testing.T) {
+	provider, fake, db := newManagementTestEnv(t)
+	created, fullKey, _ := provider.CreateCPAAPIKey(context.Background(), "", "")
+	if err := provider.DisableCPAAPIKey(context.Background(), created.ID); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	// 模拟 sync：禁用中的 key 被策略保护，本地行仍可找到。
+	simulateMetadataSync(t, db, fake)
+	if _, err := repository.FindActiveCPAAPIKeyByID(db, created.ID); err != nil {
+		t.Fatalf("sync must not soft-delete policy-held key: %v", err)
+	}
+	// 删除必须先清策略行再 sync，否则被保护的 key 会留下永久的 active 幽灵行。
+	if err := provider.DeleteCPAAPIKey(context.Background(), created.ID); err != nil {
+		t.Fatalf("delete after disable: %v", err)
+	}
+	if _, err := repository.FindActiveCPAAPIKeyByID(db, created.ID); err == nil {
+		t.Fatal("expected local row marked deleted after delete")
+	}
+	if _, err := repository.FindCPAAPIKeyPolicy(db, created.ID); err == nil {
+		t.Fatal("expected policy row removed after delete")
+	}
+	if len(fake.keys) != 1 || fake.keys[0] == fullKey {
+		t.Fatalf("expected only bystander key left in CPA, got %v", fake.keys)
 	}
 }

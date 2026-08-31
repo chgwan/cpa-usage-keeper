@@ -6,6 +6,7 @@ import (
 
 	"cpa-usage-keeper/internal/entities"
 	"cpa-usage-keeper/internal/helper"
+	"cpa-usage-keeper/internal/keypolicy"
 
 	"gorm.io/gorm"
 	"gorm.io/plugin/dbresolver"
@@ -89,8 +90,38 @@ func SyncCPAAPIKeys(db *gorm.DB, keys []string, syncedAt time.Time) error {
 		if len(staleIDs) == 0 {
 			return nil
 		}
-		return tx.Model(&entities.CPAAPIKey{}).Where("id IN ?", staleIDs).Updates(map[string]any{"is_deleted": true, "updated_at": syncedAt}).Error
+		// 被策略禁用的 key 是 Keeper 主动移出 CPA 的，缺席不代表过期，sync 必须保留本地行。
+		held, err := policyHeldKeyIDs(tx)
+		if err != nil {
+			return err
+		}
+		deletableIDs := make([]int64, 0, len(staleIDs))
+		for _, id := range staleIDs {
+			if _, ok := held[id]; ok {
+				continue
+			}
+			deletableIDs = append(deletableIDs, id)
+		}
+		if len(deletableIDs) == 0 {
+			return nil
+		}
+		return tx.Model(&entities.CPAAPIKey{}).Where("id IN ?", deletableIDs).Updates(map[string]any{"is_deleted": true, "updated_at": syncedAt}).Error
 	})
+}
+
+// policyHeldKeyIDs 返回执行状态非 active 的 key id 集合；这些 key 因禁用被有意移出 CPA。
+func policyHeldKeyIDs(tx *gorm.DB) (map[int64]struct{}, error) {
+	var ids []int64
+	if err := tx.Model(&entities.CPAAPIKeyPolicy{}).
+		Where("enforcement_state <> ?", string(keypolicy.StateActive)).
+		Pluck("cpa_api_key_id", &ids).Error; err != nil {
+		return nil, err
+	}
+	held := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		held[id] = struct{}{}
+	}
+	return held, nil
 }
 
 func ListActiveCPAAPIKeys(db *gorm.DB) ([]entities.CPAAPIKey, error) {

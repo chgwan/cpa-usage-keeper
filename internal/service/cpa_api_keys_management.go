@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -179,10 +180,8 @@ func (s *cpaAPIKeyManagementService) CreateCPAAPIKey(ctx context.Context, keyAli
 	if err != nil {
 		return entities.CPAAPIKey{}, "", err
 	}
-	for _, existing := range current {
-		if existing == newKey {
-			return entities.CPAAPIKey{}, "", errors.New("api key already exists")
-		}
+	if slices.Contains(current, newKey) {
+		return entities.CPAAPIKey{}, "", errors.New("api key already exists")
 	}
 	// 全量 PUT 只发刚 GET 到的列表加新 key，绝不凭空构造列表。
 	next := append(current, newKey)
@@ -244,18 +243,32 @@ func (s *cpaAPIKeyManagementService) DeleteCPAAPIKey(ctx context.Context, id int
 	if err != nil {
 		return err
 	}
-	if _, err := s.client.DeleteManagementAPIKey(ctx, row.APIKey); err != nil {
-		return fmt.Errorf("%w: delete api key: %v", ErrCPARequestFailed, err)
-	}
+	// 先 GET 再决定是否 DELETE：禁用过的 key 本就不在 CPA 里，直接 DELETE 会 404。
 	current, err := s.fetchCPAKeyList(ctx)
 	if err != nil {
 		return err
 	}
+	present := slices.Contains(current, row.APIKey)
+	if present {
+		if _, err := s.client.DeleteManagementAPIKey(ctx, row.APIKey); err != nil {
+			return fmt.Errorf("%w: delete api key: %v", ErrCPARequestFailed, err)
+		}
+	}
+	// 策略行必须先于 sync 删除，否则 sync 会把该 key 视为“被策略有意移出”而留下 active 幽灵行。
+	if err := repository.DeleteCPAAPIKeyPolicy(s.db, id); err != nil {
+		return err
+	}
+	if present {
+		// 删除成功后回读权威列表再落地本地行。
+		if current, err = s.fetchCPAKeyList(ctx); err != nil {
+			return err
+		}
+	}
 	if err := s.syncLocalKeys(current); err != nil {
 		return err
 	}
-	// 策略随 key 删除；审计日志保留。
-	return repository.DeleteCPAAPIKeyPolicy(s.db, id)
+	// 审计日志保留。
+	return nil
 }
 
 func (s *cpaAPIKeyManagementService) DisableCPAAPIKey(ctx context.Context, id int64) error {
@@ -265,8 +278,15 @@ func (s *cpaAPIKeyManagementService) DisableCPAAPIKey(ctx context.Context, id in
 	if err != nil {
 		return err
 	}
-	if _, err := s.client.DeleteManagementAPIKey(ctx, row.APIKey); err != nil {
-		return fmt.Errorf("%w: delete api key: %v", ErrCPARequestFailed, err)
+	// 先 GET：重复禁用或外部删除时 key 已不在 CPA，跳过 DELETE 直接落禁用状态，避免无谓的 404/502。
+	current, err := s.fetchCPAKeyList(ctx)
+	if err != nil {
+		return err
+	}
+	if slices.Contains(current, row.APIKey) {
+		if _, err := s.client.DeleteManagementAPIKey(ctx, row.APIKey); err != nil {
+			return fmt.Errorf("%w: delete api key: %v", ErrCPARequestFailed, err)
+		}
 	}
 	if _, err := s.ensurePolicyRow(id); err != nil {
 		return err
@@ -295,13 +315,7 @@ func (s *cpaAPIKeyManagementService) RestoreCPAAPIKey(ctx context.Context, id in
 	if err != nil {
 		return err
 	}
-	missing := true
-	for _, existing := range current {
-		if existing == row.APIKey {
-			missing = false
-			break
-		}
-	}
+	missing := !slices.Contains(current, row.APIKey)
 	// 只有 key 确实不在 CPA 时才做 GET+追加 的全量 PUT。
 	if missing {
 		if err := s.replaceCPAKeyList(ctx, append(current, row.APIKey)); err != nil {
