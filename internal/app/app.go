@@ -316,6 +316,8 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 		OnDisplayNameChanged: quotaService.UpdateUsageIdentityDisplayNameSnapshot,
 	})
 	cpaAPIKeyService := service.NewCPAAPIKeyService(db)
+	// 生命周期与限额策略服务复用同一个 DB、CPA client 和价格目录，Task 8 的执行 runner 沿用同一实例语义。
+	cpaAPIKeyManagementService := service.NewCPAAPIKeyManagementService(db, cpaClient, pricingCatalog)
 	authFilesManagementService := service.NewAuthFilesManagementService(cpaClient)
 	if cfg.TLSSkipVerify {
 		logrus.WithField("cpa_base_url", cfg.CPABaseURL).Warn("TLS certificate verification is disabled for CPA and Redis queue connections")
@@ -375,10 +377,12 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 				ErrorEvents:   errorEventService,
 				Quota:         quotaService,
 				CPAAPIKeys:    cpaAPIKeyService,
-				AuthFiles:     authFilesManagementService,
-				RequestLogs:   requestLogService,
-				Ranking:       rankingService,
-				LocalRanking:  localRankingService,
+				// CPAAPIKeyManagement 让管理端 key 生命周期与限额策略路由可用。
+				CPAAPIKeyManagement: cpaAPIKeyManagementService,
+				AuthFiles:           authFilesManagementService,
+				RequestLogs:         requestLogService,
+				Ranking:             rankingService,
+				LocalRanking:        localRankingService,
 				Status: api.StatusRouteConfig{
 					CPAPublicURL:               cfg.CPAPublicURL,
 					CPARequestLogAccessEnabled: cfg.CPARequestLogAccessEnabled,

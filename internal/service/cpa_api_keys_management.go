@@ -46,6 +46,8 @@ type CPAAPIKeyManagementProvider interface {
 	SaveCPAAPIKeyPolicy(ctx context.Context, id int64, limits keypolicy.Limits, enabled bool) error
 	// ListCPAAPIKeyEnforcementLogs 返回审计记录，新事件在前。
 	ListCPAAPIKeyEnforcementLogs(ctx context.Context, id int64, limit int) ([]entities.APIKeyEnforcementLog, error)
+	// ListCPAAPIKeyPolicySummaries 一次返回所有启用策略 key 的徽标摘要，供列表路由富化。
+	ListCPAAPIKeyPolicySummaries(ctx context.Context) (map[int64]CPAAPIKeyPolicySummary, error)
 }
 
 // CPAAPIKeyPolicyView 是策略接口的聚合返回值。
@@ -54,6 +56,13 @@ type CPAAPIKeyPolicyView struct {
 	Limits   keypolicy.Limits
 	Usage    keypolicy.UsageByWindow
 	Tightest *keypolicy.TightestLimit
+}
+
+// CPAAPIKeyPolicySummary 是列表徽标需要的最小策略摘要。
+type CPAAPIKeyPolicySummary struct {
+	Enabled          bool
+	EnforcementState string
+	Tightest         *keypolicy.TightestLimit
 }
 
 type cpaAPIKeyManagementService struct {
@@ -390,4 +399,32 @@ func (s *cpaAPIKeyManagementService) SaveCPAAPIKeyPolicy(ctx context.Context, id
 
 func (s *cpaAPIKeyManagementService) ListCPAAPIKeyEnforcementLogs(_ context.Context, id int64, limit int) ([]entities.APIKeyEnforcementLog, error) {
 	return repository.ListAPIKeyEnforcementLogs(s.db, id, limit)
+}
+
+// ListCPAAPIKeyPolicySummaries 一次策略查询加一次全量窗口用量查询，拼出每个 key 的徽标摘要。
+func (s *cpaAPIKeyManagementService) ListCPAAPIKeyPolicySummaries(ctx context.Context) (map[int64]CPAAPIKeyPolicySummary, error) {
+	rows, err := repository.ListEnabledCPAAPIKeyPolicies(s.db)
+	if err != nil {
+		return nil, err
+	}
+	now := s.now()
+	usage, err := s.store.PerKeyUsage(ctx, keypolicy.DailyWindow(now), keypolicy.MonthlyWindow(now))
+	if err != nil {
+		return nil, err
+	}
+	summaries := make(map[int64]CPAAPIKeyPolicySummary, len(rows))
+	for _, row := range rows {
+		limits, err := keypolicy.ParseLimits(row.Limits)
+		if err != nil {
+			// 单个 key 的限额 JSON 损坏只丢掉最紧张限额徽标，状态照常返回。
+			summaries[row.CPAAPIKeyID] = CPAAPIKeyPolicySummary{Enabled: row.Enabled, EnforcementState: row.EnforcementState}
+			continue
+		}
+		summaries[row.CPAAPIKeyID] = CPAAPIKeyPolicySummary{
+			Enabled:          row.Enabled,
+			EnforcementState: row.EnforcementState,
+			Tightest:         limits.Tightest(usage[row.CPAAPIKeyID]),
+		}
+	}
+	return summaries, nil
 }
