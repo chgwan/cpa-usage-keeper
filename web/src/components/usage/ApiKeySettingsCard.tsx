@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { IconCheck, IconCopy, IconEye, IconEyeOff } from '@/components/ui/icons';
 import { useScrollBoundaryContainment } from '@/hooks/useScrollBoundaryContainment';
+import { resolveQuotaProgress } from '@/lib/quotaProgress';
 import type { CreatedApiKey, CpaApiKeySettingsItem } from '@/lib/types';
 import styles from '@/pages/UsagePage.module.scss';
 
@@ -311,6 +312,9 @@ export function ApiKeySettingsCard({
                 : enforcementState === 'disabled_manual'
                   ? t('usage_stats.api_key_settings_disabled_manual')
                   : '';
+              // 紧凑限额进度条：无限额摘要（tightest 缺失）时不渲染；超限切红色轨道。
+              const quota = resolveQuotaProgress(item.policy);
+              const quotaPercent = quota === null ? 0 : Math.round(quota.ratio * 100);
               return (
                 <div key={item.id} className={styles.apiKeySettingsItem}>
                   <div className={styles.apiKeySettingsSummary}>
@@ -334,6 +338,18 @@ export function ApiKeySettingsCard({
                       >
                         {stateBadge}
                       </span>
+                    )}
+                    {quota && (
+                      <div
+                        className={`${styles.apiKeyQuotaBar} ${quota.breached ? styles.apiKeyQuotaBarBreached : ''}`.trim()}
+                        role="progressbar"
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={quotaPercent}
+                        title={quota.label}
+                      >
+                        <div className={styles.apiKeyQuotaBarFill} style={{ width: `${quotaPercent}%` }} />
+                      </div>
                     )}
                   </div>
                   <div className={styles.apiKeySettingsForm}>

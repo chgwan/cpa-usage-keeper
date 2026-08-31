@@ -36,6 +36,7 @@ import {
   type CredentialDetailSelection,
 } from '@/components/usage';
 import { TOTPSettingsCard } from '@/components/usage/TOTPSettingsCard';
+import { ApiKeyPolicyModal } from '@/components/usage/ApiKeyPolicyModal';
 import {
   RequestEventsDetailsCard,
   REQUEST_EVENT_COLUMN_IDS,
@@ -819,6 +820,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const [apiKeySettingsError, setApiKeySettingsError] = useState('');
   const [apiKeySettingsSavingId, setApiKeySettingsSavingId] = useState<string | null>(null);
   const apiKeySettingsRequestControllerRef = useRef<AbortController | null>(null);
+  const [policyModalKeyId, setPolicyModalKeyId] = useState<string | null>(null);
   const [authSessions, setAuthSessions] = useState<AuthManagedSessionItem[]>([]);
   const [authSessionsLoading, setAuthSessionsLoading] = useState(false);
   const [authSessionsError, setAuthSessionsError] = useState('');
@@ -1137,8 +1139,16 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     }) ?? false
   ), [runApiKeyLifecycle]);
 
-  // 配额策略弹窗由后续任务接入；占位回调保持卡片 prop 契约稳定。
-  const openApiKeyPolicyModal = useCallback(() => {}, []);
+  // 配额策略弹窗只记录 key id，展示用的 label 从设置列表解析；保存成功后弹窗自身重拉策略，
+  // 这里再刷新设置列表让进度条与状态徽章立即跟进。
+  const openApiKeyPolicyModal = useCallback((id: string) => {
+    setPolicyModalKeyId(id);
+  }, []);
+  const policyModalItem = useMemo(
+    () => (policyModalKeyId === null ? null : apiKeySettings.find((item) => item.id === policyModalKeyId) ?? null),
+    [apiKeySettings, policyModalKeyId],
+  );
+  const policyModalLabel = policyModalItem?.keyAlias?.trim() || policyModalItem?.label || policyModalItem?.displayKey || '';
 
   const handleRevokeAuthSession = useCallback(async (session: AuthManagedSessionItem) => {
     setAuthSessionRevokingId(session.id);
@@ -2345,6 +2355,17 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
         requestLogDownloading={requestLogDownloading}
         onClose={handleCredentialDetailClose}
       />
+      {policyModalItem && (
+        <ApiKeyPolicyModal
+          apiKeyId={policyModalItem.id}
+          apiKeyLabel={policyModalLabel}
+          onClose={() => setPolicyModalKeyId(null)}
+          onSaved={() => {
+            void loadApiKeySettings();
+          }}
+          onNotice={showTopNotice}
+        />
+      )}
       <Modal
         open={logoutConfirmOpen}
         title={t('usage_stats.logout_confirm_title')}
