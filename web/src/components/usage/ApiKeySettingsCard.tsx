@@ -346,6 +346,7 @@ export function ApiKeySettingsCard({
                         aria-valuemin={0}
                         aria-valuemax={100}
                         aria-valuenow={quotaPercent}
+                        aria-label={t('usage_stats.api_key_policy_progress_label')}
                         title={quota.label}
                       >
                         <div className={styles.apiKeyQuotaBarFill} style={{ width: `${quotaPercent}%` }} />

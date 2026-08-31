@@ -133,6 +133,8 @@ func fetchCPAAPIKeyPolicySummaries(ctx context.Context, managementProvider servi
 	}
 	summaries, err := managementProvider.ListCPAAPIKeyPolicySummaries(ctx)
 	if err != nil {
+		// 徽标静默降级必须可观测：列表照常返回，但告警日志留痕。
+		logrus.WithError(err).Warn("load api key policy summaries failed")
 		return nil
 	}
 	return summaries
