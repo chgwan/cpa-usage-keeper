@@ -6,8 +6,9 @@ import { ApiKeySettingsCard, copyApiKeyToClipboard, getApiKeySettingsVisibleKey 
 import type { CpaApiKeySettingsItem } from '@/lib/types';
 
 const apiKeys: CpaApiKeySettingsItem[] = [
-  { id: '9007199254740993', apiKey: 'sk-alpha123456', keyAlias: 'Primary', displayKey: 'sk-*********123456', label: 'Primary', lastSyncedAt: '2026-05-13T00:00:00Z' },
-  { id: '9007199254740994', apiKey: 'sk-beta654321', keyAlias: '', displayKey: 'sk-*********654321', label: 'sk-*********654321', lastSyncedAt: null },
+  // policy.enforcementState 为 active，行内启停按钮才会显示 “Disable”（缺失时按非 active 处理）。
+  { id: '9007199254740993', apiKey: 'sk-alpha123456', keyAlias: 'Primary', displayKey: 'sk-*********123456', label: 'Primary', lastSyncedAt: '2026-05-13T00:00:00Z', policy: { enabled: true, enforcementState: 'active', tightest: null } },
+  { id: '9007199254740994', apiKey: 'sk-beta654321', keyAlias: '', displayKey: 'sk-*********654321', label: 'sk-*********654321', lastSyncedAt: null, policy: { enabled: true, enforcementState: 'active', tightest: null } },
 ];
 
 const renderCard = (props: Partial<React.ComponentProps<typeof ApiKeySettingsCard>> = {}) => renderToStaticMarkup(
@@ -51,7 +52,7 @@ describe('ApiKeySettingsCard', () => {
     expect(getApiKeySettingsVisibleKey(apiKeys[0], true)).toBe('sk-alpha123456');
   });
 
-  it('collapses lifecycle row actions into a single Edit entry', () => {
+  it('renders every lifecycle action inline in each row', () => {
     const html = renderCard({
       onCreateKey: () => Promise.resolve(null),
       onRegenerateKey: () => Promise.resolve(null),
@@ -61,14 +62,21 @@ describe('ApiKeySettingsCard', () => {
       onOpenPolicy: () => undefined,
     });
 
-    // 行内只保留 保存/编辑；重新生成、禁用、删除、配额全部移入编辑弹窗（未打开时不渲染）。
-    expect(countOccurrences(html, '>Edit<')).toBe(2);
-    expect(html).not.toContain('>Regenerate<');
-    expect(html).not.toContain('>Disable<');
-    expect(html).not.toContain('>Delete<');
-    expect(html).not.toContain('>Quota<');
-    // 未提供任何生命周期 handler 时不渲染编辑入口。
-    expect(renderCard()).not.toContain('>Edit<');
+    // 行内直接平铺 保存/重新生成/禁用/删除/配额 五个动作；两行 key → 各出现两次。
+    expect(countOccurrences(html, '>Edit<')).toBe(0);
+    expect(countOccurrences(html, '>Save<')).toBe(2);
+    expect(countOccurrences(html, '>Regenerate<')).toBe(2);
+    expect(countOccurrences(html, '>Disable<')).toBe(2);
+    expect(countOccurrences(html, '>Delete<')).toBe(2);
+    expect(countOccurrences(html, '>Quota<')).toBe(2);
+    // 未提供对应生命周期 handler 时不渲染相应按钮。
+    const bare = renderCard();
+    expect(bare).not.toContain('>Edit<');
+    expect(bare).not.toContain('>Regenerate<');
+    expect(bare).not.toContain('>Disable<');
+    expect(bare).not.toContain('>Delete<');
+    expect(bare).not.toContain('>Quota<');
+    expect(bare).toContain('>Save<');
   });
 
   it('copies the raw key value', async () => {

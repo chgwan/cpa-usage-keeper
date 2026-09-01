@@ -214,6 +214,9 @@ export function ApiKeyPolicyModal({ apiKeyId, apiKeyLabel, onClose, onSaved, onN
               </span>
             </button>
 
+            {/* 窗口语义提示：每天 / 每月都是日历窗口，明确写出各自的重置时间点。 */}
+            <p className={styles.apiKeyPolicyUsageHint}>{t('usage_stats.api_key_policy_window_hint')}</p>
+
             <div className={styles.apiKeyPolicyGrid}>
               {LIMIT_TYPES.map((type) => LIMIT_WINDOWS.map((window) => {
                 const key = `${type}:${window}`;

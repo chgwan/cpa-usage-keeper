@@ -973,7 +973,9 @@ describe('UsagePage toolbar styles', () => {
       usagePageStyles.indexOf('@include mobile {\n  .apiKeySettingsCard:global(.card)'),
     )
 
-    expect(apiKeySettingsListBlock).toContain('grid-template-columns: repeat(2, minmax(0, 1fr));')
+    // 列表始终单列：每行占满整卡宽度，行内动作按钮直接平铺展示。
+    expect(apiKeySettingsListBlock).toContain('grid-template-columns: minmax(0, 1fr);')
+    expect(apiKeySettingsListBlock).not.toContain('repeat(2,')
     expect(apiKeyAliasInputBlock).toContain('height: 32px;')
     expect(apiKeyAliasInputBlock).toContain('min-height: 32px;')
     expect(apiKeyAliasInputBlock).toContain('padding: 6px 12px;')
@@ -1128,9 +1130,9 @@ describe('UsagePage toolbar styles', () => {
     expect(usagePageStyles).not.toContain('.settingsCompactAction')
     expect(apiKeyButtonsBlock).not.toContain('min-height: 40px;')
     expect(sessionButtonBlock).not.toContain('min-height: 40px;')
-    // 生命周期操作收敛进编辑弹窗后，行内只留 保存/编辑 两个动作按钮 + 1 个头部新建按钮，
+    // 行内动作恢复平铺后，每行有 5 个动作按钮（保存/重新生成/禁用恢复/删除/配额）+ 1 个头部新建按钮，
     // 全部保持 compact action 外观，不允许出现 40px 高度的普通按钮。
-    expect(apiKeySettingsSource.match(/appearance="action"/g)).toHaveLength(3)
+    expect(apiKeySettingsSource.match(/appearance="action"/g)).toHaveLength(6)
     expect(apiKeySettingsSource).not.toContain('styles.apiKeySettingsCopyButton')
     expect(sessionSettingsSource.match(/appearance="action"/g)).toHaveLength(3)
   })

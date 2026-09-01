@@ -21,8 +21,6 @@ const translations: Record<string, string> = {
   'usage_stats.api_key_settings_copied': 'Copied',
   'usage_stats.api_key_settings_copy_success': 'API Key copied.',
   'usage_stats.api_key_settings_copy_failed': 'Unable to copy API Key.',
-  'usage_stats.api_key_settings_edit': 'Edit',
-  'usage_stats.api_key_edit_title': 'Edit API Key',
   'usage_stats.api_key_settings_regenerate': 'Regenerate',
   'usage_stats.api_key_settings_regenerate_confirm': 'The old key stops working immediately.',
   'usage_stats.api_key_settings_regenerate_blocked': 'Restore the key before regenerating it.',
@@ -32,6 +30,7 @@ const translations: Record<string, string> = {
   'usage_stats.api_key_settings_restore': 'Restore',
   'usage_stats.api_key_settings_quota': 'Quota',
   'usage_stats.api_key_settings_action_failed': 'Action failed',
+  'usage_stats.api_key_settings_saving': 'Saving',
   'usage_stats.api_key_settings_reveal_title': 'API key created',
   'usage_stats.api_key_settings_reveal_warning': 'Copy it now — it will not be shown again.',
   'usage_stats.api_key_settings_reveal_done': "I've saved it",
@@ -160,7 +159,7 @@ describe('ApiKeySettingsCard copy action', () => {
   })
 })
 
-describe('ApiKeySettingsCard edit modal', () => {
+describe('ApiKeySettingsCard row actions', () => {
   let container: HTMLDivElement
   let root: Root
 
@@ -176,7 +175,7 @@ describe('ApiKeySettingsCard edit modal', () => {
     vi.restoreAllMocks()
   })
 
-  // Modal 通过 portal 挂到 document.body，行内按钮仍在 container 里。
+  // 确认弹窗通过 portal 挂到 document.body，行内动作按钮仍在 container 里。
   const findRowButton = (label: string) =>
     Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
       .find((button) => button.textContent === label)
@@ -198,15 +197,6 @@ describe('ApiKeySettingsCard edit modal', () => {
     })
   }
 
-  const openEditModal = async () => {
-    await act(async () => {
-      findRowButton('Edit')?.click()
-      await Promise.resolve()
-    })
-    expect(modalText()).toContain('Edit API Key')
-    expect(modalText()).toContain('Primary')
-  }
-
   it('regenerates through the inline confirm, blocks actions while busy, and reveals the new key once', async () => {
     let resolveRegenerate: (created: CreatedApiKey | null) => void = () => undefined
     const onRegenerateKey = vi.fn(() => new Promise<CreatedApiKey | null>((resolve) => {
@@ -215,10 +205,8 @@ describe('ApiKeySettingsCard edit modal', () => {
     const onOpenPolicy = vi.fn()
     await renderCard({ onRegenerateKey, onOpenPolicy })
 
-    await openEditModal()
-
     await act(async () => {
-      findModalButton('Regenerate')?.click()
+      findRowButton('Regenerate')?.click()
       await Promise.resolve()
     })
     expect(modalText()).toContain('The old key stops working immediately.')
@@ -228,9 +216,9 @@ describe('ApiKeySettingsCard edit modal', () => {
       await Promise.resolve()
     })
     expect(onRegenerateKey).toHaveBeenCalledWith(apiKey.id)
-    // pendingId 忙态期间弹窗动作全部禁用。
-    expect(findModalButton('Quota')?.disabled).toBe(true)
-    expect(modalText()).not.toContain('The old key stops working immediately.')
+    // pendingId 忙态期间行内动作全部禁用。
+    expect(findRowButton('Quota')?.disabled).toBe(true)
+    expect(findRowButton('Save')?.disabled).toBe(true)
 
     await act(async () => {
       resolveRegenerate({ id: apiKey.id, key: 'sk-once-new', keyAlias: 'Primary' })
@@ -238,16 +226,16 @@ describe('ApiKeySettingsCard edit modal', () => {
     })
     expect(document.body.textContent).toContain('sk-once-new')
     expect(document.body.textContent).toContain('API key created')
+    // 确认弹窗已进入关闭流程，一次性 reveal 弹窗成为当前可操作层。
+    expect(findModalButton("I've saved it")).toBeDefined()
   })
 
-  it('routes quota through onOpenPolicy after closing the edit modal', async () => {
+  it('routes quota straight from the row to onOpenPolicy', async () => {
     const onOpenPolicy = vi.fn()
     await renderCard({ onOpenPolicy })
 
-    await openEditModal()
-
     await act(async () => {
-      findModalButton('Quota')?.click()
+      findRowButton('Quota')?.click()
       await Promise.resolve()
     })
     expect(onOpenPolicy).toHaveBeenCalledWith(apiKey.id)
@@ -277,25 +265,21 @@ describe('ApiKeySettingsCard edit modal', () => {
       )
     })
 
-    await act(async () => {
-      findRowButton('Edit')?.click()
-      await Promise.resolve()
-    })
-    expect(modalText()).toContain('Manually disabled')
+    expect(container.textContent).toContain('Manually disabled')
     // 非 active：重新生成禁用并给出提示，启停按钮切到“恢复”。
-    expect(findModalButton('Regenerate')?.disabled).toBe(true)
-    expect(findModalButton('Regenerate')?.title).toBe('Restore the key before regenerating it.')
-    expect(findModalButton('Disable')).toBeUndefined()
+    expect(findRowButton('Regenerate')?.disabled).toBe(true)
+    expect(findRowButton('Regenerate')?.title).toBe('Restore the key before regenerating it.')
+    expect(findRowButton('Disable')).toBeUndefined()
 
     await act(async () => {
-      findModalButton('Restore')?.click()
+      findRowButton('Restore')?.click()
       await Promise.resolve()
     })
     expect(onRestoreKey).toHaveBeenCalledWith(disabledKey.id)
     expect(onDisableKey).not.toHaveBeenCalled()
 
     await act(async () => {
-      findModalButton('Delete')?.click()
+      findRowButton('Delete')?.click()
       await Promise.resolve()
     })
     expect(modalText()).toContain('Delete this API key from CPA?')

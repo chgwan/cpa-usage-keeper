@@ -1900,7 +1900,8 @@
 .apiKeySettingsList {
   display: grid;
   gap: 10px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  // 单列布局：每行占满整卡宽度，行内动作按钮全部直接平铺展示。
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .apiKeySettingsItem {
@@ -2045,12 +2046,6 @@
 }
 
 .apiKeySettingsSaveButton {
-  min-width: 68px;
-  justify-content: center;
-}
-
-// 行内只保留 保存/编辑 两个动作；生命周期操作全部进入编辑弹窗。
-.apiKeySettingsEditButton {
   min-width: 68px;
   justify-content: center;
 }
@@ -2303,48 +2298,17 @@
 
 .apiKeyCreateForm,
 .apiKeyRevealStack,
-.apiKeyEditStack {
+.apiKeyConfirmStack {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-.apiKeyRevealStack p {
+.apiKeyRevealStack p,
+.apiKeyConfirmStack p {
   margin: 0;
   font-size: 13px;
   line-height: 1.5;
-}
-
-.apiKeyEditHeader {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  min-width: 0;
-}
-
-.apiKeyEditConfirmBlock {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--bg-secondary) 72%, transparent);
-}
-
-.apiKeyEditConfirmText {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.apiKeyEditConfirmRow {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
 }
 
 .apiKeyRevealWarning {
@@ -2748,10 +2712,6 @@
   }
 
   .apiKeySettingsSaveButton {
-    flex: 1 1 0;
-  }
-
-  .apiKeySettingsEditButton {
     flex: 1 1 0;
   }
 
