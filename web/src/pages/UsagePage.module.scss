@@ -1992,9 +1992,10 @@
 }
 
 .apiKeySettingsForm {
+  // 别名输入独占一行，操作按钮在下一行按需换行，避免英文按钮文案把输入框挤压到不可见。
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
   gap: 10px;
   min-width: 0;
 }
@@ -2036,12 +2037,20 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  align-self: end;
+  align-self: stretch;
+  // 空间不足时按钮换行，保证任何语言下都不挤压别名输入框。
+  flex-wrap: wrap;
   gap: 8px;
   min-width: 0;
 }
 
 .apiKeySettingsSaveButton {
+  min-width: 68px;
+  justify-content: center;
+}
+
+// 行内只保留 保存/编辑 两个动作；生命周期操作全部进入编辑弹窗。
+.apiKeySettingsEditButton {
   min-width: 68px;
   justify-content: center;
 }
@@ -2294,17 +2303,48 @@
 
 .apiKeyCreateForm,
 .apiKeyRevealStack,
-.apiKeyConfirmStack {
+.apiKeyEditStack {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-.apiKeyRevealStack p,
-.apiKeyConfirmStack p {
+.apiKeyRevealStack p {
   margin: 0;
   font-size: 13px;
   line-height: 1.5;
+}
+
+.apiKeyEditHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.apiKeyEditConfirmBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--bg-secondary) 72%, transparent);
+}
+
+.apiKeyEditConfirmText {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.apiKeyEditConfirmRow {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .apiKeyRevealWarning {
@@ -2708,6 +2748,10 @@
   }
 
   .apiKeySettingsSaveButton {
+    flex: 1 1 0;
+  }
+
+  .apiKeySettingsEditButton {
     flex: 1 1 0;
   }
 

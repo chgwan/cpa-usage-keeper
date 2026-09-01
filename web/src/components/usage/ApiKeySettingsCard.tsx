@@ -8,6 +8,7 @@ import { IconCheck, IconCopy, IconEye, IconEyeOff } from '@/components/ui/icons'
 import { useScrollBoundaryContainment } from '@/hooks/useScrollBoundaryContainment';
 import { resolveQuotaProgress } from '@/lib/quotaProgress';
 import type { CreatedApiKey, CpaApiKeySettingsItem } from '@/lib/types';
+import { ApiKeyEditModal } from './ApiKeyEditModal';
 import styles from '@/pages/UsagePage.module.scss';
 
 type ClipboardWriter = Pick<Clipboard, 'writeText'>;
@@ -98,10 +99,6 @@ export function nextRevealState(_current: RevealState, created: CreatedApiKey | 
   return { phase: 'revealed', id: created.id, key: created.key };
 }
 
-type ConfirmAction =
-  | { kind: 'regenerate'; id: string }
-  | { kind: 'delete'; id: string };
-
 export interface ApiKeySettingsCardProps {
   apiKeys: CpaApiKeySettingsItem[];
   loading?: boolean;
@@ -143,7 +140,8 @@ export function ApiKeySettingsCard({
 
   const [reveal, setReveal] = useState<RevealState>({ phase: 'idle' });
   const [pendingId, setPendingId] = useState<string | null>(null);
-  const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null);
+  // 编辑弹窗存活只跟随 editId；条目从列表消失（删除成功）时随关闭一并卸载。
+  const [editId, setEditId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [createPending, setCreatePending] = useState(false);
   const [createAlias, setCreateAlias] = useState('');
@@ -186,10 +184,6 @@ export function ApiKeySettingsCard({
     }
   }, [onNotice, reveal, t]);
 
-  const closeConfirm = useCallback(() => {
-    setConfirmAction(null);
-  }, []);
-
   // 行级动作统一走 pendingId 忙态；处理器返回 false/null 时只提示，不抛错。
   const runRowAction = useCallback(async <T,>(id: string, action: () => Promise<T>): Promise<T | null> => {
     setPendingId(id);
@@ -201,9 +195,8 @@ export function ApiKeySettingsCard({
       return result;
     } finally {
       setPendingId(null);
-      closeConfirm();
     }
-  }, [closeConfirm, onNotice, t]);
+  }, [onNotice, t]);
 
   const handleCreateKey = useCallback(async () => {
     if (!onCreateKey) {
@@ -231,8 +224,9 @@ export function ApiKeySettingsCard({
     }
     const created = await runRowAction(id, () => onRegenerateKey(id));
     if (created) {
-      // 重新生成成功后立刻进入一次性 reveal 弹窗。
+      // 重新生成成功后立刻进入一次性 reveal 弹窗，并关闭编辑弹窗避免叠层。
       setReveal((current) => nextRevealState(current, created));
+      setEditId(null);
     }
   }, [onRegenerateKey, runRowAction]);
 
@@ -240,19 +234,36 @@ export function ApiKeySettingsCard({
     if (!onDeleteKey) {
       return;
     }
-    await runRowAction(id, () => onDeleteKey(id));
+    const deleted = await runRowAction(id, () => onDeleteKey(id));
+    if (deleted) {
+      // 删除成功后条目即将从列表消失，直接关闭编辑弹窗。
+      setEditId(null);
+    }
   }, [onDeleteKey, runRowAction]);
 
-  const handleToggleKey = useCallback(async (item: CpaApiKeySettingsItem) => {
-    const inactive = item.policy?.enforcementState !== 'active';
-    const action = inactive ? onRestoreKey : onDisableKey;
+  // 编辑弹窗内的启停切换：仍走 pendingId 忙态，结果只提示不抛错。
+  const handleToggleEnforcement = useCallback(async (id: string, restore: boolean) => {
+    const action = restore ? onRestoreKey : onDisableKey;
     if (!action) {
       return;
     }
-    await runRowAction(item.id, () => action(item.id));
+    await runRowAction(id, () => action(id));
   }, [onDisableKey, onRestoreKey, runRowAction]);
 
-  const confirmPending = confirmAction !== null && pendingId === confirmAction.id;
+  // 配额入口先收起编辑弹窗再打开配额弹窗，避免两个弹窗叠层。
+  const handleEditOpenPolicy = useCallback((id: string) => {
+    if (!onOpenPolicy) {
+      return;
+    }
+    setEditId(null);
+    onOpenPolicy(id);
+  }, [onOpenPolicy]);
+
+  const canManageKey = Boolean(onRegenerateKey || onDeleteKey || onDisableKey || onRestoreKey || onOpenPolicy);
+  const editItem = useMemo(
+    () => (editId === null ? null : apiKeys.find((entry) => entry.id === editId) ?? null),
+    [apiKeys, editId],
+  );
   const toggleLabel = showFullApiKeys
     ? t('usage_stats.api_key_settings_hide_full')
     : t('usage_stats.api_key_settings_show_full');
@@ -305,8 +316,6 @@ export function ApiKeySettingsCard({
               const apiKey = getApiKeySettingsVisibleKey(item, showFullApiKeys);
               const copyLabel = copiedId === item.id ? t('usage_stats.api_key_settings_copied') : t('usage_stats.api_key_settings_copy');
               const enforcementState = item.policy?.enforcementState;
-              // 非 active（含 policy 摘要不可用）时：按钮切到“恢复”，且禁止重新生成。
-              const inactive = enforcementState !== 'active';
               const stateBadge = enforcementState === 'disabled_by_quota'
                 ? t('usage_stats.api_key_settings_disabled_by_quota')
                 : enforcementState === 'disabled_manual'
@@ -376,49 +385,16 @@ export function ApiKeySettingsCard({
                       >
                         {disabled ? t('usage_stats.api_key_settings_saving') : t('common.save')}
                       </Button>
-                      {onRegenerateKey && (
+                      {canManageKey && (
                         <Button
                           variant="secondary"
                           size="sm"
                           appearance="action"
-                          onClick={() => setConfirmAction({ kind: 'regenerate', id: item.id })}
-                          disabled={rowBusy || inactive}
-                          title={inactive ? t('usage_stats.api_key_settings_regenerate_blocked') : t('usage_stats.api_key_settings_regenerate')}
-                        >
-                          {t('usage_stats.api_key_settings_regenerate')}
-                        </Button>
-                      )}
-                      {(onDisableKey || onRestoreKey) && (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          appearance="action"
-                          onClick={() => void handleToggleKey(item)}
+                          className={styles.apiKeySettingsEditButton}
+                          onClick={() => setEditId(item.id)}
                           disabled={rowBusy}
                         >
-                          {inactive ? t('usage_stats.api_key_settings_restore') : t('usage_stats.api_key_settings_disable')}
-                        </Button>
-                      )}
-                      {onDeleteKey && (
-                        <Button
-                          variant="danger"
-                          size="sm"
-                          appearance="action"
-                          onClick={() => setConfirmAction({ kind: 'delete', id: item.id })}
-                          disabled={rowBusy}
-                        >
-                          {t('usage_stats.api_key_settings_delete')}
-                        </Button>
-                      )}
-                      {onOpenPolicy && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          appearance="action"
-                          onClick={() => onOpenPolicy(item.id)}
-                          disabled={rowBusy}
-                        >
-                          {t('usage_stats.api_key_settings_quota')}
+                          {t('usage_stats.api_key_settings_edit')}
                         </Button>
                       )}
                     </div>
@@ -492,44 +468,17 @@ export function ApiKeySettingsCard({
         </div>
       </Modal>
 
-      <Modal
-        open={confirmAction !== null}
-        title={confirmAction?.kind === 'delete'
-          ? t('usage_stats.api_key_settings_delete')
-          : t('usage_stats.api_key_settings_regenerate')}
-        onClose={closeConfirm}
-        closeDisabled={confirmPending}
-      >
-        <div className={styles.apiKeyConfirmStack}>
-          <p>{confirmAction?.kind === 'delete'
-            ? t('usage_stats.api_key_settings_delete_confirm')
-            : t('usage_stats.api_key_settings_regenerate_confirm')}</p>
-          {confirmAction?.kind === 'delete' && (
-            <Button
-              type="button"
-              fullWidth
-              variant="danger"
-              loading={confirmPending}
-              onClick={() => void handleDeleteKey(confirmAction.id)}
-            >
-              {t('usage_stats.api_key_settings_delete')}
-            </Button>
-          )}
-          {confirmAction?.kind === 'regenerate' && (
-            <Button
-              type="button"
-              fullWidth
-              loading={confirmPending}
-              onClick={() => void handleRegenerateKey(confirmAction.id)}
-            >
-              {t('usage_stats.api_key_settings_regenerate')}
-            </Button>
-          )}
-          <Button type="button" fullWidth variant="ghost" onClick={closeConfirm} disabled={confirmPending}>
-            {t('common.cancel')}
-          </Button>
-        </div>
-      </Modal>
+      {editItem && (
+        <ApiKeyEditModal
+          item={editItem}
+          busy={pendingId === editItem.id}
+          onClose={() => setEditId(null)}
+          onRegenerateKey={onRegenerateKey ? (id) => void handleRegenerateKey(id) : undefined}
+          onDeleteKey={onDeleteKey ? (id) => void handleDeleteKey(id) : undefined}
+          onToggleKey={(onDisableKey || onRestoreKey) ? (id, restore) => void handleToggleEnforcement(id, restore) : undefined}
+          onOpenPolicy={onOpenPolicy ? handleEditOpenPolicy : undefined}
+        />
+      )}
     </Card>
   );
 }
