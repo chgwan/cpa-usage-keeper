@@ -346,6 +346,31 @@ func ListActiveAuthFileUsageIdentitiesByAuthIndexes(ctx context.Context, db *gor
 	return identities, nil
 }
 
+func ListActiveClaudeAuthFileUsageIdentities(ctx context.Context, db *gorm.DB) ([]entities.UsageIdentity, error) {
+	if db == nil {
+		return nil, fmt.Errorf("database is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var identities []entities.UsageIdentity
+	if err := db.WithContext(ctx).
+		Select(usageIdentityReadColumns).
+		Where("auth_type = ? AND is_deleted = ? AND (disabled IS NULL OR disabled = ?)", entities.UsageIdentityAuthTypeAuthFile, false, false).
+		Order("id ASC").
+		Find(&identities).Error; err != nil {
+		return nil, fmt.Errorf("list active Claude auth file usage identities: %w", err)
+	}
+	claudeIdentities := make([]entities.UsageIdentity, 0, len(identities))
+	for _, identity := range identities {
+		if strings.EqualFold(strings.TrimSpace(identity.Type), "claude") ||
+			strings.EqualFold(strings.TrimSpace(identity.Provider), "claude") {
+			claudeIdentities = append(claudeIdentities, identity)
+		}
+	}
+	return claudeIdentities, nil
+}
+
 func normalizeUniqueAuthIndexes(authIndexes []string) []string {
 	normalized := make([]string, 0, len(authIndexes))
 	seen := make(map[string]struct{}, len(authIndexes))

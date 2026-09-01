@@ -388,6 +388,103 @@
   font-size: 12px;
 }
 
+.claudeQuotaSection {
+  padding: 18px;
+  border: 1px solid var(--border-color);
+  border-left: 3px solid #d97757;
+  border-radius: $radius-sm;
+  background: color-mix(in srgb, var(--bg-secondary) 92%, #d97757 8%);
+}
+
+.claudeQuotaHeading,
+.claudeQuotaRowHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.claudeQuotaHeading h2 {
+  margin: 2px 0 0;
+  font-size: 17px;
+  letter-spacing: 0;
+}
+
+.claudeQuotaEyebrow,
+.claudeQuotaAccountLabel,
+.claudeQuotaReset {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.claudeQuotaEyebrow,
+.claudeQuotaAccountLabel {
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.claudeQuotaAccountHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.claudeQuotaPlan {
+  color: #b45336;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.claudeQuotaAccounts {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.claudeQuotaAccount {
+  display: grid;
+  gap: 14px;
+}
+
+.claudeQuotaAccount + .claudeQuotaAccount {
+  padding-top: 18px;
+  border-top: 1px solid var(--border-color);
+}
+
+.claudeQuotaRow {
+  display: grid;
+  gap: 7px;
+}
+
+.claudeQuotaRowHeader {
+  font-size: 13px;
+}
+
+.claudeQuotaTrack {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--border-color) 72%, transparent);
+}
+
+.claudeQuotaTrack span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #d97757;
+}
+
+.claudeQuotaReset {
+  text-align: right;
+}
+
+.claudeQuotaMessage {
+  margin-top: 16px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
 .errorBoxWithAction {
   display: flex;
   align-items: center;

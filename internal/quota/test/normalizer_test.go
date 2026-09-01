@@ -16,13 +16,14 @@ func TestNormalizeClaudeQuotaRows(t *testing.T) {
 			FiveHour:       &quota.ClaudeUsageWindow{Utilization: 36, ResetsAt: "2026-05-09T12:00:00Z"},
 			SevenDay:       &quota.ClaudeUsageWindow{Utilization: 72, ResetsAt: "2026-05-10T12:00:00Z"},
 			SevenDaySonnet: &quota.ClaudeUsageWindow{Utilization: 18, ResetsAt: "2026-05-11T12:00:00Z"},
+			SevenDayFable:  &quota.ClaudeUsageWindow{Utilization: 9, ResetsAt: "2026-05-12T12:00:00Z"},
 			ExtraUsage:     &quota.ClaudeExtraUsage{IsEnabled: true, MonthlyLimit: 1000, UsedCredits: 250, Utilization: &utilization},
 		},
 		Profile: &quota.ClaudeProfileResponse{Account: &quota.ClaudeProfileAccount{Email: "user@example.com"}},
 	}})
 
-	if len(rows) != 4 {
-		t.Fatalf("expected 4 quota rows, got %#v", rows)
+	if len(rows) != 5 {
+		t.Fatalf("expected 5 quota rows, got %#v", rows)
 	}
 	fiveHour := findQuotaRow(t, rows, "five_hour")
 	assertQuotaText(t, fiveHour, "5h", "window", "")
@@ -38,6 +39,10 @@ func TestNormalizeClaudeQuotaRows(t *testing.T) {
 	sonnet := findQuotaRow(t, rows, "seven_day_sonnet")
 	assertQuotaText(t, sonnet, "7d Sonnet", "model", "")
 	assertIntField(t, sonnet.Window.Seconds, 604800, "seven_day_sonnet window seconds")
+	fable := findQuotaRow(t, rows, "seven_day_fable")
+	assertQuotaText(t, fable, "7d Fable 5", "model", "")
+	assertFloatField(t, fable.UsedPercent, 9, "seven_day_fable usedPercent")
+	assertIntField(t, fable.Window.Seconds, 604800, "seven_day_fable window seconds")
 	extra := findQuotaRow(t, rows, "extra_usage")
 	assertQuotaText(t, extra, "Extra Usage", "extra_usage", "")
 	assertFloatField(t, extra.Used, 250, "extra_usage used")

@@ -58,6 +58,15 @@ type UsageIdentityProvider interface {
 	UpdateUsageIdentityAlias(context.Context, int64, string) (entities.UsageIdentity, error)
 }
 
+type APIKeyClaudeQuotaIdentityProvider interface {
+	ListActiveClaudeAuthIndexes(context.Context) ([]string, error)
+}
+
+type UsageIdentityServiceProvider interface {
+	UsageIdentityProvider
+	APIKeyClaudeQuotaIdentityProvider
+}
+
 type UsageIdentityServiceOptions struct {
 	OnDisplayNameChanged func(entities.UsageIdentity)
 }
@@ -69,15 +78,15 @@ type usageIdentityService struct {
 	onDisplayNameChanged func(entities.UsageIdentity)
 }
 
-func NewUsageIdentityService(db *gorm.DB) UsageIdentityProvider {
+func NewUsageIdentityService(db *gorm.DB) UsageIdentityServiceProvider {
 	return NewUsageIdentityServiceWithRecentCache(db, nil)
 }
 
-func NewUsageIdentityServiceWithRecentCache(db *gorm.DB, recentUsage *repository.UsageRecentEventCache) UsageIdentityProvider {
+func NewUsageIdentityServiceWithRecentCache(db *gorm.DB, recentUsage *repository.UsageRecentEventCache) UsageIdentityServiceProvider {
 	return NewUsageIdentityServiceWithOptions(db, recentUsage, UsageIdentityServiceOptions{})
 }
 
-func NewUsageIdentityServiceWithOptions(db *gorm.DB, recentUsage *repository.UsageRecentEventCache, options UsageIdentityServiceOptions) UsageIdentityProvider {
+func NewUsageIdentityServiceWithOptions(db *gorm.DB, recentUsage *repository.UsageRecentEventCache, options UsageIdentityServiceOptions) UsageIdentityServiceProvider {
 	return &usageIdentityService{db: db, recentUsage: recentUsage, now: time.Now, onDisplayNameChanged: options.OnDisplayNameChanged}
 }
 
@@ -89,6 +98,18 @@ func (s *usageIdentityService) ListUsageIdentities(ctx context.Context) ([]entit
 func (s *usageIdentityService) ListActiveUsageIdentities(ctx context.Context) ([]entities.UsageIdentity, error) {
 	// source 解析和筛选只需要活跃身份，过滤条件下推到 repository 的 SQL 查询中执行。
 	return repository.ListActiveUsageIdentities(ctx, s.db)
+}
+
+func (s *usageIdentityService) ListActiveClaudeAuthIndexes(ctx context.Context) ([]string, error) {
+	identities, err := repository.ListActiveClaudeAuthFileUsageIdentities(ctx, s.db)
+	if err != nil {
+		return nil, err
+	}
+	authIndexes := make([]string, 0, len(identities))
+	for _, identity := range identities {
+		authIndexes = append(authIndexes, identity.Identity)
+	}
+	return authIndexes, nil
 }
 
 func (s *usageIdentityService) ListActiveUsageIdentitiesPage(ctx context.Context, request ListUsageIdentitiesRequest) (ListUsageIdentitiesResponse, error) {

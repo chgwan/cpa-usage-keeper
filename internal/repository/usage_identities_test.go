@@ -319,6 +319,38 @@ func TestGetActiveAuthFileUsageIdentityByAuthIndexIgnoresProviderOnlyIdentity(t 
 	}
 }
 
+func TestListActiveClaudeAuthFileUsageIdentitiesReturnsSharedAccountsWithoutUsageEvents(t *testing.T) {
+	db := openTestDatabase(t)
+	ctx := context.Background()
+	disabled := true
+	identities := []entities.UsageIdentity{
+		{Name: "Claude Provider", AuthType: entities.UsageIdentityAuthTypeAuthFile, Identity: "claude-provider-name", Type: "account", Provider: "Claude"},
+		{Name: "Claude Type", AuthType: entities.UsageIdentityAuthTypeAuthFile, Identity: "claude-type", Type: "claude", Provider: "Unknown Provider"},
+		{Name: "Codex", AuthType: entities.UsageIdentityAuthTypeAuthFile, Identity: "codex-auth", Type: "codex", Provider: "OpenAI"},
+		{Name: "Deleted Claude", AuthType: entities.UsageIdentityAuthTypeAuthFile, Identity: "claude-deleted", Type: "claude", Provider: "Claude", IsDeleted: true},
+		{Name: "Disabled Claude", AuthType: entities.UsageIdentityAuthTypeAuthFile, Identity: "claude-disabled", Type: "claude", Provider: "Claude", Disabled: &disabled},
+		{Name: "Provider Only", AuthType: entities.UsageIdentityAuthTypeAIProvider, Identity: "claude-ai-provider", Type: "claude", Provider: "Claude"},
+	}
+	if err := db.Create(&identities).Error; err != nil {
+		t.Fatalf("seed usage identities: %v", err)
+	}
+
+	rows, err := ListActiveClaudeAuthFileUsageIdentities(ctx, db)
+	if err != nil {
+		t.Fatalf("ListActiveClaudeAuthFileUsageIdentities returned error: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected two shared active Claude auth files, got %+v", rows)
+	}
+	got := map[string]bool{}
+	for _, row := range rows {
+		got[row.Identity] = true
+	}
+	if !got["claude-provider-name"] || !got["claude-type"] {
+		t.Fatalf("expected provider and type matched Claude identities, got %+v", rows)
+	}
+}
+
 func TestUsageIdentityReplaceForProviderTypesMarksOnlyScopedProviderTypesDeleted(t *testing.T) {
 	db := openTestDatabase(t)
 	ctx := context.Background()

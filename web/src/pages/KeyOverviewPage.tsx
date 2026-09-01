@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ApiError, fetchKeyOverview, fetchKeyOverviewRealtime, isUsageRangeBoundsConflict } from '@/lib/api';
-import type { AuthSessionAPIKeySummary, OverviewRealtimeBlock, OverviewRealtimeWindow, UsageCustomRange, UsageOverviewResponse, UsageTimeRange } from '@/lib/types';
+import { ApiError, fetchKeyClaudeQuotas, fetchKeyOverview, fetchKeyOverviewRealtime, isUsageRangeBoundsConflict } from '@/lib/api';
+import type { AuthSessionAPIKeySummary, KeyClaudeQuotaResponse, OverviewRealtimeBlock, OverviewRealtimeWindow, UsageCustomRange, UsageOverviewResponse, UsageTimeRange } from '@/lib/types';
 import { MainActionButton } from '@/components/ui/MainActionButton';
 import { IconRefreshCw } from '@/components/ui/icons';
 import { KeyViewerShell } from '@/features/key-viewer/KeyViewerShell';
+import { KeyClaudeQuotaPanel } from '@/features/key-viewer/KeyClaudeQuotaPanel';
 import type { KeyViewerPath } from '@/features/key-viewer/navigation';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { buildUsageStatsQueryKey, useThemeStore } from '@/stores';
@@ -147,13 +148,16 @@ export function KeyOverviewPage({ apiKey, onNavigate, onAuthRequired }: KeyOverv
   const [usage, setUsage] = useState<UsageOverviewPayload | null>(null);
   const [loadedUsageRange, setLoadedUsageRange] = useState<string | null>(null);
   const [realtime, setRealtime] = useState<OverviewRealtimeBlock | null>(null);
+  const [claudeQuotas, setClaudeQuotas] = useState<KeyClaudeQuotaResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [realtimeLoading, setRealtimeLoading] = useState(false);
   const [error, setError] = useState('');
   const [realtimeError, setRealtimeError] = useState('');
+  const [claudeQuotaError, setClaudeQuotaError] = useState('');
   const [manualRefreshLoading, setManualRefreshLoading] = useState(false);
   const overviewRequestControllerRef = useRef<AbortController | null>(null);
   const realtimeRequestControllerRef = useRef<AbortController | null>(null);
+  const claudeQuotaRequestControllerRef = useRef<AbortController | null>(null);
   const usageRangeQuery = useMemo(() => buildUsageRangeQuery({
     range: timeRange,
     customUnit: customRange?.unit,
@@ -269,6 +273,32 @@ export function KeyOverviewPage({ apiKey, onNavigate, onAuthRequired }: KeyOverv
     }
   }, [onAuthRequired, realtimeWindow]);
 
+  const loadClaudeQuotas = useCallback(async (options: KeyOverviewLoadOptions = {}) => {
+    const { controller, skipped } = startKeyOverviewRequest({
+      currentController: claudeQuotaRequestControllerRef.current,
+      skipIfInFlight: options.skipIfInFlight,
+    });
+    if (skipped || !controller) return;
+    claudeQuotaRequestControllerRef.current = controller;
+    setClaudeQuotaError('');
+    try {
+      const nextQuotas = await fetchKeyClaudeQuotas(controller.signal);
+      if (claudeQuotaRequestControllerRef.current !== controller) return;
+      setClaudeQuotas(nextQuotas);
+    } catch (nextError) {
+      if (controller.signal.aborted) return;
+      if (nextError instanceof ApiError && nextError.status === 401) {
+        onAuthRequired?.();
+        return;
+      }
+      setClaudeQuotaError('KEY_CLAUDE_QUOTA_LOAD_FAILED');
+    } finally {
+      if (claudeQuotaRequestControllerRef.current === controller) {
+        claudeQuotaRequestControllerRef.current = null;
+      }
+    }
+  }, [onAuthRequired]);
+
   useEffect(() => {
     void loadOverview();
     return () => {
@@ -285,9 +315,17 @@ export function KeyOverviewPage({ apiKey, onNavigate, onAuthRequired }: KeyOverv
     };
   }, [loadRealtime]);
 
+  useEffect(() => {
+    void loadClaudeQuotas();
+    return () => {
+      claudeQuotaRequestControllerRef.current?.abort();
+      claudeQuotaRequestControllerRef.current = null;
+    };
+  }, [loadClaudeQuotas]);
+
   const refreshKeyOverview = useCallback(async (options: KeyOverviewLoadOptions = {}) => {
-    await Promise.all([loadOverview(options), loadActivity(options), loadRealtime(options)]);
-  }, [loadActivity, loadOverview, loadRealtime]);
+    await Promise.all([loadOverview(options), loadActivity(options), loadRealtime(options), loadClaudeQuotas(options)]);
+  }, [loadActivity, loadClaudeQuotas, loadOverview, loadRealtime]);
 
   const handleAutoRefreshError = useCallback((nextError: unknown) => {
     if (nextError instanceof ApiError && nextError.status === 401) {
@@ -350,6 +388,9 @@ export function KeyOverviewPage({ apiKey, onNavigate, onAuthRequired }: KeyOverv
   const displayRealtimeError = realtimeError
     ? t('usage_stats.overview_realtime_load_failed')
     : '';
+  const displayClaudeQuotaError = claudeQuotaError
+    ? t('key_overview.claude_quota_load_failed')
+    : '';
 
   const toolbar = (
     <>
@@ -408,6 +449,12 @@ export function KeyOverviewPage({ apiKey, onNavigate, onAuthRequired }: KeyOverv
           cacheReadRate: cacheReadRateSparkline,
           cost: costSparkline,
         }}
+      />
+
+      <KeyClaudeQuotaPanel
+        data={claudeQuotas}
+        loading={!claudeQuotas && !claudeQuotaError}
+        error={displayClaudeQuotaError}
       />
 
       <RecentActivityPanel

@@ -78,7 +78,15 @@ const resources = {
         tabs_aria_label: 'API Key viewer sections',
         identity_unknown: 'Current API Key',
         logout: 'Sign out',
-        load_failed: 'Unable to load API Key overview'
+        load_failed: 'Unable to load API Key overview',
+        claude_quota_title: 'Subscription usage',
+        claude_quota_empty: 'No cached Claude subscription usage is available yet.',
+        claude_quota_load_failed: 'Unable to load Claude subscription usage',
+        claude_quota_account: 'Quota {{index}}',
+        claude_quota_resets: 'Resets {{time}}',
+        claude_quota_window_five_hour: '5-hour limit',
+        claude_quota_window_seven_day: '7-day limit',
+        claude_quota_window_seven_day_fable: '7-day Fable 5'
       },
       key_analysis: {
         load_failed: 'Unable to load API Key analysis',
@@ -991,7 +999,15 @@ const resources = {
         tabs_aria_label: 'API Key 查看页面分区',
         identity_unknown: '当前 API Key',
         logout: '退出登录',
-        load_failed: '无法加载 API Key 概览'
+        load_failed: '无法加载 API Key 概览',
+        claude_quota_title: '订阅用量',
+        claude_quota_empty: '暂无可用的 Claude 订阅用量缓存。',
+        claude_quota_load_failed: '无法加载 Claude 订阅用量',
+        claude_quota_account: '额度 {{index}}',
+        claude_quota_resets: '{{time}} 重置',
+        claude_quota_window_five_hour: '5 小时限额',
+        claude_quota_window_seven_day: '7 天限额',
+        claude_quota_window_seven_day_fable: '7 天 Fable 5 限额'
       },
       key_analysis: {
         load_failed: '无法加载 API Key 分析',
@@ -1904,7 +1920,15 @@ const resources = {
         tabs_aria_label: 'API Key 查看頁面分區',
         identity_unknown: '目前 API Key',
         logout: '登出',
-        load_failed: '無法載入 API Key 總覽'
+        load_failed: '無法載入 API Key 總覽',
+        claude_quota_title: '訂閱用量',
+        claude_quota_empty: '目前暫無可用的 Claude 訂閱用量快取。',
+        claude_quota_load_failed: '無法載入 Claude 訂閱用量',
+        claude_quota_account: '額度 {{index}}',
+        claude_quota_resets: '{{time}} 重設',
+        claude_quota_window_five_hour: '5 小時限額',
+        claude_quota_window_seven_day: '7 天限額',
+        claude_quota_window_seven_day_fable: '7 天 Fable 5 限額'
       },
       key_analysis: {
         load_failed: '無法載入 API Key 分析',
