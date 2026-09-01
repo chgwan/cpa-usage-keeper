@@ -51,6 +51,26 @@ describe('ApiKeySettingsCard', () => {
     expect(getApiKeySettingsVisibleKey(apiKeys[0], true)).toBe('sk-alpha123456');
   });
 
+  it('collapses lifecycle row actions into a single Edit entry', () => {
+    const html = renderCard({
+      onCreateKey: () => Promise.resolve(null),
+      onRegenerateKey: () => Promise.resolve(null),
+      onDeleteKey: () => Promise.resolve(false),
+      onDisableKey: () => Promise.resolve(false),
+      onRestoreKey: () => Promise.resolve(false),
+      onOpenPolicy: () => undefined,
+    });
+
+    // 行内只保留 保存/编辑；重新生成、禁用、删除、配额全部移入编辑弹窗（未打开时不渲染）。
+    expect(countOccurrences(html, '>Edit<')).toBe(2);
+    expect(html).not.toContain('>Regenerate<');
+    expect(html).not.toContain('>Disable<');
+    expect(html).not.toContain('>Delete<');
+    expect(html).not.toContain('>Quota<');
+    // 未提供任何生命周期 handler 时不渲染编辑入口。
+    expect(renderCard()).not.toContain('>Edit<');
+  });
+
   it('copies the raw key value', async () => {
     const writes: string[] = [];
 
