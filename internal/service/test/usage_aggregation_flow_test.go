@@ -178,6 +178,53 @@ func TestSyncMetadataNotifiesIdentityAggregationWithoutRunningCatchUp(t *testing
 	assertUsageAggregationFlowOverviewCheckpointMissing(t, db)
 }
 
+// TestSyncServiceFansOutKeyPolicyNotifierWakeups 验证限额 runner 的两个唤醒点：
+// usage 提交后与三类 metadata 全部成功后；且是否配置聚合 notifier 不影响它。
+func TestSyncServiceFansOutKeyPolicyNotifierWakeups(t *testing.T) {
+	// 准备：一条可解码 inbox 消息 + 只记录调用的 keypolicy notifier；聚合 notifier 故意留空。
+	db := openUsageAggregationFlowDatabase(t)
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	rows, err := repository.InsertRedisUsageInboxMessages(db, []repositorydto.RedisInboxInsert{{
+		Source: "redis_pull:usage",
+		RawMessage: `{
+			"timestamp":"2026-07-20T11:59:00Z",
+			"provider":"codex",
+			"auth_type":"oauth",
+			"auth_index":"auth-kp",
+			"model":"gpt-5.5",
+			"request_id":"keypolicy-wake",
+			"tokens":{"input_tokens":10,"output_tokens":2,"cached_tokens":7,"cache_read_tokens":3,"total_tokens":12}
+		}`,
+		PoppedAt: now,
+	}})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("seed keypolicy wake inbox: rows=%d err=%v", len(rows), err)
+	}
+	notifier := &recordingUsageAggregationNotifier{}
+	syncService := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{
+		BaseURL:           "https://cpa.example.com",
+		Now:               func() time.Time { return now },
+		MetadataFetcher:   newMetadataTestFetcher(),
+		KeyPolicyNotifier: notifier,
+	})
+
+	// 执行：usage 提交成功后必须唤醒限额 runner。
+	if _, err := syncService.ProcessRedisUsageInbox(context.Background()); err != nil {
+		t.Fatalf("ProcessRedisUsageInbox returned error: %v", err)
+	}
+	if notifier.usageCalls != 1 {
+		t.Fatalf("expected one keypolicy usage wake, got %d", notifier.usageCalls)
+	}
+
+	// 执行：metadata 持久化成功后同样必须唤醒。
+	if err := syncService.SyncMetadata(context.Background()); err != nil {
+		t.Fatalf("SyncMetadata returned error: %v", err)
+	}
+	if notifier.identityCalls != 1 {
+		t.Fatalf("expected one keypolicy identity wake, got %d", notifier.identityCalls)
+	}
+}
+
 func openUsageAggregationFlowDatabase(t *testing.T) *gorm.DB {
 	// 准备：每个测试使用项目真实迁移和单连接 SQLite 配置。
 	t.Helper()

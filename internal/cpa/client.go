@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"cpa-usage-keeper/internal/cpa/dto/apicall"
+	"cpa-usage-keeper/internal/cpa/dto/cpaapikeys"
 	"cpa-usage-keeper/internal/cpa/dto/providerconfig"
 	"cpa-usage-keeper/internal/cpa/dto/response"
 )
@@ -386,6 +387,50 @@ func filenameFromContentDisposition(value string) string {
 func (c *Client) FetchManagementAPIKeys(ctx context.Context) (*response.ManagementAPIKeysResult, error) {
 	result := &response.ManagementAPIKeysResult{}
 	statusCode, body, err := c.doManagementJSONRequest(ctx, cpaManagementAPIKeysEndpoint, &result.Payload, "api keys")
+	result.StatusCode = statusCode
+	result.Body = body
+	if err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+// ReplaceManagementAPIKeys 用全量列表替换 CPA api-keys，供新建 key 与恢复禁用 key 复用。
+func (c *Client) ReplaceManagementAPIKeys(ctx context.Context, keys []string) (*response.ManagementAPIKeysMutationResult, error) {
+	result := &response.ManagementAPIKeysMutationResult{}
+	statusCode, body, err := c.doManagementJSONRequestWithBody(ctx, http.MethodPut, cpaManagementAPIKeysEndpoint, cpaapikeys.ReplaceRequest(keys), &result.Payload, "api keys replace")
+	result.StatusCode = statusCode
+	result.Body = body
+	if err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+// UpdateManagementAPIKey 用 old→new 语义替换单个 CPA api-key，是重新生成功能的原语。
+func (c *Client) UpdateManagementAPIKey(ctx context.Context, oldKey, newKey string) (*response.ManagementAPIKeysMutationResult, error) {
+	if strings.TrimSpace(oldKey) == "" || strings.TrimSpace(newKey) == "" {
+		return &response.ManagementAPIKeysMutationResult{}, fmt.Errorf("api key values are required")
+	}
+	result := &response.ManagementAPIKeysMutationResult{}
+	statusCode, body, err := c.doManagementJSONRequestWithBody(ctx, http.MethodPatch, cpaManagementAPIKeysEndpoint, cpaapikeys.UpdateRequest(oldKey, newKey), &result.Payload, "api key update")
+	result.StatusCode = statusCode
+	result.Body = body
+	if err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+// DeleteManagementAPIKey 通过 value 查询参数从 CPA 删除单个 api-key。
+func (c *Client) DeleteManagementAPIKey(ctx context.Context, key string) (*response.ManagementAPIKeysMutationResult, error) {
+	trimmed := strings.TrimSpace(key)
+	if trimmed == "" {
+		return &response.ManagementAPIKeysMutationResult{}, fmt.Errorf("api key value is required")
+	}
+	result := &response.ManagementAPIKeysMutationResult{}
+	path := cpaManagementAPIKeysEndpoint + "?value=" + url.QueryEscape(trimmed)
+	statusCode, body, err := c.doManagementJSONRequestWithBody(ctx, http.MethodDelete, path, nil, &result.Payload, "api key delete")
 	result.StatusCode = statusCode
 	result.Body = body
 	if err != nil {

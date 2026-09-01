@@ -1,4 +1,4 @@
-import { type AnalysisLatencyDiagnostics, type AnalysisResponse, type AuthFilesManagementResponse, type AuthManagedSessionsResponse, type AuthSessionResponse, type CodexQuotaHistoryResponse, type CpaApiKeyDisplayItem, type CpaApiKeyOptionsResponse, type CpaApiKeySettingsResponse, type CpaApiKeysResponse, type ErrorEventsResponse, type OverviewRealtimeBlock, type OverviewRealtimeWindow, type PricingEntry, type PricingResponse, type PricingRulesResponse, type PricingSyncPreviewResponse, type QuotaAutoRefreshSettings, type ReplacePricingRulesRequest, type StatusResponse, type UpdateCheckResponse, type UsageActivityRequest, type UsageActivityResponse, type UsageEventModelFilterOptionsResponse, type UsageEventRequestLogResponse, type UsageEventSourceFilterOptionsResponse, type UsageRangeRequest, type UsedModelsResponse, type UsageIdentitiesPageResponse, type UsageIdentitiesResponse, type UsageEventsResponse, type UsageIdentity, type UsageIdentityAuthType, type UsageOverviewResponse, type UsageQuotaCacheResponse, type UsageQuotaInspectionStatusResponse, type UsageQuotaRefreshResponse, type UsageQuotaRefreshTaskResponse, type UsageQuotaResetCreditsResponse, type UsageQuotaResetResponse, type VersionResponse } from './types'
+import { type AnalysisLatencyDiagnostics, type AnalysisResponse, type ApiKeyEnforcementLogsResponse, type ApiKeyPolicyLimit, type ApiKeyPolicyResponse, type AuthFilesManagementResponse, type AuthManagedSessionsResponse, type AuthSessionResponse, type CodexQuotaHistoryResponse, type CreatedApiKey, type CpaApiKeyDisplayItem, type CpaApiKeyOptionsResponse, type CpaApiKeySettingsResponse, type CpaApiKeysResponse, type ErrorEventsResponse, type OverviewRealtimeBlock, type OverviewRealtimeWindow, type PricingEntry, type PricingResponse, type PricingRulesResponse, type PricingSyncPreviewResponse, type QuotaAutoRefreshSettings, type ReplacePricingRulesRequest, type StatusResponse, type UpdateCheckResponse, type UsageActivityRequest, type UsageActivityResponse, type UsageEventModelFilterOptionsResponse, type UsageEventRequestLogResponse, type UsageEventSourceFilterOptionsResponse, type UsageRangeRequest, type UsedModelsResponse, type UsageIdentitiesPageResponse, type UsageIdentitiesResponse, type UsageEventsResponse, type UsageIdentity, type UsageIdentityAuthType, type UsageOverviewResponse, type UsageQuotaCacheResponse, type UsageQuotaInspectionStatusResponse, type UsageQuotaRefreshResponse, type UsageQuotaRefreshTaskResponse, type UsageQuotaResetCreditsResponse, type UsageQuotaResetResponse, type VersionResponse } from './types'
 import { isCPAMCEmbed } from '@/embed/cpamcEmbed'
 import { resolveUsageRequestRange } from '@/utils/usage/rangeQuery'
 
@@ -872,6 +872,86 @@ export async function updateCpaApiKeyAlias(id: string, keyAlias: string): Promis
     await parseApiError(response, `Failed to update CPA API key alias: ${response.status}`)
   }
   return response.json()
+}
+
+export async function createCpaApiKey(keyAlias: string, key: string): Promise<CreatedApiKey> {
+  const response = await apiFetch(apiPath('/usage/api-keys'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ keyAlias, key }),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to create CPA API key: ${response.status}`)
+  }
+  return (await response.json()) as CreatedApiKey
+}
+
+export async function regenerateCpaApiKey(id: string): Promise<CreatedApiKey> {
+  const response = await apiFetch(apiPath(`/usage/api-keys/${encodeURIComponent(id)}/regenerate`), {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to regenerate CPA API key: ${response.status}`)
+  }
+  return (await response.json()) as CreatedApiKey
+}
+
+export async function deleteCpaApiKey(id: string): Promise<void> {
+  const response = await apiFetch(apiPath(`/usage/api-keys/${encodeURIComponent(id)}`), {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to delete CPA API key: ${response.status}`)
+  }
+}
+
+export async function disableCpaApiKey(id: string): Promise<void> {
+  const response = await apiFetch(apiPath(`/usage/api-keys/${encodeURIComponent(id)}/disable`), {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to disable CPA API key: ${response.status}`)
+  }
+}
+
+export async function restoreCpaApiKey(id: string): Promise<void> {
+  const response = await apiFetch(apiPath(`/usage/api-keys/${encodeURIComponent(id)}/restore`), {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to restore CPA API key: ${response.status}`)
+  }
+}
+
+export async function fetchCpaApiKeyPolicy(id: string, signal?: AbortSignal): Promise<ApiKeyPolicyResponse> {
+  const response = await apiFetch(apiPath(`/usage/api-keys/${encodeURIComponent(id)}/policy`), { signal, cache: 'no-store' })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to load CPA API key policy: ${response.status}`)
+  }
+  return (await response.json()) as ApiKeyPolicyResponse
+}
+
+export async function saveCpaApiKeyPolicy(id: string, limits: ApiKeyPolicyLimit[], enabled: boolean): Promise<void> {
+  const response = await apiFetch(apiPath(`/usage/api-keys/${encodeURIComponent(id)}/policy`), {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ limits, enabled }),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to save CPA API key policy: ${response.status}`)
+  }
+}
+
+export async function fetchCpaApiKeyEnforcementLogs(id: string, limit = 50, signal?: AbortSignal): Promise<ApiKeyEnforcementLogsResponse> {
+  const response = await apiFetch(apiPath(`/usage/api-keys/${encodeURIComponent(id)}/enforcement-logs?limit=${limit}`), { signal, cache: 'no-store' })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to load CPA API key enforcement logs: ${response.status}`)
+  }
+  return (await response.json()) as ApiKeyEnforcementLogsResponse
 }
 
 export async function fetchUsedModels(signal?: AbortSignal): Promise<UsedModelsResponse> {

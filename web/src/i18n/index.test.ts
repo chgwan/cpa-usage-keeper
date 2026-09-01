@@ -83,6 +83,12 @@ describe('i18n resources', () => {
     expect(i18n.getResource('zh-TW', 'translation', 'usage_stats.credentials_inspection_title')).toBe('認證檔案巡檢');
   });
 
+  it('localizes the api key quota progress label in every language', () => {
+    expect(i18n.getResource('en', 'translation', 'usage_stats.api_key_policy_progress_label')).toBe('Usage quota progress');
+    expect(i18n.getResource('zh', 'translation', 'usage_stats.api_key_policy_progress_label')).toBe('用量配额进度');
+    expect(i18n.getResource('zh-TW', 'translation', 'usage_stats.api_key_policy_progress_label')).toBe('用量限額進度');
+  });
+
   it('localizes session management copy in Chinese', () => {
     const expected = {
       zh: {

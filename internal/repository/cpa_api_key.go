@@ -11,6 +11,10 @@ import (
 	"gorm.io/plugin/dbresolver"
 )
 
+// activeEnforcementState 与 keypolicy.StateActive 同值。keypolicy 的执行 runner 需要引用本包的
+// 策略仓储函数，本包因此禁止反向 import keypolicy，状态字面量只能在这里单独声明。
+const activeEnforcementState = "active"
+
 func SyncCPAAPIKeys(db *gorm.DB, keys []string, syncedAt time.Time) error {
 	seen := make(map[string]struct{}, len(keys))
 	uniqueKeys := make([]string, 0, len(keys))
@@ -89,8 +93,38 @@ func SyncCPAAPIKeys(db *gorm.DB, keys []string, syncedAt time.Time) error {
 		if len(staleIDs) == 0 {
 			return nil
 		}
-		return tx.Model(&entities.CPAAPIKey{}).Where("id IN ?", staleIDs).Updates(map[string]any{"is_deleted": true, "updated_at": syncedAt}).Error
+		// 被策略禁用的 key 是 Keeper 主动移出 CPA 的，缺席不代表过期，sync 必须保留本地行。
+		held, err := policyHeldKeyIDs(tx)
+		if err != nil {
+			return err
+		}
+		deletableIDs := make([]int64, 0, len(staleIDs))
+		for _, id := range staleIDs {
+			if _, ok := held[id]; ok {
+				continue
+			}
+			deletableIDs = append(deletableIDs, id)
+		}
+		if len(deletableIDs) == 0 {
+			return nil
+		}
+		return tx.Model(&entities.CPAAPIKey{}).Where("id IN ?", deletableIDs).Updates(map[string]any{"is_deleted": true, "updated_at": syncedAt}).Error
 	})
+}
+
+// policyHeldKeyIDs 返回执行状态非 active 的 key id 集合；这些 key 因禁用被有意移出 CPA。
+func policyHeldKeyIDs(tx *gorm.DB) (map[int64]struct{}, error) {
+	var ids []int64
+	if err := tx.Model(&entities.CPAAPIKeyPolicy{}).
+		Where("enforcement_state <> ?", activeEnforcementState).
+		Pluck("cpa_api_key_id", &ids).Error; err != nil {
+		return nil, err
+	}
+	held := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		held[id] = struct{}{}
+	}
+	return held, nil
 }
 
 func ListActiveCPAAPIKeys(db *gorm.DB) ([]entities.CPAAPIKey, error) {
@@ -113,6 +147,20 @@ func FindActiveCPAAPIKeyByValue(db *gorm.DB, apiKey string) (entities.CPAAPIKey,
 
 func UpdateCPAAPIKeyAlias(db *gorm.DB, id int64, keyAlias string) error {
 	result := db.Model(&entities.CPAAPIKey{}).Where("id = ? AND is_deleted = ?", id, false).Update("key_alias", strings.TrimSpace(keyAlias))
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+// UpdateCPAAPIKeyValue 重新生成 key 后原地把 key 字符串改写，alias 与 id 保持不变。
+func UpdateCPAAPIKeyValue(db *gorm.DB, id int64, apiKey string) error {
+	result := db.Clauses(dbresolver.Write).Model(&entities.CPAAPIKey{}).
+		Where("id = ?", id).
+		Updates(map[string]any{"api_key": apiKey, "updated_at": time.Now()})
 	if result.Error != nil {
 		return result.Error
 	}

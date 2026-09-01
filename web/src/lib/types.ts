@@ -762,10 +762,77 @@ export interface CpaApiKeyDisplayItem {
   displayKey: string
   label: string
   lastSyncedAt: string | null
+  policy?: ApiKeyPolicySummary
 }
 
 export interface CpaApiKeySettingsItem extends CpaApiKeyDisplayItem {
   apiKey: string
+}
+
+export type ApiKeyLimitType = 'requests' | 'tokens' | 'cost'
+export type ApiKeyLimitWindow = 'daily' | 'monthly'
+export type ApiKeyEnforcementState = 'active' | 'disabled_by_quota' | 'disabled_manual'
+
+export interface ApiKeyPolicyLimit {
+  type: ApiKeyLimitType
+  window: ApiKeyLimitWindow
+  value: number
+}
+
+export interface ApiKeyPolicyUsageWindow {
+  requests: number
+  tokens: number
+  costUsd: number
+}
+
+export interface ApiKeyPolicyUsage {
+  daily: ApiKeyPolicyUsageWindow
+  monthly: ApiKeyPolicyUsageWindow
+}
+
+export interface ApiKeyTightestLimit {
+  type: ApiKeyLimitType
+  window: ApiKeyLimitWindow
+  value: number
+  used: number
+  ratio: number
+}
+
+export interface ApiKeyPolicySummary {
+  enabled: boolean
+  enforcementState: ApiKeyEnforcementState
+  tightest: ApiKeyTightestLimit | null
+}
+
+export interface ApiKeyPolicyResponse {
+  enabled: boolean
+  enforcementState: ApiKeyEnforcementState
+  adminDisabled: boolean
+  limits: ApiKeyPolicyLimit[]
+  usage: ApiKeyPolicyUsage
+  tightest: ApiKeyTightestLimit | null
+}
+
+export interface CreatedApiKey {
+  id: string
+  key: string
+  keyAlias: string
+}
+
+export interface ApiKeyEnforcementLogEntry {
+  id: string
+  action: string
+  reason: string
+  limitType: string | null
+  window: string | null
+  usedValue: number | null
+  limitValue: number | null
+  detail: string
+  createdAt: string
+}
+
+export interface ApiKeyEnforcementLogsResponse {
+  items: ApiKeyEnforcementLogEntry[]
 }
 
 export interface CpaApiKeyOption {

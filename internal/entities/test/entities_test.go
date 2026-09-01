@@ -37,6 +37,9 @@ func TestAllIncludesCoreModels(t *testing.T) {
 		// 通用额度历史按父周期、子百分比状态段顺序注册，确保全新数据库创建真实外键。
 		&QuotaCycle{},
 		&QuotaPercentSegment{},
+		// API Key 限额策略与执行审计随核心模型注册，全新数据库直接得到新表。
+		&CPAAPIKeyPolicy{},
+		&APIKeyEnforcementLog{},
 	}
 	if len(items) != len(expected) {
 		t.Fatalf("expected %d registered models, got %d", len(expected), len(items))

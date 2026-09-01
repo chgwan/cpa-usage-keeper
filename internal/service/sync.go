@@ -62,6 +62,8 @@ type SyncService struct {
 	usageAggregation UsageAggregationNotifier
 	// usageHeaderQuota 与聚合 runner 解耦，在 Quota worker 内按一分钟窗口自行合并。
 	usageHeaderQuota UsageHeaderSnapshotAppender
+	// keyPolicy 只接收提交后的非阻塞唤醒，供限额 runner 立即重估，可为 nil。
+	keyPolicy UsageAggregationNotifier
 }
 
 // NewSyncService 按生产配置组装 CPA metadata client；远端 usage 拉取由 poller 独立负责。
@@ -83,6 +85,8 @@ type SyncServiceOptions struct {
 	UsageAggregationNotifier UsageAggregationNotifier
 	// UsageHeaderQuota 独立接收原始 Header；是否配置聚合 notifier 不影响它。
 	UsageHeaderQuota UsageHeaderSnapshotAppender
+	// KeyPolicyNotifier 注入 keypolicy runner 的唤醒通道，可为 nil。
+	KeyPolicyNotifier UsageAggregationNotifier
 }
 
 // NewSyncServiceWithOptions 是统一构造入口，负责填充默认时钟和 metadata fetcher。
@@ -106,6 +110,8 @@ func NewSyncServiceWithOptions(db *gorm.DB, opts SyncServiceOptions) *SyncServic
 		usageAggregation: opts.UsageAggregationNotifier,
 		// Header appender 始终独立于聚合 notifier，生产 App 会同时注入两个接收方。
 		usageHeaderQuota: opts.UsageHeaderQuota,
+		// 限额 runner 的唤醒通道与聚合 notifier 相互独立，任一缺席不影响另一个。
+		keyPolicy: opts.KeyPolicyNotifier,
 	}
 }
 
@@ -352,6 +358,10 @@ func (s *SyncService) processRedisInboxRows(ctx context.Context, writeDB *gorm.D
 				failureResult.DiscardedRows = failureCounts.discarded
 				return failureResult, aggregateErr
 			}
+		}
+		// 限额评估与聚合 runner 解耦，同样只做非阻塞唤醒，不参与兼容补算分支。
+		if s.keyPolicy != nil {
+			s.keyPolicy.NotifyUsageEventsCommitted(events)
 		}
 		// 不可变结构化快照交给 Quota service；cache/history fan-out 属于其内部消费职责。
 		if s.usageHeaderQuota != nil && len(headerSnapshots) > 0 && !s.usageHeaderQuota.TryAppendUsageHeaderSnapshots(headerSnapshots) {

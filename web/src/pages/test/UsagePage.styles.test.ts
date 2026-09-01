@@ -1116,7 +1116,9 @@ describe('UsagePage toolbar styles', () => {
     expect(usagePageStyles).not.toContain('.settingsCompactAction')
     expect(apiKeyButtonsBlock).not.toContain('min-height: 40px;')
     expect(sessionButtonBlock).not.toContain('min-height: 40px;')
-    expect(apiKeySettingsSource.match(/appearance="action"/g)).toHaveLength(1)
+    // 生命周期操作后行内有 5 个动作按钮（保存/重新生成/禁用恢复/删除/配额）+ 1 个头部新建按钮，
+    // 全部保持 compact action 外观，不允许出现 40px 高度的普通按钮。
+    expect(apiKeySettingsSource.match(/appearance="action"/g)).toHaveLength(6)
     expect(apiKeySettingsSource).not.toContain('styles.apiKeySettingsCopyButton')
     expect(sessionSettingsSource.match(/appearance="action"/g)).toHaveLength(3)
   })
