@@ -51,6 +51,7 @@ type StatusRouteConfig struct {
 
 type OptionalProviders struct {
 	UsageIdentity service.UsageIdentityProvider
+	KeyClaudeQuotaIdentities service.APIKeyClaudeQuotaIdentityProvider
 	ErrorEvents   service.ErrorEventProvider
 	Quota         QuotaProvider
 	CPAAPIKeys    service.CPAAPIKeyProvider
@@ -97,6 +98,7 @@ func NewRouter(
 	authHandler.registerRoutes(authGroup)
 
 	var usageIdentityProvider service.UsageIdentityProvider
+	var keyClaudeQuotaIdentityProvider service.APIKeyClaudeQuotaIdentityProvider
 	var errorEventProvider service.ErrorEventProvider
 	var quotaProvider QuotaProvider
 	var cpaAPIKeyProvider service.CPAAPIKeyProvider
@@ -108,6 +110,7 @@ func NewRouter(
 	var statusConfig StatusRouteConfig
 	if len(optionalProviders) > 0 {
 		usageIdentityProvider = optionalProviders[0].UsageIdentity
+		keyClaudeQuotaIdentityProvider = optionalProviders[0].KeyClaudeQuotaIdentities
 		errorEventProvider = optionalProviders[0].ErrorEvents
 		quotaProvider = optionalProviders[0].Quota
 		cpaAPIKeyProvider = optionalProviders[0].CPAAPIKeys
@@ -157,6 +160,7 @@ func NewRouter(
 	registerKeyOverviewRoute(keyViewerProtected, usageProvider)
 	registerKeyActivityRoute(keyViewerProtected, usageProvider)
 	registerKeyUsageAnalysisRoute(keyViewerProtected, usageProvider)
+	registerKeyClaudeQuotaRoute(keyViewerProtected, keyClaudeQuotaIdentityProvider, quotaProvider)
 	if rankingProvider != nil {
 		rankinghttpapi.RegisterKeyViewerRoutes(keyViewerProtected, rankingProvider)
 	}

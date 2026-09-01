@@ -217,6 +217,7 @@ func parseClaudeUsagePayload(response *apicall.Response) (*ClaudeUsagePayload, e
 		SevenDayOpus:      parseClaudeUsageWindow(objectField(object, "seven_day_opus", "sevenDayOpus")),
 		SevenDaySonnet:    parseClaudeUsageWindow(objectField(object, "seven_day_sonnet", "sevenDaySonnet")),
 		SevenDayCowork:    parseClaudeUsageWindow(objectField(object, "seven_day_cowork", "sevenDayCowork")),
+		SevenDayFable:     parseClaudeUsageWindow(objectField(object, "seven_day_fable", "sevenDayFable")),
 		IguanaNecktie:     parseClaudeUsageWindow(objectField(object, "iguana_necktie", "iguanaNecktie")),
 		ExtraUsage:        parseClaudeExtraUsage(objectField(object, "extra_usage", "extraUsage")),
 	}, nil

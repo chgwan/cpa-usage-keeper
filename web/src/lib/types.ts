@@ -471,6 +471,18 @@ export interface UsageQuotaCheckResponse {
   rateLimitResetCreditsAvailableCount?: number | null
 }
 
+export interface KeyClaudeQuotaItem {
+  status: string
+  quota?: UsageQuotaRow[]
+  subscription?: UsageSubscriptionInfo
+  refreshed_at?: string
+  expires_at?: string
+}
+
+export interface KeyClaudeQuotaResponse {
+  items: KeyClaudeQuotaItem[]
+}
+
 export interface UsageQuotaResetResponse {
   authIndex: string
   code?: string

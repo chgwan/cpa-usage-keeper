@@ -387,6 +387,7 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 			cfg.AppBasePath,
 			api.OptionalProviders{
 				UsageIdentity: usageIdentityService,
+				KeyClaudeQuotaIdentities: usageIdentityService,
 				ErrorEvents:   errorEventService,
 				Quota:         quotaService,
 				CPAAPIKeys:    cpaAPIKeyService,

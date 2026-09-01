@@ -79,6 +79,7 @@ func normalizeClaudeQuotaRows(result ClaudeResult) []QuotaRow {
 	rows = appendClaudeWindowQuotaRow(rows, "seven_day_opus", "7d Opus", "model", result.Usage.SevenDayOpus)
 	rows = appendClaudeWindowQuotaRow(rows, "seven_day_sonnet", "7d Sonnet", "model", result.Usage.SevenDaySonnet)
 	rows = appendClaudeWindowQuotaRow(rows, "seven_day_cowork", "7d Cowork", "window", result.Usage.SevenDayCowork)
+	rows = appendClaudeWindowQuotaRow(rows, "seven_day_fable", "7d Fable 5", "model", result.Usage.SevenDayFable)
 	rows = appendClaudeWindowQuotaRow(rows, "iguana_necktie", "Iguana Necktie", "window", result.Usage.IguanaNecktie)
 	if result.Usage.ExtraUsage != nil {
 		rows = append(rows, QuotaRow{

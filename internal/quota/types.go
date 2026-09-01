@@ -199,6 +199,7 @@ type ClaudeUsagePayload struct {
 	SevenDayOpus      *ClaudeUsageWindow `json:"sevenDayOpus,omitempty"`
 	SevenDaySonnet    *ClaudeUsageWindow `json:"sevenDaySonnet,omitempty"`
 	SevenDayCowork    *ClaudeUsageWindow `json:"sevenDayCowork,omitempty"`
+	SevenDayFable     *ClaudeUsageWindow `json:"sevenDayFable,omitempty"`
 	IguanaNecktie     *ClaudeUsageWindow `json:"iguanaNecktie,omitempty"`
 	ExtraUsage        *ClaudeExtraUsage  `json:"extraUsage,omitempty"`
 }
