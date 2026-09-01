@@ -211,10 +211,10 @@ describe('UsagePage responsive layout and accessibility', () => {
     expect(apiKeySettingsMobileBlock).toMatch(/\.apiKeyAliasInput\s*\{[\s\S]*?max-width:\s*100%;/)
   })
 
-  it('reflows API Key settings from two columns to one on tablets', () => {
-    expect(styleRuleBlock(usagePageStyles, '.apiKeySettingsList')).toContain('grid-template-columns: repeat(2, minmax(0, 1fr));')
-    const tabletStyles = usagePageStyles.slice(usagePageStyles.indexOf('@include tablet {\n  .apiKeySettingsList'))
-    expect(tabletStyles).toMatch(/\.apiKeySettingsList\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/)
+  // fork：API Key 列表在所有宽度下都是单列，行内动作直接平铺（上游是桌面双列、平板单列）。
+  it('keeps API Key settings in a single column at every width', () => {
+    expect(styleRuleBlock(usagePageStyles, '.apiKeySettingsList')).toContain('grid-template-columns: minmax(0, 1fr);')
+    expect(usagePageStyles).not.toMatch(/\.apiKeySettingsList\s*\{[^}]*repeat\(2, minmax\(0, 1fr\)\)/)
     expect(styleRuleBlock(usagePageStyles, '.apiKeySettingsNameRow')).toContain('grid-template-columns: minmax(0, 1fr) auto;')
   })
 

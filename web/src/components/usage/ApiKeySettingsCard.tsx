@@ -147,6 +147,7 @@ export function ApiKeySettingsCard({
 
   const [reveal, setReveal] = useState<RevealState>({ phase: 'idle' });
   const [pendingId, setPendingId] = useState<string | null>(null);
+  // 行内重新生成 / 删除需要二次确认；同一时刻最多一个动作待确认。
   const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [createPending, setCreatePending] = useState(false);
@@ -247,13 +248,13 @@ export function ApiKeySettingsCard({
     await runRowAction(id, () => onDeleteKey(id));
   }, [onDeleteKey, runRowAction]);
 
-  const handleToggleKey = useCallback(async (item: CpaApiKeySettingsItem) => {
-    const inactive = item.policy?.enforcementState !== 'active';
-    const action = inactive ? onRestoreKey : onDisableKey;
+  // 行内启停切换：仍走 pendingId 忙态，结果只提示不抛错。
+  const handleToggleEnforcement = useCallback(async (id: string, restore: boolean) => {
+    const action = restore ? onRestoreKey : onDisableKey;
     if (!action) {
       return;
     }
-    await runRowAction(item.id, () => action(item.id));
+    await runRowAction(id, () => action(id));
   }, [onDisableKey, onRestoreKey, runRowAction]);
 
   const confirmPending = confirmAction !== null && pendingId === confirmAction.id;
@@ -397,7 +398,7 @@ export function ApiKeySettingsCard({
                           variant="secondary"
                           size="sm"
                           appearance="action"
-                          onClick={() => void handleToggleKey(item)}
+                          onClick={() => void handleToggleEnforcement(item.id, inactive)}
                           disabled={rowBusy}
                         >
                           {inactive ? t('usage_stats.api_key_settings_restore') : t('usage_stats.api_key_settings_disable')}

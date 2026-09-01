@@ -1905,12 +1905,14 @@
 .apiKeySettingsList {
   display: grid;
   gap: 10px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  // 单列布局：每行占满整卡宽度，行内动作按钮全部直接平铺展示。
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .apiKeySettingsItem {
+  // key 展示列收窄，把更多宽度留给别名输入与操作按钮同一行。
   display: grid;
-  grid-template-columns: minmax(140px, 0.9fr) minmax(200px, 1.1fr);
+  grid-template-columns: minmax(110px, 0.55fr) minmax(0, 1.45fr);
   align-items: start;
   gap: 14px;
   padding: 14px;
@@ -1997,9 +1999,9 @@
 }
 
 .apiKeySettingsForm {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
+  // 别名标签占一行，输入框与操作按钮合并到同一行；空间不足时按钮换行兜底。
+  display: flex;
+  align-items: flex-end;
   gap: 10px;
   min-width: 0;
 }
@@ -2008,6 +2010,8 @@
   display: flex;
   flex-direction: column;
   gap: 5px;
+  // 输入框弹性伸展，与右侧按钮共享一行。
+  flex: 1 1 220px;
   min-width: 0;
 
   :global(.form-group) {
@@ -2041,8 +2045,30 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  align-self: end;
+  align-self: flex-end;
+  // 按钮按内容占宽并与输入框同行；空间不足时不换行，改为横向滚动滑块。
+  flex: 0 1 auto;
+  flex-wrap: nowrap;
+  max-width: 100%;
   gap: 8px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  // 细滚动条，保证滑块可见可发现。
+  scrollbar-width: thin;
+  padding-bottom: 4px;
+
+  &::-webkit-scrollbar {
+    height: 6px;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--border-color) 70%, transparent);
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
   min-width: 0;
 }
 

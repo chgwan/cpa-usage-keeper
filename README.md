@@ -474,7 +474,7 @@ If you lose your authenticator, set `AUTH_TOTP_RESET=true`, restart Keeper, log 
 
 API keys can be managed from the usage page settings. Creating a key shows the full value exactly once. Regenerating a key replaces its value in CPA while keeping its alias, quota policy, and ranking avatar locally; historical usage stays attributed to the old key string.
 
-Each key can carry quota limits: request count, tokens, or estimated cost (USD), each over the today or this-month window of the `TZ` calendar. When any configured limit is breached, Keeper removes the key from CPA, so requests using it fail within seconds; when the window resets (or usage drops below the limit), the key is re-added automatically. Notes:
+Each key can carry quota limits: request count, tokens, or estimated cost (USD), each over per-day and per-month windows (usage resets at local midnight and on the first of the month, following `TZ`). When any configured limit is breached, Keeper removes the key from CPA, so requests using it fail within seconds; when the window resets (or usage drops below the limit), the key is re-added automatically. Notes:
 
 - The last remaining key in CPA is never auto-disabled.
 - Enforcement is reactive: requests between the breach and the removal still succeed. Keeper is not in the request path.
