@@ -85,6 +85,7 @@ func TestOrderedMigrationsPreservesExecutionOrder(t *testing.T) {
 		"20260820_codex_quota_history",
 		"20260822_rebuild_quota_history",
 		"20260824_add_auth_session_alias",
+		"20260827_reset_quota_history",
 		// API Key 限额策略与执行审计排在已发布序列之后。
 		"20260831_create_api_key_policies",
 	}

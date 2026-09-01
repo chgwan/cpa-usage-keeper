@@ -18,7 +18,7 @@ var configEnvKeys = []string{
 	"SQLITE_PATH", "BACKUP_ENABLED", "BACKUP_DIR", "BACKUP_INTERVAL", "BACKUP_RETENTION_DAYS",
 	"REQUEST_TIMEOUT", "LOG_LEVEL", "LOG_FILE_ENABLED", "LOG_DIR", "LOG_RETENTION_DAYS",
 	"AUTH_ENABLED", "LOGIN_PASSWORD", "AUTH_SESSION_TTL", "TRUSTED_PROXY_CIDRS", "TZ", "TLS_SKIP_VERIFY", "QUOTA_REFRESH_WORKER_LIMIT",
-	"AUTH_TOTP_RESET",
+	"API_KEY_VIEWER_LOCAL_RANKING_ENABLED",
 }
 
 func TestMain(m *testing.M) {
@@ -137,9 +137,6 @@ func TestLoadFromEnvAppliesDefaults(t *testing.T) {
 	}
 	if cfg.AuthSessionTTL != 7*24*time.Hour {
 		t.Fatalf("expected default auth session ttl 168h, got %s", cfg.AuthSessionTTL)
-	}
-	if cfg.AuthTOTPReset {
-		t.Fatal("expected AuthTOTPReset to be disabled by default")
 	}
 	if cfg.TLSSkipVerify {
 		t.Fatal("expected TLS skip verify to be disabled by default")
@@ -576,30 +573,5 @@ func TestLoadFromEnvRejectsNonPositiveAuthSessionTTL(t *testing.T) {
 	_, err := LoadFromEnv()
 	if err == nil || err.Error() != "AUTH_SESSION_TTL must be positive" {
 		t.Fatalf("expected AUTH_SESSION_TTL validation error, got %v", err)
-	}
-}
-
-func TestLoadParsesAuthTOTPReset(t *testing.T) {
-	t.Setenv("CPA_BASE_URL", "http://127.0.0.1:"+cpa.ManagementRedisDefaultPort)
-	t.Setenv("CPA_MANAGEMENT_KEY", "secret")
-	if err := os.Setenv("AUTH_TOTP_RESET", "true"); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := Load(LoadOptions{})
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-	if !cfg.AuthTOTPReset {
-		t.Fatal("expected AuthTOTPReset true when AUTH_TOTP_RESET=true")
-	}
-	if err := os.Unsetenv("AUTH_TOTP_RESET"); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err = Load(LoadOptions{})
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-	if cfg.AuthTOTPReset {
-		t.Fatal("expected AuthTOTPReset false by default")
 	}
 }

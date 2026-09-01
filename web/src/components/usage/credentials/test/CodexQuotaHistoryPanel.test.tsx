@@ -165,7 +165,7 @@ describe('CodexQuotaHistoryPanel', () => {
     expect(document.body.textContent).not.toContain('usage_stats.credentials_quota_history_role_primary')
     expect(document.body.textContent).not.toContain('usage_stats.credentials_quota_history_role_secondary')
     expect(latestChartData?.labels).toEqual(['90% → 89%', '89% → 88%', '88% → 87%', '87% → 86%'])
-    expect(latestChartData?.datasets).toHaveLength(2)
+    expect(latestChartData?.datasets).toHaveLength(3)
     expect(latestChartData?.datasets[0]).toMatchObject({
       type: 'bar',
       yAxisID: 'tokens',
@@ -192,10 +192,23 @@ describe('CodexQuotaHistoryPanel', () => {
     })
     const pointRadius = latestChartData?.datasets[1]?.pointRadius as unknown as ((context: { dataIndex: number }) => number)
     expect([0, 1, 2, 3].map((dataIndex) => pointRadius({ dataIndex }))).toEqual([0, 0, 0, 0])
+    expect(latestChartData?.datasets[2]).toMatchObject({
+      type: 'line',
+      yAxisID: 'remaining',
+      data: [89, 88, 87, 86],
+      borderColor: 'rgba(120, 113, 108, 0.68)',
+      backgroundColor: 'rgba(120, 113, 108, 0.68)',
+      pointBackgroundColor: 'rgba(120, 113, 108, 0.68)',
+      pointRadius: 0,
+      pointHoverRadius: 3,
+      tension: 0,
+    })
     expect(latestChartOptions?.scales?.x?.ticks).toMatchObject({ autoSkip: true, maxTicksLimit: 8, maxRotation: 0 })
     expect(latestChartOptions?.scales?.tokens?.ticks).toMatchObject({ maxTicksLimit: 5 })
     expect(latestChartOptions?.scales?.cost?.ticks).toMatchObject({ maxTicksLimit: 5 })
+    expect(latestChartOptions?.scales?.remaining).toMatchObject({ display: true, position: 'right', min: 0, max: 100 })
     expect(document.body.querySelector<HTMLElement>('[data-codex-quota-cost-legend]')?.style.getPropertyValue('--quota-cost-line-color')).toBe('#ff5a40')
+    expect(document.body.querySelector<HTMLElement>('[data-codex-quota-remaining-legend]')?.style.getPropertyValue('--quota-remaining-line-color')).toBe('rgba(120, 113, 108, 0.68)')
     expect(document.body.querySelector('[aria-label="usage_stats.credentials_quota_history_metric_selector"]')).toBeNull()
     expect(document.body.querySelector('[data-codex-quota-cycle-id="2"][data-codex-quota-cycle-status="current"]')).not.toBeNull()
     expect(document.body.querySelector('[data-codex-quota-cycle-id="1"][data-codex-quota-cycle-status="completed"]')).not.toBeNull()
@@ -260,9 +273,11 @@ describe('CodexQuotaHistoryPanel', () => {
       'usage_stats.credentials_quota_history_cost_per_point: $1.00',
     ])
     expect(afterBody?.([{ dataIndex: 0 }])).toEqual([
+      'usage_stats.credentials_quota_history_remaining_percentage: 89%',
       'usage_stats.credentials_quota_history_interval: Aug 20, 10:00 AM → Aug 20, 10:10 AM',
     ])
     expect(afterBody?.([{ dataIndex: 1 }])).toEqual([
+      'usage_stats.credentials_quota_history_remaining_percentage: 88%',
       'usage_stats.credentials_quota_history_change: 89% → 86%',
       'usage_stats.credentials_quota_history_interval: Aug 20, 11:00 AM → Aug 20, 11:30 AM',
       'usage_stats.total_tokens: 3.00K Token',
@@ -424,6 +439,11 @@ describe('CodexQuotaHistoryPanel', () => {
     expect(latestChartData?.datasets[1]).toMatchObject({
       borderColor: '#ff5a40',
       backgroundColor: '#ff5a40',
+    })
+    expect(latestChartData?.datasets[2]).toMatchObject({
+      borderColor: 'rgba(168, 162, 158, 0.68)',
+      backgroundColor: 'rgba(168, 162, 158, 0.68)',
+      pointBackgroundColor: 'rgba(168, 162, 158, 0.68)',
     })
     expect(document.body.querySelector<HTMLElement>('[data-codex-quota-cost-legend]')?.style.getPropertyValue('--quota-cost-line-color')).toBe('#ff5a40')
   })

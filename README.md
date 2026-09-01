@@ -398,6 +398,7 @@ For cross-origin CPAMC embedding, `CPA_PUBLIC_URL` must be a complete `http://` 
 | `LOGIN_PASSWORD` | When auth is enabled | - | Login password |
 | `AUTH_SESSION_TTL` | No | `168h` | Login session lifetime |
 | `AUTH_TOTP_RESET` | No | `false` | Clear the admin TOTP enrollment at startup (lockout recovery); remove after resetting |
+| `API_KEY_VIEWER_LOCAL_RANKING_ENABLED` | No | `false` | Allow API Key viewers to read Local Ranking; Community Ranking remains read-only |
 
 #### Two-Factor Authentication (TOTP)
 

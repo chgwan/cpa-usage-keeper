@@ -99,7 +99,6 @@ export function LoginPage({ loading = false, totpRequired = false, adminError = 
           <div className={styles.cardHeader}>
             <span className={styles.cardKicker}>{t('auth.console_kicker')}</span>
             <h2 className={styles.cardTitle}>{t('auth.console_title')}</h2>
-            <p className={styles.cardHint}>{t('auth.console_hint')}</p>
           </div>
 
           <div className={styles.tabs} role="tablist" aria-label={t('auth.login_method')}>
@@ -127,19 +126,16 @@ export function LoginPage({ loading = false, totpRequired = false, adminError = 
 
           <form className={styles.form} onSubmit={(event) => void handleSubmit(event)}>
             {mode === 'api_key' ? (
-              <>
-                <Input
-                  type="password"
-                  autoComplete="off"
-                  label={t('auth.api_key_label')}
-                  placeholder={t('auth.api_key_placeholder')}
-                  value={apiKey}
-                  onChange={(event) => setApiKey(event.target.value)}
-                  error={activeError || undefined}
-                  disabled={loading}
-                />
-                <p className={styles.formHint}>{t('auth.api_key_hint')}</p>
-              </>
+              <Input
+                type="password"
+                autoComplete="off"
+                label={t('auth.api_key_label')}
+                placeholder={t('auth.api_key_placeholder')}
+                value={apiKey}
+                onChange={(event) => setApiKey(event.target.value)}
+                error={activeError || undefined}
+                disabled={loading}
+              />
             ) : (
               <>
                 <Input
@@ -152,7 +148,6 @@ export function LoginPage({ loading = false, totpRequired = false, adminError = 
                   error={activeError || undefined}
                   disabled={loading}
                 />
-                <p className={styles.formHint}>{t('auth.password_hint')}</p>
                 {shouldShowTOTPCodeField(mode, Boolean(totpRequired)) && (
                   <Input
                     type="text"

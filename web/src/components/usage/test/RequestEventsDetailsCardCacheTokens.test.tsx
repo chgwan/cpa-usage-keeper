@@ -42,7 +42,7 @@ const extractFirstTableRowCells = (html: string) => {
   return Array.from(row.matchAll(/<td\b[^>]*>(.*?)<\/td>/gs), (match) => textFromMarkup(match[1]));
 };
 
-const renderCard = () => renderToStaticMarkup(
+const renderCard = (props: Partial<React.ComponentProps<typeof RequestEventsDetailsCard>> = {}) => renderToStaticMarkup(
   <RequestEventsDetailsCard
     events={[event]}
     loading={false}
@@ -55,6 +55,7 @@ const renderCard = () => renderToStaticMarkup(
     onModelFilterChange={() => undefined}
     onSourceFilterChange={() => undefined}
     onResultFilterChange={() => undefined}
+    {...props}
   />,
 );
 
@@ -80,7 +81,17 @@ describe('RequestEventsDetailsCard cache token columns', () => {
 
     expect(tokensIndex).toBeGreaterThanOrEqual(0);
     expect(cacheIndex).toBe(tokensIndex + 1);
-    expect(cells[tokensIndex]).toBe('120Input 100Output 20 (Reasoning 5)');
-    expect(cells[cacheIndex]).toBe('30.00%Read 30Write 10');
+    expect(cells[tokensIndex]).toBe('120100205');
+    expect(cells[cacheIndex]).toBe('30.00%3010');
+    expect(html).toContain('data-token-direction="input"');
+    expect(html).toContain('data-token-direction="output"');
+    expect(html).toContain('data-token-direction="reasoning"');
+    expect(html).toContain('data-token-flow="upload"');
+    expect(html).toContain('data-token-flow="download"');
+    expect(html).toContain('data-cache-operation="read"');
+    expect(html).toContain('data-cache-operation="write"');
+    expect(html).toContain('data-cache-flow="upload"');
+    expect(html).toContain('data-cache-flow="download"');
+    expect(html).not.toContain('data-cache-rate-tone=');
   });
 });
