@@ -10,11 +10,22 @@ import (
 )
 
 type keyClaudeQuotaItem struct {
-	Status       quota.RefreshTaskStatus `json:"status"`
-	Quota        []quota.QuotaRow         `json:"quota,omitempty"`
-	Subscription *quota.SubscriptionInfo `json:"subscription,omitempty"`
-	RefreshedAt  *time.Time               `json:"refreshed_at,omitempty"`
-	ExpiresAt    *time.Time               `json:"expires_at,omitempty"`
+	Status       quota.RefreshTaskStatus    `json:"status"`
+	Quota        []keyClaudeQuotaRow        `json:"quota,omitempty"`
+	Subscription *keyClaudeSubscriptionInfo `json:"subscription,omitempty"`
+	RefreshedAt  *time.Time                 `json:"refreshed_at,omitempty"`
+	ExpiresAt    *time.Time                 `json:"expires_at,omitempty"`
+}
+
+type keyClaudeQuotaRow struct {
+	Key         string   `json:"key"`
+	Label       string   `json:"label,omitempty"`
+	UsedPercent *float64 `json:"usedPercent,omitempty"`
+	ResetAt     string   `json:"resetAt,omitempty"`
+}
+
+type keyClaudeSubscriptionInfo struct {
+	Plan string `json:"plan"`
 }
 
 type keyClaudeQuotaResponse struct {
@@ -52,8 +63,17 @@ func registerKeyClaudeQuotaRoute(router gin.IRoutes, identities service.APIKeyCl
 				Status: item.Status, RefreshedAt: item.RefreshedAt, ExpiresAt: item.ExpiresAt,
 			}
 			if item.Quota != nil {
-				viewerItem.Quota = item.Quota.Quota
-				viewerItem.Subscription = item.Quota.Subscription
+				for _, row := range item.Quota.Quota {
+					if row.Key != "five_hour" && row.Key != "seven_day" && row.Key != "seven_day_fable" {
+						continue
+					}
+					viewerItem.Quota = append(viewerItem.Quota, keyClaudeQuotaRow{
+						Key: row.Key, Label: row.Label, UsedPercent: row.UsedPercent, ResetAt: row.ResetAt,
+					})
+				}
+				if item.Quota.Subscription != nil {
+					viewerItem.Subscription = &keyClaudeSubscriptionInfo{Plan: item.Quota.Subscription.Plan}
+				}
 			}
 			response.Items = append(response.Items, viewerItem)
 		}

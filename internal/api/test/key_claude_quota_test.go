@@ -32,9 +32,14 @@ type keyClaudeQuotaProviderStub struct {
 func (s *keyClaudeQuotaProviderStub) GetCachedQuota(_ context.Context, request quota.CacheRequest) (quota.CacheResponse, error) {
 	s.request = request
 	percent := 35.0
+	extraUsed := 25.0
+	extraLimit := 100.0
 	return quota.CacheResponse{Items: []quota.CachedQuotaItem{{
 		AuthIndex: "shared-claude-auth", FileName: stringPointer("private.json"), Status: quota.RefreshTaskStatusCompleted,
-		Quota: &quota.CheckResponse{ID: "shared-claude-auth", Quota: []quota.QuotaRow{{Key: "five_hour", Label: "5h", UsedPercent: &percent}}},
+		Quota: &quota.CheckResponse{ID: "shared-claude-auth", Quota: []quota.QuotaRow{
+			{Key: "five_hour", Label: "5h", Scope: "private-scope", GroupDescription: "private group", UsedPercent: &percent},
+			{Key: "extra_usage", Label: "Extra Usage", Used: &extraUsed, Limit: &extraLimit},
+		}, Subscription: &quota.SubscriptionInfo{Provider: "private-provider", Plan: "Team", TierID: "private-tier-id", TierName: "private-tier-name"}},
 		Error: "private error",
 	}}}, nil
 }
@@ -122,13 +127,19 @@ func TestAPIKeyViewerClaudeQuotaUsesSharedAccountQuotaAndRedactsCredentialDetail
 		t.Fatalf("expected cache lookup to use scoped auth indexes, got %+v", quotaProvider.request.AuthIndexes)
 	}
 	body := response.Body.String()
-	for _, secret := range []string{"shared-claude-auth", "private.json", "private error", "auth_index", "file_name"} {
+	for _, secret := range []string{
+		"shared-claude-auth", "private.json", "private error", "auth_index", "file_name",
+		"private-scope", "private group", "extra_usage", "Extra Usage", "private-provider", "private-tier-id", "private-tier-name",
+	} {
 		if strings.Contains(body, secret) {
 			t.Fatalf("expected response to redact %q: %s", secret, body)
 		}
 	}
 	if !strings.Contains(body, `"key":"five_hour"`) || !strings.Contains(body, `"usedPercent":35`) {
 		t.Fatalf("expected response to retain Claude quota data: %s", body)
+	}
+	if !strings.Contains(body, `"subscription":{"plan":"Team"}`) {
+		t.Fatalf("expected response to retain only the subscription plan: %s", body)
 	}
 }
 
