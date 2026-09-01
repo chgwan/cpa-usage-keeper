@@ -12,11 +12,12 @@ import {
 import { RankingLeaderboardResults } from '@/features/ranking/components/RankingLeaderboardResults';
 import { RankingScopeSwitch } from '@/features/ranking/components/RankingScopeSwitch';
 import { RankingMetricSelect, RankingToolbar } from '@/features/ranking/components/RankingToolbar';
-import type {
-  RankingLeaderboardResponse,
-  RankingMetric,
-  RankingPeriod,
-  RankingScope,
+import {
+  isLocalOnlyRankingMetric,
+  type RankingLeaderboardResponse,
+  type RankingMetric,
+  type RankingPeriod,
+  type RankingScope,
 } from '@/features/ranking/types';
 import type { AuthSessionAPIKeySummary } from '@/lib/types';
 import shellStyles from '@/features/key-viewer/KeyViewerShell.module.scss';
@@ -67,7 +68,9 @@ export function KeyRankingPage({ apiKey, onNavigate, onAuthRequired }: KeyRankin
     if (nextScope === effectiveScope) return;
     beginSelectionChange();
     setScope(nextScope);
-  }, [beginSelectionChange, effectiveScope]);
+    // cost 只在本地榜单可选；切回 Community 前先回到两个范围共有的综合排名。
+    if (nextScope === 'community' && isLocalOnlyRankingMetric(metric)) setMetric('overall');
+  }, [beginSelectionChange, effectiveScope, metric]);
   const handlePeriodChange = useCallback((nextPeriod: RankingPeriod) => {
     if (nextPeriod === period) return;
     beginSelectionChange();
@@ -192,7 +195,7 @@ export function KeyRankingPage({ apiKey, onNavigate, onAuthRequired }: KeyRankin
                   aria-level={2}
                   data-ranking-metric-title
                 >
-                  <RankingMetricSelect metric={metric} onMetricChange={handleMetricChange} />
+                  <RankingMetricSelect metric={metric} onMetricChange={handleMetricChange} scope={effectiveScope} />
                 </div>
                 <div className={rankingStyles.leaderboardHeaderToolbar} data-ranking-header-toolbar>
                   <RankingToolbar period={period} onPeriodChange={handlePeriodChange} />

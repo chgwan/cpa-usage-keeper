@@ -176,7 +176,20 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 		logrus.WithError(err).Error("recent usage event cache initialization failed; falling back to database queries")
 		recentUsageCache = nil
 	}
-	localRankingService, err := ranking.NewLocalRankingService(db, ranking.LocalRankingServiceOptions{})
+	pricingSnapshot, err := repository.LoadPricingSnapshot(context.Background(), db)
+	if err != nil {
+		if recentUsageCache != nil {
+			recentUsageCache.Close()
+		}
+		if readDB != db {
+			_ = closeGormDB(readDB)
+		}
+		_ = closeGormDB(db)
+		return nil, failInitialization(logCloser, fmt.Errorf("load pricing snapshot: %w", err))
+	}
+	pricingCatalog := pricing.NewCatalog(pricingSnapshot)
+	// 本地榜单的费用维度与限额 runner 共用同一个价格目录实例，价格更新后无需重启。
+	localRankingService, err := ranking.NewLocalRankingService(db, pricingCatalog, ranking.LocalRankingServiceOptions{})
 	if err != nil {
 		if recentUsageCache != nil {
 			recentUsageCache.Close()
@@ -200,18 +213,6 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 		_ = logCloser.Close()
 		return nil, err
 	}
-	pricingSnapshot, err := repository.LoadPricingSnapshot(context.Background(), db)
-	if err != nil {
-		if recentUsageCache != nil {
-			recentUsageCache.Close()
-		}
-		if readDB != db {
-			_ = closeGormDB(readDB)
-		}
-		_ = closeGormDB(db)
-		return nil, failInitialization(logCloser, fmt.Errorf("load pricing snapshot: %w", err))
-	}
-	pricingCatalog := pricing.NewCatalog(pricingSnapshot)
 
 	cpaClient := cpa.NewClient(cfg.CPABaseURL, cfg.CPAManagementKey, cfg.RequestTimeout, cfg.TLSSkipVerify)
 	quotaService := quota.NewServiceWithOptions(db, cpaClient, quota.ServiceOptions{

@@ -709,7 +709,7 @@ function LeaderboardCard({
               aria-level={2}
               data-ranking-metric-title
             >
-              <RankingMetricSelect metric={metric} onMetricChange={onMetricChange} />
+              <RankingMetricSelect metric={metric} onMetricChange={onMetricChange} scope={scope} />
             </div>
             {scoreExplanation ? (
               <span className={styles.scoreExplanationSlot} data-ranking-score-explanation-slot>

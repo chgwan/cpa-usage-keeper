@@ -84,6 +84,16 @@ func TestLocalRankingRouteValidatesSelectionAndDisablesCaching(t *testing.T) {
 	}
 }
 
+func TestLocalRankingRouteAcceptsLocalOnlyCostMetric(t *testing.T) {
+	provider := &localRankingProviderStub{}
+	router := localRankingRouter(provider)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/ranking/local/leaderboards?period=today&metric=cost", nil))
+	if response.Code != http.StatusOK || provider.metric != ranking.MetricCost {
+		t.Fatalf("local route should accept the local-only cost metric: status=%d body=%s provider=%+v", response.Code, response.Body.String(), provider)
+	}
+}
+
 func TestLocalRankingRouteUsesLocalFailureCode(t *testing.T) {
 	response := httptest.NewRecorder()
 	localRankingRouter(&localRankingProviderStub{err: errors.New("boom")}).ServeHTTP(

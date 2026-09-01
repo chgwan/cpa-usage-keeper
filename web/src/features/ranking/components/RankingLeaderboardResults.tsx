@@ -19,6 +19,11 @@ const OVERALL_METRICS: RankingDetailMetric[] = [
   'peak_rpm',
 ];
 
+// 费用是本地榜单独有列，Community 综合分面板保持原列集。
+const overallMetricsForScope = (scope: RankingScope): RankingDetailMetric[] => (
+  scope === 'local' ? [...OVERALL_METRICS, 'cost'] : OVERALL_METRICS
+);
+
 export interface RankingLeaderboardResultsProps {
   scope: RankingScope;
   metric: RankingMetric;
@@ -34,6 +39,7 @@ export function RankingLeaderboardResults({
 }: RankingLeaderboardResultsProps) {
   const { t } = useTranslation();
   const podium = entries.slice(0, 3);
+  const overallMetrics = overallMetricsForScope(scope);
 
   return (
     <div className={styles.leaderboardResults} data-ranking-results>
@@ -60,7 +66,7 @@ export function RankingLeaderboardResults({
               {metric === 'overall' ? (
                 <>
                   <th className={styles.numberCell}>{t('ranking.score')}</th>
-                  {OVERALL_METRICS.map((item) => <th key={item} className={styles.numberCell}>{t(`ranking.metric_short_${item}`)}</th>)}
+                  {overallMetrics.map((item) => <th key={item} className={styles.numberCell}>{t(`ranking.metric_short_${item}`)}</th>)}
                 </>
               ) : <th className={styles.numberCell}>{t(`ranking.metric_${metric}`)}</th>}
             </tr>
@@ -85,7 +91,7 @@ export function RankingLeaderboardResults({
                 {metric === 'overall' ? (
                   <>
                     <td className={`${styles.numberCell} ${styles.scoreCell}`.trim()}>{formatLeaderboardValue(metric, entry, scope)}</td>
-                    {OVERALL_METRICS.map((item) => (
+                    {overallMetrics.map((item) => (
                       <td key={item} className={styles.numberCell}>{formatOverallMetricValue(item, entry)}</td>
                     ))}
                   </>

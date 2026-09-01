@@ -73,7 +73,7 @@ CPA Usage Keeper is a standalone persistence and analytics dashboard for [CLIPro
 - Inspect and export request-level events with configurable table columns
 - Analyze usage trends, cost composition, model/API Key/AI Provider mix, hourly heatmaps, and latency diagnostics
 - Monitor Auth Files and AI Providers with usage metrics, health inspection, and quota refresh
-- Opt into community rankings by overall score, tokens, requests, cache rate, average TTFT/latency, or peak TPM/RPM
+- Opt into community rankings by overall score, tokens, requests, cache rate, average TTFT/latency, or peak TPM/RPM, and compare local API Keys by the same dimensions plus cost
 - Open a read-only usage view scoped to an individual CPA API Key
 - Manage CPA API keys from the dashboard: create, regenerate (alias and quota policy kept), disable, restore, and delete, all through CPA's native management API
 - Optional per-key usage quotas (requests / tokens / cost over per-day and per-month windows, resetting at local midnight and on the first of the month following `TZ`) that automatically remove a key from CPA when a limit is breached and restore it when the window resets

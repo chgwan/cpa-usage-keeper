@@ -56,7 +56,7 @@ import { useRankingData } from '@/features/ranking/hooks/useRankingData';
 import { useLocalRankingData } from '@/features/ranking/hooks/useLocalRankingData';
 import { resolveLocalRankingPreviewAPI, resolveRankingPreviewAPI } from '@/features/ranking/previewMock';
 import { loadRankingScope, persistRankingScope } from '@/features/ranking/scope';
-import type { LocalRankingProfileRequest, RankingScope } from '@/features/ranking/types';
+import { isLocalOnlyRankingMetric, type LocalRankingProfileRequest, type RankingScope } from '@/features/ranking/types';
 import styles from './UsagePage.module.scss';
 
 const TIME_RANGE_STORAGE_KEY = 'cli-proxy-usage-time-range-v1';
@@ -895,6 +895,14 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     onBackgroundRefreshError: handleRankingBackgroundRefreshError,
     api: LOCAL_RANKING_PREVIEW_API,
   });
+  // cost 只在本地榜单可选；切回 Community 时回落到两个范围共有的综合排名。
+  const rankingMetric = rankingData.metric;
+  const setRankingMetric = rankingData.setMetric;
+  useEffect(() => {
+    if (rankingScope === 'community' && isLocalOnlyRankingMetric(rankingMetric)) {
+      setRankingMetric('overall');
+    }
+  }, [rankingMetric, rankingScope, setRankingMetric]);
   const updateLocalRankingProfile = localRankingData.updateProfile;
   const patchLocalRankingProfileCache = localRankingData.patchProfileCache;
   const displayedRankingLeaderboard = rankingScope === 'community'

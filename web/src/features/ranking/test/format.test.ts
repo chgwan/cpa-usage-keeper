@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { formatLeaderboardValue, formatOverallMetricValue } from '../format';
-import type { RankingLeaderboardEntry } from '../types';
+import { isLocalOnlyRankingMetric, rankingMetricsForScope, type RankingLeaderboardEntry } from '../types';
 
 const entry = (value: number, overrides: Partial<RankingLeaderboardEntry> = {}): RankingLeaderboardEntry => ({
   rank: 1,
@@ -46,5 +46,23 @@ describe('ranking value formatting', () => {
     expect(formatOverallMetricValue('total_tokens', overall)).toBe('1.50K');
     expect(formatOverallMetricValue('cache_read_rate', overall)).toBe('82.50%');
     expect(formatOverallMetricValue('peak_rpm', overall)).toBe('—');
+  });
+
+  it('formats micro-USD cost values as fixed four-decimal dollar amounts', () => {
+    expect(formatLeaderboardValue('cost', entry(100))).toBe('$0.0001');
+    expect(formatLeaderboardValue('cost', entry(8_670))).toBe('$0.0087');
+    expect(formatLeaderboardValue('cost', entry(25_000))).toBe('$0.0250');
+    expect(formatLeaderboardValue('cost', entry(4_125_000))).toBe('$4.1250');
+    expect(formatLeaderboardValue('cost', entry(999_999))).toBe('$1.0000');
+    expect(formatLeaderboardValue('cost', entry(0))).toBe('$0.0000');
+    expect(formatOverallMetricValue('cost', entry(9_325, { metrics: { cost: 25_000 } }))).toBe('$0.0250');
+  });
+
+  it('keeps the cost metric selectable for local scope only', () => {
+    expect(isLocalOnlyRankingMetric('cost')).toBe(true);
+    expect(isLocalOnlyRankingMetric('total_tokens')).toBe(false);
+    expect(rankingMetricsForScope('local')).toContain('cost');
+    expect(rankingMetricsForScope('community')).not.toContain('cost');
+    expect(rankingMetricsForScope('community')).toHaveLength(8);
   });
 });

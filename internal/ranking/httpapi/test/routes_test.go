@@ -193,6 +193,16 @@ func TestRankingLeaderboardValidatesAndForwardsSelection(t *testing.T) {
 	if invalid.Code != http.StatusBadRequest {
 		t.Fatalf("expected invalid selection status 400, got %d body=%s", invalid.Code, invalid.Body.String())
 	}
+
+	// cost 是本地榜单独有维度，Community 榜单必须继续拒绝。
+	localOnly := httptest.NewRecorder()
+	router.ServeHTTP(localOnly, httptest.NewRequest(http.MethodGet, "/api/v1/ranking/leaderboards?period=today&metric=cost", nil))
+	if localOnly.Code != http.StatusBadRequest || !strings.Contains(localOnly.Body.String(), "invalid_leaderboard_selection") {
+		t.Fatalf("community route must reject the local-only cost metric: status=%d body=%s", localOnly.Code, localOnly.Body.String())
+	}
+	if provider.boardMetric == ranking.MetricCost {
+		t.Fatalf("community route forwarded the local-only cost metric to the center")
+	}
 }
 
 func TestRankingMetadataReportsIncompatibleCenter(t *testing.T) {

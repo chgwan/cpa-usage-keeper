@@ -73,7 +73,7 @@ CPA Usage Keeper 是面向 [CLIProxyAPI（CPA）](https://github.com/router-for-
 - 查看和导出请求级事件，并自定义表格列
 - 分析用量趋势、成本构成、模型/API Key/AI Provider 占比、时段热力图和延迟诊断
 - 监控 Auth Files 与 AI Providers 的用量、健康状态和限额，支持健康巡检与限额刷新
-- 可选择加入社区排名，按综合得分、Token、请求量、缓存率、平均 TTFT/延迟或峰值 TPM/RPM 对比表现
+- 可选择加入社区排名，按综合得分、Token、请求量、缓存率、平均 TTFT/延迟或峰值 TPM/RPM 对比表现，本地榜单额外支持费用维度
 - 为单个 CPA API Key 提供独立的只读用量视图
 - 在 Dashboard 中管理 CPA API Key：新建、重新生成（保留别名和配额策略）、禁用、恢复和删除，全部通过 CPA 原生管理接口完成
 - 可选的按 Key 用量配额（请求次数 / Tokens / 费用，按每天 / 每月窗口统计，按 `TZ` 日历每日零点、每月 1 日重置），超出限额时自动从 CPA 移除对应的 API Key，并在窗口重置后自动恢复

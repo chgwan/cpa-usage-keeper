@@ -29,6 +29,8 @@ const rankingKeys = [
   'ranking.metric_latency_average',
   'ranking.metric_peak_tpm',
   'ranking.metric_peak_rpm',
+  'ranking.metric_cost',
+  'ranking.metric_short_cost',
   'ranking.api_key',
   'ranking.display_name',
   'ranking.avatar',
@@ -147,6 +149,7 @@ describe('Ranking translations', () => {
       'ranking.metric_latency_average': 'Average Total Latency',
       'ranking.metric_peak_tpm': 'Peak TPM',
       'ranking.metric_peak_rpm': 'Peak RPM',
+      'ranking.metric_cost': 'Cost',
     } as const;
 
     for (const [key, label] of Object.entries(expectedEnglishMetrics)) {
@@ -154,5 +157,7 @@ describe('Ranking translations', () => {
     }
     expect(i18n.t('ranking.metric_cache_read_rate', { lng: 'zh' })).toBe('缓存读取率');
     expect(i18n.t('ranking.metric_cache_read_rate', { lng: 'zh-TW' })).toBe('快取讀取率');
+    expect(i18n.t('ranking.metric_cost', { lng: 'zh' })).toBe('费用');
+    expect(i18n.t('ranking.metric_cost', { lng: 'zh-TW' })).toBe('費用');
   });
 });
