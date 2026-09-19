@@ -88,7 +88,7 @@ Two defining backend decisions in `internal/repository/db.go`:
 | Feature | Status |
 | --- | --- |
 | TOTP 2FA (`2026-08-27-totp-2fa`) | **Merged** at HEAD via `feat/totp-2fa` — spec, 1,981-line 9-task plan, backend + frontend + docs all landed |
-| Key-viewer local ranking (`2026-08-27-key-viewer-local-ranking`) | **Draft / not implemented** — spec is untracked, plan is committed; proposes `KEY_VIEWER_LOCAL_RANKING_ENABLED` (default off) to let API-key logins view the local leaderboard read-only by splitting GET/PATCH local-ranking routes. Nothing in `internal/`, `web/src`, or `.env.example` references it yet |
+| Key-viewer local ranking (`2026-08-27-key-viewer-local-ranking`) | **Removed (2026-09-10)** — API-key viewers have Overview and Analysis pages only. Ranking remains available to administrators; the historical design is retired. |
 
 Working tree (as of exploration): clean except the untracked draft spec above and a 17 MB untracked built binary `cpa-usage-keeper` at the repo root.
 

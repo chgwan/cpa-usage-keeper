@@ -1,7 +1,10 @@
 # Local Ranking for API-Key Logins — Design
 
 Date: 2026-08-27
-Status: Draft (pending review)
+Status: Retired (2026-09-10)
+
+API-key viewer ranking access has been removed. Ranking is available only to
+administrators. This document preserves the historical design.
 
 ## Context
 

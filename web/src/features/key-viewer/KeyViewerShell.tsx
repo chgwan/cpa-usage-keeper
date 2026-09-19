@@ -14,7 +14,6 @@ import styles from './KeyViewerShell.module.scss';
 const KEY_VIEWER_PAGE_LABEL_KEYS: Record<KeyViewerPage, string> = {
   overview: 'usage_stats.tab_overview',
   analysis: 'usage_stats.tab_analysis',
-  ranking: 'usage_stats.tab_ranking',
 };
 
 const THEME_OPTIONS: ReadonlyArray<{ value: Theme; labelKey: string }> = [

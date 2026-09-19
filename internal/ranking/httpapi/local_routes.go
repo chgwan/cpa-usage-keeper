@@ -62,11 +62,6 @@ func RegisterLocalRoutes(router gin.IRoutes, provider LocalProvider) {
 	})
 }
 
-// RegisterKeyViewerLocalRoutes 只在显式配置开启时挂载本地榜单读取。
-func RegisterKeyViewerLocalRoutes(router gin.IRoutes, provider LocalLeaderboardProvider) {
-	registerLocalLeaderboardRoute(router, "/key-ranking/local/leaderboards", provider)
-}
-
 func registerLocalLeaderboardRoute(router gin.IRoutes, route string, provider LocalLeaderboardProvider) {
 	router.GET(route, func(c *gin.Context) {
 		setNoStoreHeaders(c)

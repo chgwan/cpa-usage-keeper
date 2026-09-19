@@ -157,12 +157,6 @@ func NewRouter(
 	registerKeyOverviewRoute(keyViewerProtected, usageProvider)
 	registerKeyActivityRoute(keyViewerProtected, usageProvider)
 	registerKeyUsageAnalysisRoute(keyViewerProtected, usageProvider)
-	if rankingProvider != nil {
-		rankinghttpapi.RegisterKeyViewerRoutes(keyViewerProtected, rankingProvider)
-	}
-	if authConfig.APIKeyViewerLocalRankingEnabled && localRankingProvider != nil {
-		rankinghttpapi.RegisterKeyViewerLocalRoutes(keyViewerProtected, localRankingProvider)
-	}
 
 	if staticFS != nil {
 		if indexFile, err := staticFS.Open("index.html"); err == nil {

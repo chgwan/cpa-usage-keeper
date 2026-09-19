@@ -9,7 +9,6 @@ import { AppFooter } from './components/AppFooter';
 import { isKeyViewerPath, type KeyViewerPath } from './features/key-viewer';
 import { KeyAnalysisPage } from './pages/KeyAnalysisPage';
 import { KeyOverviewPage } from './pages/KeyOverviewPage';
-import { KeyRankingPage } from './pages/KeyRankingPage';
 import { LoginPage } from './pages/LoginPage';
 import { UsagePage } from './pages/UsagePage';
 import { cpamcEmbedSearch, isCPAMCEmbed, notifyCPAMCEmbedReady } from './embed/cpamcEmbed';
@@ -196,9 +195,7 @@ function App() {
   } else if (authRole === 'api_key_viewer') {
     page = keyViewerPath === '/key-analysis'
       ? <KeyAnalysisPage apiKey={sessionAPIKey} onNavigate={handleKeyViewerNavigate} onAuthRequired={clearSession} />
-      : keyViewerPath === '/key-ranking'
-        ? <KeyRankingPage apiKey={sessionAPIKey} onNavigate={handleKeyViewerNavigate} onAuthRequired={clearSession} />
-        : <KeyOverviewPage apiKey={sessionAPIKey} onNavigate={handleKeyViewerNavigate} onAuthRequired={clearSession} />;
+      : <KeyOverviewPage apiKey={sessionAPIKey} onNavigate={handleKeyViewerNavigate} onAuthRequired={clearSession} />;
   } else {
     page = <UsagePage onAuthRequired={clearSession} />;
   }

@@ -1,8 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   exitRanking,
-  fetchKeyLocalRankingLeaderboard,
-  fetchKeyRankingLeaderboard,
   fetchLocalRankingLeaderboard,
   fetchRankingLeaderboard,
   fetchRankingMetadata,
@@ -66,32 +64,9 @@ describe('ranking API', () => {
     expect(init).toMatchObject({ credentials: 'include', cache: 'no-store' });
   });
 
-  it('uses dedicated read-only API Key Viewer leaderboard endpoints', async () => {
-    vi.stubGlobal('window', { __APP_BASE_PATH__: '/keeper/' });
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => jsonResponse({
-      period: 'today',
-      period_key: '2026-08-28',
-      metric: 'overall',
-      generated_at: '2026-08-28T04:00:00Z',
-      stale: false,
-      entries: [],
-    }));
-
-    await fetchKeyRankingLeaderboard('today', 'overall');
-    await fetchKeyLocalRankingLeaderboard('today', 'overall');
-
-    expect(fetchMock.mock.calls.map(([rawURL, init]) => {
-      const url = new URL(String(rawURL), 'http://localhost');
-      return [url.pathname, url.search, init?.method ?? 'GET'];
-    })).toEqual([
-      ['/keeper/api/v1/key-ranking/leaderboards', '?period=today&metric=overall', 'GET'],
-      ['/keeper/api/v1/key-ranking/local/leaderboards', '?period=today&metric=overall', 'GET'],
-    ]);
-  });
-
-  it('uses the CPAMC embed session for API Key Viewer leaderboard reads', async () => {
+  it('uses the CPAMC embed session for leaderboard reads', async () => {
     const sessionStorage = {
-      getItem: vi.fn(() => 'viewer-embed-token'),
+      getItem: vi.fn(() => 'admin-embed-token'),
     };
     vi.stubGlobal('window', {
       __APP_BASE_PATH__: '/keeper/',
@@ -107,11 +82,11 @@ describe('ranking API', () => {
       entries: [],
     }));
 
-    await fetchKeyRankingLeaderboard('today', 'overall');
+    await fetchRankingLeaderboard('today', 'overall');
 
     const headers = new Headers(fetchMock.mock.calls[0][1]?.headers);
     expect(headers.get('X-CPA-Usage-Keeper-Embed')).toBe('cpamc');
-    expect(headers.get('X-CPA-Usage-Keeper-Embed-Session')).toBe('viewer-embed-token');
+    expect(headers.get('X-CPA-Usage-Keeper-Embed-Session')).toBe('admin-embed-token');
   });
 
   it('updates a local Key profile through the dedicated admin endpoint', async () => {

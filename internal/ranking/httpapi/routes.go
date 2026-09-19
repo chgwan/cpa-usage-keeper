@@ -119,11 +119,6 @@ func RegisterRoutes(router gin.IRoutes, provider Provider) {
 	})
 }
 
-// RegisterKeyViewerRoutes 只挂载 Community 榜单读取，不暴露参与或同步动作。
-func RegisterKeyViewerRoutes(router gin.IRoutes, provider LeaderboardProvider) {
-	registerLeaderboardRoute(router, "/key-ranking/leaderboards", provider)
-}
-
 func registerLeaderboardRoute(router gin.IRoutes, route string, provider LeaderboardProvider) {
 	router.GET(route, func(c *gin.Context) {
 		setNoStoreHeaders(c)

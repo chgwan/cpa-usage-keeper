@@ -2,9 +2,9 @@ package test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -37,7 +37,7 @@ func (s *keyViewerRankingKeyStub) UpdateCPAAPIKeyAlias(context.Context, int64, s
 	return s.row, nil
 }
 
-func newKeyViewerRankingRouter(t *testing.T, localEnabled bool) (*auth.SessionManager, string, *rankingRouteProviderStub, *adminLocalRankingProviderStub, http.Handler) {
+func newKeyViewerRankingRouter(t *testing.T) (string, *rankingRouteProviderStub, *adminLocalRankingProviderStub, http.Handler) {
 	t.Helper()
 	sessions := auth.NewSessionManager(time.Hour)
 	viewerToken, _, err := sessions.CreateAPIKeyViewer(42)
@@ -48,17 +48,16 @@ func newKeyViewerRankingRouter(t *testing.T, localEnabled bool) (*auth.SessionMa
 	local := &adminLocalRankingProviderStub{}
 	keyProvider := &keyViewerRankingKeyStub{row: entities.CPAAPIKey{ID: 42, APIKey: "sk-viewer123456", KeyAlias: "Viewer"}}
 	config := AuthConfig{
-		Enabled:                         true,
-		LoginPassword:                   "secret",
-		SessionTTL:                      time.Hour,
-		APIKeyViewerLocalRankingEnabled: localEnabled,
+		Enabled:       true,
+		LoginPassword: "secret",
+		SessionTTL:    time.Hour,
 	}
 	router := NewRouter(nil, nil, nil, nil, config, NewAuthHandler(config, sessions), "", OptionalProviders{
 		CPAAPIKeys:   keyProvider,
 		Ranking:      community,
 		LocalRanking: local,
 	})
-	return sessions, viewerToken, community, local, router
+	return viewerToken, community, local, router
 }
 
 func viewerRankingRequest(method, target, token string) *http.Request {
@@ -67,50 +66,52 @@ func viewerRankingRequest(method, target, token string) *http.Request {
 	return request
 }
 
-func TestKeyViewerCommunityRankingRouteIsReadOnly(t *testing.T) {
-	_, viewerToken, community, _, router := newKeyViewerRankingRouter(t, false)
-
-	response := httptest.NewRecorder()
-	router.ServeHTTP(response, viewerRankingRequest(http.MethodGet, "/api/v1/key-ranking/leaderboards?period=today&metric=overall", viewerToken))
-	if response.Code != http.StatusOK || community.leaderboardCalls != 1 {
-		t.Fatalf("viewer could not read community ranking: status=%d body=%s calls=%d", response.Code, response.Body.String(), community.leaderboardCalls)
-	}
-
-	mutation := httptest.NewRecorder()
-	router.ServeHTTP(mutation, viewerRankingRequest(http.MethodPost, "/api/v1/key-ranking/join", viewerToken))
-	if mutation.Code != http.StatusNotFound {
-		t.Fatalf("expected viewer ranking mutation route to remain absent, got %d %s", mutation.Code, mutation.Body.String())
+func TestKeyViewerRankingRoutesAreUnavailable(t *testing.T) {
+	for _, tc := range []struct {
+		method string
+		path   string
+		status int
+	}{
+		{http.MethodGet, "/key-ranking/leaderboards?period=today&metric=overall", http.StatusNotFound},
+		{http.MethodGet, "/key-ranking/local/leaderboards?period=today&metric=overall", http.StatusNotFound},
+		{http.MethodPost, "/key-ranking/join", http.StatusNotFound},
+		{http.MethodPatch, "/key-ranking/local/profiles/42", http.StatusNotFound},
+		{http.MethodGet, "/ranking/leaderboards?period=today&metric=overall", http.StatusForbidden},
+		{http.MethodGet, "/ranking/local/leaderboards?period=today&metric=overall", http.StatusForbidden},
+	} {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			viewerToken, community, local, router := newKeyViewerRankingRouter(t)
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, viewerRankingRequest(tc.method, "/api/v1"+tc.path, viewerToken))
+			if response.Code != tc.status {
+				t.Fatalf("expected %d, got %d %s", tc.status, response.Code, response.Body.String())
+			}
+			if community.leaderboardCalls != 0 || local.calls != 0 {
+				t.Fatalf("viewer reached a ranking provider: community=%d local=%d", community.leaderboardCalls, local.calls)
+			}
+		})
 	}
 }
 
-func TestKeyViewerLocalRankingRouteFollowsExplicitAccessFlag(t *testing.T) {
-	t.Run("disabled", func(t *testing.T) {
-		_, viewerToken, _, local, router := newKeyViewerRankingRouter(t, false)
-		response := httptest.NewRecorder()
-		router.ServeHTTP(response, viewerRankingRequest(http.MethodGet, "/api/v1/key-ranking/local/leaderboards?period=today&metric=overall", viewerToken))
-		if response.Code != http.StatusNotFound || local.calls != 0 {
-			t.Fatalf("disabled local ranking was exposed: status=%d body=%s calls=%d", response.Code, response.Body.String(), local.calls)
-		}
-	})
-
-	t.Run("enabled read only", func(t *testing.T) {
-		_, viewerToken, _, local, router := newKeyViewerRankingRouter(t, true)
-		response := httptest.NewRecorder()
-		router.ServeHTTP(response, viewerRankingRequest(http.MethodGet, "/api/v1/key-ranking/local/leaderboards?period=today&metric=overall", viewerToken))
-		if response.Code != http.StatusOK || local.calls != 1 {
-			t.Fatalf("enabled local ranking was unavailable: status=%d body=%s calls=%d", response.Code, response.Body.String(), local.calls)
-		}
-
-		mutation := httptest.NewRecorder()
-		router.ServeHTTP(mutation, viewerRankingRequest(http.MethodPatch, "/api/v1/key-ranking/local/profiles/42", viewerToken))
-		if mutation.Code != http.StatusNotFound || local.calls != 1 {
-			t.Fatalf("viewer local profile mutation was exposed: status=%d body=%s calls=%d", mutation.Code, mutation.Body.String(), local.calls)
-		}
-
-		session := httptest.NewRecorder()
-		router.ServeHTTP(session, viewerRankingRequest(http.MethodGet, "/api/v1/auth/session", viewerToken))
-		if session.Code != http.StatusOK || !strings.Contains(session.Body.String(), `"local_ranking_enabled":true`) {
-			t.Fatalf("viewer session omitted local ranking capability: status=%d body=%s", session.Code, session.Body.String())
-		}
-	})
+func TestKeyViewerSessionOmitsRankingCapability(t *testing.T) {
+	viewerToken, _, _, router := newKeyViewerRankingRouter(t)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, viewerRankingRequest(http.MethodGet, "/api/v1/auth/session", viewerToken))
+	if response.Code != http.StatusOK {
+		t.Fatalf("session unavailable: status=%d body=%s", response.Code, response.Body.String())
+	}
+	var session struct {
+		Authenticated bool           `json:"authenticated"`
+		Role          string         `json:"role"`
+		APIKey        map[string]any `json:"api_key"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &session); err != nil {
+		t.Fatalf("decode session: %v", err)
+	}
+	if !session.Authenticated || session.Role != "api_key_viewer" || session.APIKey["alias"] != "Viewer" {
+		t.Fatalf("viewer session missing identity: %s", response.Body.String())
+	}
+	if _, ok := session.APIKey["local_ranking_enabled"]; ok {
+		t.Fatalf("viewer session still advertises ranking access: %s", response.Body.String())
+	}
 }

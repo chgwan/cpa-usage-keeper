@@ -39,14 +39,13 @@ const (
 )
 
 type AuthConfig struct {
-	Enabled                         bool
-	LoginPassword                   string
-	SessionTTL                      time.Duration
-	BasePath                        string
-	FrameAncestorOrigins            []string
-	TrustedProxyCIDRs               []string
-	APIKeyViewerLocalRankingEnabled bool
-	TOTPReset                       bool
+	Enabled              bool
+	LoginPassword        string
+	SessionTTL           time.Duration
+	BasePath             string
+	FrameAncestorOrigins []string
+	TrustedProxyCIDRs    []string
+	TOTPReset            bool
 }
 
 // TOTPProvider 是登录与管理端点需要的管理员 TOTP 能力，由 auth.TOTPManager 实现。
@@ -88,9 +87,8 @@ type sessionResponse struct {
 }
 
 type sessionAPIKeyResponse struct {
-	DisplayKey          string `json:"display_key"`
-	Alias               string `json:"alias,omitempty"`
-	LocalRankingEnabled bool   `json:"local_ranking_enabled,omitempty"`
+	DisplayKey string `json:"display_key"`
+	Alias      string `json:"alias,omitempty"`
 }
 
 type loginResponse struct {
@@ -288,9 +286,8 @@ func (h *authHandler) getSession(c *gin.Context) {
 			return
 		}
 		response.APIKey = &sessionAPIKeyResponse{
-			DisplayKey:          helper.CPAAPIKeyMaskedDisplayKey(row),
-			Alias:               row.KeyAlias,
-			LocalRankingEnabled: h.config.APIKeyViewerLocalRankingEnabled,
+			DisplayKey: helper.CPAAPIKeyMaskedDisplayKey(row),
+			Alias:      row.KeyAlias,
 		}
 	}
 	c.JSON(http.StatusOK, response)
