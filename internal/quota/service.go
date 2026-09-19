@@ -19,6 +19,7 @@ import (
 
 type ServiceOptions struct {
 	RefreshWorkerLimit               int
+	QuotaUpstreamResponsesEnabled    bool
 	UsageHeaderSnapshotFlushInterval time.Duration
 	// CodexQuotaHistoryFlushInterval 覆盖独立历史 runner 固定批次边界前的一分钟等待，主要供定向测试缩短等待。
 	CodexQuotaHistoryFlushInterval time.Duration
@@ -33,9 +34,13 @@ type Service struct {
 	db       *gorm.DB
 	registry ProviderRegistry
 	pricing  *pricing.Catalog
+	// quotaUpstreamResponsesEnabled 控制刷新任务是否把 CPA 转发的完整上游响应写入最新限额缓存。
+	quotaUpstreamResponsesEnabled bool
 
 	refreshMu    sync.Mutex
 	refreshTasks map[string]*RefreshTaskRecord
+	// nextRefreshTaskCleanupAt 由 refreshMu 保护，只限制读取接口的全量清理频率。
+	nextRefreshTaskCleanupAt time.Time
 	// resetInFlight 按 auth_index 记录正在消费的 reset credit，避免并发重复扣减官方次数。
 	resetMu       sync.Mutex
 	resetInFlight map[string]struct{}
@@ -87,6 +92,8 @@ type Service struct {
 	codexQuotaHistoryTrustedQueue chan codexQuotaHistoryInput
 	// codexQuotaHistoryTrustedWake 让可信来源跳过 Header 一分钟窗口并立即触发 runner。
 	codexQuotaHistoryTrustedWake chan struct{}
+	// 删除命令与采样共用唯一 runner，避免事务提交后旧缓存继续写回。
+	codexQuotaHistoryDelete chan codexQuotaHistoryDeleteRequest
 	// codexQuotaHistoryStopCh 只表达 runner 停止；队列不关闭以避免并发发送 panic。
 	codexQuotaHistoryStopCh chan struct{}
 	// codexQuotaHistoryDoneCh 在 shutdown best-effort flush 完成后关闭。
@@ -124,11 +131,14 @@ type CheckResponse struct {
 	RateLimitResetCreditsAvailableCount *int              `json:"rateLimitResetCreditsAvailableCount,omitempty"`
 }
 
-func NewService(db *gorm.DB, caller ManagementAPICaller, pricingCatalog *pricing.Catalog) *Service {
+func NewService(db *gorm.DB, caller ManagementClient, pricingCatalog *pricing.Catalog) *Service {
 	return NewServiceWithOptions(db, caller, ServiceOptions{PricingCatalog: pricingCatalog})
 }
 
-func NewServiceWithOptions(db *gorm.DB, caller ManagementAPICaller, options ServiceOptions) *Service {
+func NewServiceWithOptions(db *gorm.DB, caller ManagementClient, options ServiceOptions) *Service {
+	if options.QuotaUpstreamResponsesEnabled {
+		caller = upstreamResponseRecordingCaller{ManagementClient: caller}
+	}
 	return NewServiceWithRegistryAndOptions(db, NewDefaultProviderRegistry(caller, DefaultProviderConfigs()), options)
 }
 
@@ -172,6 +182,7 @@ func NewServiceWithRegistryAndOptions(db *gorm.DB, registry ProviderRegistry, op
 		db:                                 db,
 		registry:                           registry,
 		pricing:                            pricingCatalog,
+		quotaUpstreamResponsesEnabled:      options.QuotaUpstreamResponsesEnabled,
 		refreshTasks:                       make(map[string]*RefreshTaskRecord),
 		resetInFlight:                      make(map[string]struct{}),
 		refreshWorkerTokens:                make(chan struct{}, workerLimit),
@@ -190,6 +201,7 @@ func NewServiceWithRegistryAndOptions(db *gorm.DB, registry ProviderRegistry, op
 		codexQuotaHistoryHeaderWake:        make(chan struct{}, 1),
 		codexQuotaHistoryTrustedQueue:      make(chan codexQuotaHistoryInput, codexHistoryQueueSize),
 		codexQuotaHistoryTrustedWake:       make(chan struct{}, 1),
+		codexQuotaHistoryDelete:            make(chan codexQuotaHistoryDeleteRequest),
 		codexQuotaHistoryStopCh:            make(chan struct{}),
 		codexQuotaHistoryDoneCh:            make(chan struct{}),
 		codexQuotaHistoryFlushInterval:     codexHistoryFlushInterval,
@@ -282,6 +294,21 @@ func (s *Service) StopRefreshTasks() {
 }
 
 func (s *Service) Check(ctx context.Context, request CheckRequest) (CheckResponse, error) {
+	response, _, err := s.checkWithUpstreamResponses(ctx, request)
+	return response, err
+}
+
+func (s *Service) checkWithUpstreamResponses(ctx context.Context, request CheckRequest) (CheckResponse, []UpstreamResponse, error) {
+	if !s.quotaUpstreamResponsesEnabled {
+		response, err := s.check(ctx, request)
+		return response, nil, err
+	}
+	collectorContext, collector := withUpstreamResponseCollector(ctx)
+	response, err := s.check(collectorContext, request)
+	return response, collector.snapshot(), err
+}
+
+func (s *Service) check(ctx context.Context, request CheckRequest) (CheckResponse, error) {
 	// 单条查询以 auth_index 为唯一入口，前端不需要知道具体 provider 的 API 细节。
 	authIndex := strings.TrimSpace(request.AuthIndex)
 	if authIndex == "" {

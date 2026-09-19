@@ -28,9 +28,11 @@ import {
 } from '@/components/ui/icons';
 import type { UsageEvent, UsageEventRequestLogResponse, UsageSourceFilterOption } from '@/lib/types';
 import { useScrollBoundaryContainment } from '@/hooks/useScrollBoundaryContainment';
+import { compareModelNames } from '@/utils/modelSort';
 import {
   calculateCacheReadRate,
   formatDurationMs,
+  formatCompactTokenValue,
   formatUsd,
   LATENCY_SOURCE_FIELD,
   normalizeAuthIndex,
@@ -143,6 +145,12 @@ type RequestEventRow = {
   cacheReadTokens: number;
   cacheCreationTokens: number;
   totalTokens: number;
+  inputTokensDisplayLabel: string;
+  outputTokensDisplayLabel: string;
+  reasoningTokensDisplayLabel: string;
+  cacheReadTokensDisplayLabel: string;
+  cacheCreationTokensDisplayLabel: string;
+  totalTokensDisplayLabel: string;
   inputTokensLabel: string;
   outputTokensLabel: string;
   reasoningTokensLabel: string;
@@ -175,17 +183,19 @@ function RequestEventsTokenMetric({
   direction,
   label,
   value,
+  fullValue,
 }: {
   direction: 'input' | 'output';
   label: string;
   value: string;
+  fullValue: string;
 }) {
   const Icon = direction === 'input' ? IconArrowUpFromLine : IconArrowDownToLine;
   return (
     <span
       className={`${styles.requestEventsTokenMetric} ${direction === 'input' ? styles.requestEventsTokenMetricInput : styles.requestEventsTokenMetricOutput}`}
       role="img"
-      aria-label={`${label}: ${value}`}
+      aria-label={`${label}: ${fullValue}`}
       data-token-direction={direction}
       data-token-flow={direction === 'input' ? 'upload' : 'download'}
     >
@@ -197,12 +207,12 @@ function RequestEventsTokenMetric({
   );
 }
 
-function RequestEventsReasoningMetric({ label, value }: { label: string; value: string }) {
+function RequestEventsReasoningMetric({ label, value, fullValue }: { label: string; value: string; fullValue: string }) {
   return (
     <span
       className={`${styles.requestEventsTokenMetric} ${styles.requestEventsTokenMetricReasoning}`}
       role="img"
-      aria-label={`${label}: ${value}`}
+      aria-label={`${label}: ${fullValue}`}
       data-token-direction="reasoning"
     >
       <span className={styles.requestEventsMetricIconSlot} aria-hidden="true">
@@ -217,17 +227,19 @@ function RequestEventsCacheMetric({
   operation,
   label,
   value,
+  fullValue,
 }: {
   operation: 'read' | 'write';
   label: string;
   value: string;
+  fullValue: string;
 }) {
   const Icon = operation === 'read' ? IconDatabaseArrowUp : IconDatabaseArrowDown;
   return (
     <span
       className={`${styles.requestEventsCacheMetric} ${operation === 'read' ? styles.requestEventsCacheMetricRead : styles.requestEventsCacheMetricWrite}`}
       role="img"
-      aria-label={`${label}: ${value}`}
+      aria-label={`${label}: ${fullValue}`}
       data-cache-operation={operation}
       data-cache-flow={operation === 'read' ? 'upload' : 'download'}
     >
@@ -620,6 +632,12 @@ export function RequestEventsDetailsCard({
         cacheReadTokens,
         cacheCreationTokens,
         totalTokens,
+        inputTokensDisplayLabel: formatCompactTokenValue(inputTokens),
+        outputTokensDisplayLabel: formatCompactTokenValue(outputTokens),
+        reasoningTokensDisplayLabel: formatCompactTokenValue(reasoningTokens),
+        cacheReadTokensDisplayLabel: formatCompactTokenValue(cacheReadTokens),
+        cacheCreationTokensDisplayLabel: formatCompactTokenValue(cacheCreationTokens),
+        totalTokensDisplayLabel: formatCompactTokenValue(totalTokens),
         inputTokensLabel: REQUEST_EVENT_INTEGER_FORMATTER.format(inputTokens),
         outputTokensLabel: REQUEST_EVENT_INTEGER_FORMATTER.format(outputTokens),
         reasoningTokensLabel: REQUEST_EVENT_INTEGER_FORMATTER.format(reasoningTokens),
@@ -745,11 +763,14 @@ export function RequestEventsDetailsCard({
   ]);
 
   const modelOptions = useMemo(() => {
-    const options = [
+    const options = appendSelectedOption(
+      backendModelOptions.map((model) => ({ value: model, label: model })),
+      modelFilter,
+    ).sort((left, right) => compareModelNames(left.value, right.value));
+    return [
       { value: ALL_FILTER, label: t('usage_stats.filter_all') },
-      ...backendModelOptions.map((model) => ({ value: model, label: model })),
+      ...options,
     ];
-    return appendSelectedOption(options, modelFilter);
   }, [backendModelOptions, modelFilter, t]);
 
   const sourceOptions = useMemo(() => {
@@ -929,23 +950,26 @@ export function RequestEventsDetailsCard({
               onFocus={(event) => handleRequestEventsTooltipFocus(tooltipLines, event.currentTarget)}
               onBlur={(event) => handleRequestEventsTooltipBlur(event.currentTarget)}
             >
-              <span className={styles.requestEventsStackedPrimary}>{row.totalTokensLabel}</span>
+              <span className={styles.requestEventsStackedPrimary}>{row.totalTokensDisplayLabel}</span>
               <div className={styles.requestEventsTokenMetricRow}>
                 <RequestEventsTokenMetric
                   direction="input"
                   label={t('usage_stats.input_tokens')}
-                  value={row.inputTokensLabel}
+                  value={row.inputTokensDisplayLabel}
+                  fullValue={row.inputTokensLabel}
                 />
               </div>
               <div className={styles.requestEventsTokenMetricRow}>
                 <RequestEventsTokenMetric
                   direction="output"
                   label={t('usage_stats.output_tokens')}
-                  value={row.outputTokensLabel}
+                  value={row.outputTokensDisplayLabel}
+                  fullValue={row.outputTokensLabel}
                 />
                 <RequestEventsReasoningMetric
                   label={t('usage_stats.reasoning_tokens')}
-                  value={row.reasoningTokensLabel}
+                  value={row.reasoningTokensDisplayLabel}
+                  fullValue={row.reasoningTokensLabel}
                 />
               </div>
             </td>
@@ -975,12 +999,14 @@ export function RequestEventsDetailsCard({
                 <RequestEventsCacheMetric
                   operation="read"
                   label={t('usage_stats.cache_read_tokens')}
-                  value={row.cacheReadTokensLabel}
+                  value={row.cacheReadTokensDisplayLabel}
+                  fullValue={row.cacheReadTokensLabel}
                 />
                 <RequestEventsCacheMetric
                   operation="write"
                   label={t('usage_stats.cache_creation_tokens')}
-                  value={row.cacheCreationTokensLabel}
+                  value={row.cacheCreationTokensDisplayLabel}
+                  fullValue={row.cacheCreationTokensLabel}
                 />
               </div>
             </td>
@@ -1112,7 +1138,8 @@ export function RequestEventsDetailsCard({
       >
         <div className={styles.requestEventsToolbar}>
           <div className={styles.requestEventsFiltersGroup}>
-            <label className={styles.requestEventsFilterItem}>
+            {/* 控件已有 aria-label，外层避免使用 label 将标题和空隙的点击转交给控件。 */}
+            <div className={styles.requestEventsFilterItem}>
               <span className={styles.requestEventsFilterLabel}>
                 {t('usage_stats.request_events_filter_model')}
               </span>
@@ -1120,12 +1147,16 @@ export function RequestEventsDetailsCard({
                 value={effectiveModelFilter}
                 options={modelOptions}
                 onChange={onModelFilterChange}
+                search={{
+                  placeholder: t('usage_stats.request_events_search_model'),
+                  noResultsText: t('usage_stats.request_events_no_matching_models'),
+                }}
                 className={`${styles.requestEventsSelect} ${styles.usagePillControl}`}
                 ariaLabel={t('usage_stats.request_events_filter_model')}
                 fullWidth={false}
               />
-            </label>
-            <label className={styles.requestEventsFilterItem}>
+            </div>
+            <div className={styles.requestEventsFilterItem}>
               <span className={styles.requestEventsFilterLabel}>
                 {t('usage_stats.request_events_filter_source')}
               </span>
@@ -1133,12 +1164,16 @@ export function RequestEventsDetailsCard({
                 value={effectiveSourceFilter}
                 options={sourceOptions}
                 onChange={onSourceFilterChange}
+                search={{
+                  placeholder: t('usage_stats.request_events_search_source'),
+                  noResultsText: t('usage_stats.request_events_no_matching_sources'),
+                }}
                 className={`${styles.requestEventsSelect} ${styles.usagePillControl}`}
                 ariaLabel={t('usage_stats.request_events_filter_source')}
                 fullWidth={false}
               />
-            </label>
-            <label className={styles.requestEventsFilterItem}>
+            </div>
+            <div className={styles.requestEventsFilterItem}>
               <span className={styles.requestEventsFilterLabel}>
                 {t('usage_stats.request_events_filter_result')}
               </span>
@@ -1150,7 +1185,7 @@ export function RequestEventsDetailsCard({
                 ariaLabel={t('usage_stats.request_events_filter_result')}
                 fullWidth={false}
               />
-            </label>
+            </div>
             <div className={styles.requestEventsFilterActionSlot}>
               <Button
                 variant="ghost"

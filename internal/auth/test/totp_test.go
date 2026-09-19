@@ -9,9 +9,9 @@ import (
 
 	"cpa-usage-keeper/internal/auth"
 	"cpa-usage-keeper/internal/entities"
+	"github.com/pquerna/otp/totp"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
-	"github.com/pquerna/otp/totp"
 )
 
 func openTOTPDatabase(t *testing.T) *gorm.DB {

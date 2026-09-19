@@ -92,6 +92,12 @@ const (
 	migrationResetQuotaHistory = "20260827_reset_quota_history"
 	// migrationCreateAPIKeyPolicies 创建 API Key 限额策略表和执行审计表。
 	migrationCreateAPIKeyPolicies = "20260831_create_api_key_policies"
+	// migrationRepairUsageEventQuotaWindowIndex 修复旧 migration 记录与物理索引不一致的数据库。
+	migrationRepairUsageEventQuotaWindowIndex = "20260902_repair_usage_event_quota_window_index"
+	// migrationAddUsageEventAPIGroupKeyTimestampIndex 用 (api_group_key, timestamp) 复合索引替代单列 Key 索引。
+	migrationAddUsageEventAPIGroupKeyTimestampIndex = "20260905_usage_event_api_group_key_timestamp_index"
+	migrationAddUsageIdentityStatsReset             = "20260910_usage_identity_stats_reset"
+	migrationAddUsageEventSessionFields             = "20260912_usage_event_session_fields"
 )
 
 type schemaMigration struct {
@@ -234,6 +240,12 @@ func orderedMigrations() []databaseMigration {
 		// 清表前必须先在事务外完成通用数据库备份；DELETE 与版本标记仍使用默认单事务。
 		{version: migrationResetQuotaHistory, run: resetQuotaHistoryMigration, destructive: true},
 		{version: migrationCreateAPIKeyPolicies, run: createAPIKeyPoliciesMigration},
+		// 历史 migration 不会重跑；用新版本幂等补齐额度历史查询强制依赖的索引。
+		{version: migrationRepairUsageEventQuotaWindowIndex, run: repairUsageEventQuotaWindowIndexMigration},
+		// 将单列 Key 索引收敛为 Key+时间复合索引，支持请求记录和历史边界查询。
+		{version: migrationAddUsageEventAPIGroupKeyTimestampIndex, run: addUsageEventAPIGroupKeyTimestampIndexMigration},
+		{version: migrationAddUsageIdentityStatsReset, run: addUsageIdentityStatsResetMigration},
+		{version: migrationAddUsageEventSessionFields, run: addUsageEventSessionFieldsMigration},
 	}
 }
 

@@ -32,6 +32,19 @@ const baseEvent: UsageEvent = {
   pricing_style: 'openai',
 };
 
+const largeTokenEvent: UsageEvent = {
+  ...baseEvent,
+  id: 'metrics-tooltip-large-event',
+  tokens: {
+    input_tokens: 73_893_802,
+    output_tokens: 280_802,
+    reasoning_tokens: 160_430,
+    cache_read_tokens: 69_897_984,
+    cache_creation_tokens: 0,
+    total_tokens: 74_174_604,
+  },
+};
+
 const renderCardElement = (events: UsageEvent[]) => (
   <RequestEventsDetailsCard
     events={events}
@@ -96,12 +109,12 @@ describe('RequestEventsDetailsCard token and cache tooltips', () => {
         },
         {
           language: 'zh',
-          tokenLines: ['Token 总数：200', '输入：100', '输出：60', '推理：20'],
+          tokenLines: ['总 Token：200', '输入：100', '输出：60', '推理：20'],
           cacheLines: ['缓存率：20.00%', '缓存读取：20', '缓存写入：5'],
         },
         {
           language: 'zh-TW',
-          tokenLines: ['Token 總數：200', '輸入：100', '輸出：60', '推理：20'],
+          tokenLines: ['總 Token：200', '輸入：100', '輸出：60', '推理：20'],
           cacheLines: ['快取率：20.00%', '快取讀取：20', '快取寫入：5'],
         },
       ] as const;
@@ -137,6 +150,47 @@ describe('RequestEventsDetailsCard token and cache tooltips', () => {
     } finally {
       await mounted.unmount();
       await i18n.changeLanguage('en');
+    }
+  });
+
+  it('compacts list values while keeping complete token and cache values in the tooltip', async () => {
+    const mounted = await mountCard([largeTokenEvent]);
+
+    try {
+      const cells = mounted.container.querySelectorAll<HTMLTableCellElement>('tbody td');
+      const tokensCell = cells[0];
+      const cacheCell = cells[1];
+      expect(tokensCell.textContent).toContain('74.17M');
+      expect(tokensCell.textContent).toContain('73.89M');
+      expect(tokensCell.textContent).toContain('280.80K');
+      expect(tokensCell.textContent).toContain('160.43K');
+      expect(cacheCell.textContent).toContain('94.59%');
+      expect(cacheCell.textContent).toContain('69.90M');
+      expect(cacheCell.textContent).toContain('0');
+      expect(tokensCell.getAttribute('aria-label')).toContain('Total Tokens: 74,174,604');
+      expect(cacheCell.getAttribute('aria-label')).toContain('Cache Read: 69,897,984');
+
+      await act(async () => {
+        tokensCell.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      });
+      expect(tooltipLines()).toEqual([
+        'Total Tokens: 74,174,604',
+        'Input: 73,893,802',
+        'Output: 280,802',
+        'Reasoning: 160,430',
+      ]);
+
+      await act(async () => {
+        tokensCell.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
+        cacheCell.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      });
+      expect(tooltipLines()).toEqual([
+        'Cache Rate: 94.59%',
+        'Cache Read: 69,897,984',
+        'Cache Write: 0',
+      ]);
+    } finally {
+      await mounted.unmount();
     }
   });
 });

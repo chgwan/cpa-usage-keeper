@@ -1,8 +1,9 @@
-export type KeyViewerPage = 'overview' | 'analysis';
-export type KeyViewerPath = '/key-overview' | '/key-analysis';
+export type KeyViewerPage = 'overview' | 'realtime' | 'analysis';
+export type KeyViewerPath = '/key-overview' | '/key-realtime' | '/key-analysis';
 
 export const KEY_VIEWER_PAGE_PATHS: Record<KeyViewerPage, KeyViewerPath> = {
   overview: '/key-overview',
+  realtime: '/key-realtime',
   analysis: '/key-analysis',
 };
 

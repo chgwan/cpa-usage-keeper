@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { appendUniqueUsageEvents, getBackToCPALinkURL, getCredentialSectionVisibility, getOverviewDisplayLoading, getUsageCustomRangeForTab, getUsageTabOptions, handleUsageEventLoadMoreError, isUsagePageVisible, loadAnalysisSections, loadRequestEventsPreferences, loadUsagePageVersionInfo, normalizeRequestEventsPreferences, normalizeUsageTabValue, refreshPageData, REQUEST_EVENTS_PREFERENCES_STORAGE_KEY, runUsageEventRequestLogDownload, sanitizeRequestEventFilters, saveRequestEventsPreferences, scheduleOverviewAutoRefresh, shouldAutoRefreshUsageTab, shouldShowApiKeyFilter, shouldShowRangeControls, shouldShowUpdateCheckButton, getUpdateCheckToastDuration } from '../UsagePage';
+import { appendUniqueUsageEvents, getBackToCPALinkURL, getCredentialSectionVisibility, getOverviewDisplayLoading, getUsageCustomRangeForTab, getUsageTabOptions, handleUsageEventLoadMoreError, isUsagePageVisible, loadAnalysisSections, loadRequestEventsPreferences, loadUsagePageVersionInfo, normalizeRequestEventsPreferences, normalizeStoredApiKeyFilter, normalizeUsageTabValue, refreshPageData, REQUEST_EVENTS_PREFERENCES_STORAGE_KEY, resolveApiKeyFilterRequestState, runUsageEventRequestLogDownload, sanitizeRequestEventFilters, saveRequestEventsPreferences, scheduleOverviewAutoRefresh, shouldAutoRefreshUsageTab, shouldResetSelectedApiKeyFilter, shouldShowApiKeyFilter, shouldShowRangeControls, shouldShowUpdateCheckButton, getUpdateCheckToastDuration, API_KEY_FILTER_MAX_LENGTH } from '../UsagePage';
 import { REQUEST_EVENT_COLUMN_IDS } from '@/components/usage/RequestEventsDetailsCard';
 import { ApiError } from '@/lib/api';
 import type { UsageFilterWindow, VersionResponse } from '@/lib/types';
@@ -543,6 +543,7 @@ describe('UsagePage active tab auto-refresh guard', () => {
 
   it('keeps Overview auto-refresh enabled and does not auto-refresh other tabs', () => {
     expect(shouldAutoRefreshUsageTab({ activeTab: 'overview', eventsPage: 2 })).toBe(true);
+    expect(shouldAutoRefreshUsageTab({ activeTab: 'realtime', eventsPage: 2 })).toBe(true);
     expect(shouldAutoRefreshUsageTab({ activeTab: 'analysis', eventsPage: 1 })).toBe(false);
     expect(shouldAutoRefreshUsageTab({ activeTab: 'ranking', eventsPage: 1 })).toBe(false);
     expect(shouldAutoRefreshUsageTab({ activeTab: 'settings', eventsPage: 1 })).toBe(false);
@@ -781,6 +782,7 @@ describe('UsagePage request event preferences', () => {
 
 for (const [tab, expected] of [
   ['overview', true],
+  ['realtime', false],
   ['analysis', true],
   ['ranking', false],
   ['events', true],
@@ -795,6 +797,7 @@ for (const [tab, expected] of [
 
 for (const [tab, expected] of [
   ['overview', true],
+  ['realtime', true],
   ['analysis', true],
   ['ranking', false],
   ['events', true],
@@ -813,6 +816,7 @@ describe('UsagePage tab labels', () => {
 
     expect(labels).toEqual([
       'translated:usage_stats.tab_overview',
+      'translated:usage_stats.tab_realtime',
       'translated:usage_stats.tab_analysis',
       'translated:usage_stats.tab_ranking',
       'translated:usage_stats.tab_events',
@@ -825,7 +829,7 @@ describe('UsagePage tab labels', () => {
   it('omits Ranking from the CPAMC embedded navigation', () => {
     const values = getUsageTabOptions((key) => key, { includeRanking: false }).map((option) => option.value);
 
-    expect(values).toEqual(['overview', 'analysis', 'events', 'auth-files', 'ai-provider', 'settings']);
+    expect(values).toEqual(['overview', 'realtime', 'analysis', 'events', 'auth-files', 'ai-provider', 'settings']);
   });
 });
 
@@ -903,5 +907,44 @@ describe('UsagePage request log download guard', () => {
     expect(triggerDownload).not.toHaveBeenCalled();
     expect(showDownloadError).not.toHaveBeenCalled();
     expect(setDownloading).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('persisted API key filter', () => {
+  it('accepts only positive int64 ids accepted by the backend', () => {
+    expect(normalizeStoredApiKeyFilter('42')).toBe('42');
+    expect(normalizeStoredApiKeyFilter(' 0042 ')).toBe('42');
+    expect(normalizeStoredApiKeyFilter('key-42')).toBe('');
+    expect(normalizeStoredApiKeyFilter('')).toBe('');
+    expect(normalizeStoredApiKeyFilter('0')).toBe('');
+    expect(normalizeStoredApiKeyFilter('-1')).toBe('');
+    expect(normalizeStoredApiKeyFilter(null)).toBe('');
+    expect(normalizeStoredApiKeyFilter(42)).toBe('');
+    expect(normalizeStoredApiKeyFilter('9223372036854775807')).toBe('9223372036854775807');
+    expect(normalizeStoredApiKeyFilter('9223372036854775808')).toBe('');
+    expect(normalizeStoredApiKeyFilter('1'.repeat(API_KEY_FILTER_MAX_LENGTH + 1))).toBe('');
+  });
+
+  it('keeps a restored selection until the options actually load', () => {
+    // 首帧选项还是空列表，此时清空会让持久化的筛选永远存活不过一次刷新。
+    expect(shouldResetSelectedApiKeyFilter('42', [], false)).toBe(false);
+    expect(shouldResetSelectedApiKeyFilter('42', [{ id: '1' }], false)).toBe(false);
+  });
+
+  it('clears the selection once loaded options no longer contain it', () => {
+    expect(shouldResetSelectedApiKeyFilter('42', [{ id: '1' }], true)).toBe(true);
+    expect(shouldResetSelectedApiKeyFilter('42', [{ id: '42' }], true)).toBe(false);
+    expect(shouldResetSelectedApiKeyFilter('', [], true)).toBe(false);
+  });
+
+  it('does not send a restored id until it has been checked against loaded options', () => {
+    expect(resolveApiKeyFilterRequestState('42', [], false, false)).toEqual({ ready: false, apiKeyId: '' });
+    expect(resolveApiKeyFilterRequestState('42', [{ id: '42' }], true, true)).toEqual({ ready: true, apiKeyId: '42' });
+    expect(resolveApiKeyFilterRequestState('42', [{ id: '7' }], true, true)).toEqual({ ready: true, apiKeyId: '' });
+    expect(resolveApiKeyFilterRequestState('', [], false, false)).toEqual({ ready: true, apiKeyId: '' });
+  });
+
+  it('keeps a locally valid restored id when option loading fails', () => {
+    expect(resolveApiKeyFilterRequestState('42', [], false, true)).toEqual({ ready: true, apiKeyId: '42' });
   });
 });

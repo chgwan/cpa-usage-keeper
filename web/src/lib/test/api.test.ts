@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, appPath, confirmTOTP, createUsageEventRequestLogDownloadURL, deleteAuthFiles, disableTOTP, exportUsageEvents, fetchAnalysis, fetchAnalysisLatency, fetchAuthSessions, fetchCodexQuotaHistory, fetchCpaApiKeyOptions, fetchCpaApiKeys, fetchCpaApiKeySettings, fetchKeyActivity, fetchKeyAnalysis, fetchKeyAnalysisLatency, fetchKeyOverview, fetchKeyOverviewRealtime, fetchQuotaAutoRefreshSettings, fetchTOTPStatus, fetchUsageActivity, fetchUsageOverview, fetchUsageOverviewRealtime, fetchUsageQuotaCache, fetchUsageQuotaInspectionStatus, fetchUsageQuotaResetCredits, fetchUpdateCheck, fetchUsageEventModelFilterOptions, fetchUsageEventRequestLog, fetchUsageEventSourceFilterOptions, fetchUsageEvents, fetchUsageIdentities, fetchUsageIdentitiesPage, fetchUsageQuotaRefreshTask, fetchVersion, login, loginWithCPAAPIKey, logout, refreshUsageQuotas, resetUsageQuota, revokeAuthSession, setAuthFilesDisabled, setupTOTP, startUsageQuotaInspection, updateAuthSessionAlias, updateCpaApiKeyAlias, updateQuotaAutoRefreshSettings } from '../api';
+import { ApiError, appPath, confirmTOTP, createUsageEventRequestLogDownloadURL, deleteAuthFiles, disableTOTP, exportUsageEvents, fetchAnalysis, fetchAnalysisLatency, fetchAuthSessions, fetchCodexQuotaHistory, fetchCpaApiKeyOptions, fetchCpaApiKeys, fetchCpaApiKeySettings, fetchKeyActivity, fetchKeyAnalysis, fetchKeyAnalysisLatency, fetchKeyOverview, fetchKeyOverviewRealtime, fetchQuotaAutoRefreshSettings, fetchTOTPStatus, fetchUsageActivity, fetchUsageOverview, fetchUsageOverviewRealtime, fetchUsageQuotaCache, fetchUsageQuotaInspectionStatus, fetchUsageQuotaResetCredits, fetchUpdateCheck, fetchUsageEventModelFilterOptions, fetchUsageEventRequestLog, fetchUsageEventSourceFilterOptions, fetchUsageEvents, fetchUsageIdentities, fetchUsageIdentitiesPage, fetchUsageQuotaRefreshTask, fetchVersion, login, loginWithCPAAPIKey, logout, refreshUsageQuotas, resetUsageQuota, revokeAuthSession, setAuthFilesDisabled, setCredentialDisabled, setupTOTP, startUsageQuotaInspection, updateAuthSessionAlias, updateCpaApiKeyAlias, updateQuotaAutoRefreshSettings } from '../api';
 
 const headerValue = (init: RequestInit | undefined, name: string): string | null => new Headers(init?.headers).get(name);
 
@@ -136,6 +136,14 @@ describe('fetchUsageEvents', () => {
       expect(params.get('start')).toBe('2026-06-18');
       expect(params.get('end')).toBe('2026-07-17');
     }
+  });
+
+  it('preserves the realtime insight block for both admin and Key Viewer responses', async () => {
+    vi.stubGlobal('window', { __APP_BASE_PATH__: undefined });
+    const insights = { summary: { requests: 12, failures: 2, cost: null }, outcomes: [{ bucket: '2026-09-12T12:00:00+08:00', requests: 12, failures: 2 }] };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({ ok: true, json: async () => ({ insights }) } as Response);
+    expect((await fetchUsageOverviewRealtime()).insights).toEqual(insights);
+    expect((await fetchKeyOverviewRealtime()).insights).toEqual(insights);
   });
 
   it('loads realtime overview from dedicated endpoints', async () => {
@@ -479,12 +487,14 @@ describe('fetchUsageEvents', () => {
       pageSize: 100,
       cursorMode: true,
       cursor: 'opaque-cursor',
+      apiKeyId: '42',
     });
 
     const parsed = new URL(String(fetchMock.mock.calls[0][0]), 'http://localhost');
     expect(parsed.searchParams.get('page_size')).toBe('100');
     expect(parsed.searchParams.get('cursor_mode')).toBe('true');
     expect(parsed.searchParams.get('cursor')).toBe('opaque-cursor');
+    expect(parsed.searchParams.get('api_key_id')).toBe('42');
     expect(parsed.searchParams.get('page')).toBeNull();
   });
 
@@ -509,7 +519,7 @@ describe('fetchUsageEvents', () => {
     expect(parsed.searchParams.get('cursor_mode')).toBe('true');
   });
 
-  it('exports usage events with filters but without pagination params', async () => {
+  it.each(['csv', 'json'] as const)('exports usage events as %s with filters but without pagination params', async (format) => {
     vi.stubGlobal('window', { __APP_BASE_PATH__: undefined });
     const blob = new Blob(['id,timestamp\n']);
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
@@ -523,7 +533,7 @@ describe('fetchUsageEvents', () => {
       unit: 'hour',
       start: '2026-04-20T00:00:00Z',
       end: '2026-04-21T00:00:00Z',
-    }, 'csv', {
+    }, format, {
       page: 3,
       pageSize: 100,
       model: 'claude-sonnet',
@@ -541,7 +551,7 @@ describe('fetchUsageEvents', () => {
     expect(parsed.searchParams.get('range')).toBe('custom');
     expect(parsed.searchParams.get('start')).toBe('2026-04-20T00:00:00Z');
     expect(parsed.searchParams.get('end')).toBe('2026-04-21T00:00:00Z');
-    expect(parsed.searchParams.get('format')).toBe('csv');
+    expect(parsed.searchParams.get('format')).toBe(format);
     expect(parsed.searchParams.get('model')).toBe('claude-sonnet');
     expect(parsed.searchParams.get('source')).toBe('authidx-source-a');
     expect(parsed.searchParams.get('result')).toBe('failed');
@@ -1026,6 +1036,24 @@ describe('fetchUsageEvents', () => {
     expect(init).toMatchObject({ credentials: 'include', method: 'PATCH' });
     expect(headerValue(init, 'Content-Type')).toBe('application/json');
     expect(init?.body).toBe(JSON.stringify({ names: ['a.json'], disabled: true }));
+  });
+
+  it('updates a single credential through the auth-index status endpoint', async () => {
+    vi.stubGlobal('window', { __APP_BASE_PATH__: '/keeper' });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({ auth_index: 'provider/idx', disabled: false }),
+    } as Response);
+
+    const response = await setCredentialDisabled('ai-provider', 'provider/idx', false);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    const parsed = new URL(String(url), 'http://localhost');
+    expect(response).toEqual({ auth_index: 'provider/idx', disabled: false });
+    expect(parsed.pathname).toBe('/keeper/api/v1/ai-providers/provider%2Fidx/status');
+    expect(init).toMatchObject({ credentials: 'include', method: 'PATCH' });
+    expect(headerValue(init, 'Content-Type')).toBe('application/json');
+    expect(init?.body).toBe(JSON.stringify({ disabled: false }));
   });
 
   it('deletes selected auth files through the protected management endpoint', async () => {

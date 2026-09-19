@@ -213,7 +213,27 @@ export interface RealtimeCacheLevelPoint {
 	input_tokens: number
 }
 
+export interface RealtimeWindowSummary {
+  requests: number
+  failures: number
+  token_requests: number
+  cached_requests: number
+  total_tokens: number
+  input_tokens: number
+  output_tokens: number
+  reasoning_tokens: number
+  cache_read_tokens: number
+  cache_creation_tokens: number
+  cost: number | null
+}
+
+export interface RealtimeInsights {
+  summary: RealtimeWindowSummary
+  outcomes: Array<{ bucket: string; requests: number; failures: number }>
+}
+
 export interface OverviewRealtimeBlock {
+  insights?: RealtimeInsights
   window: OverviewRealtimeWindow
   timezone?: string
   bucket_seconds: number
@@ -227,7 +247,29 @@ export interface OverviewRealtimeBlock {
   cache_level: RealtimeCacheLevelPoint[]
 }
 
+export interface UsageComparisonItem {
+  key: string
+  label: string
+  requests: number
+  failures: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_creation_tokens: number
+  reasoning_tokens: number
+  total_tokens: number
+  cost: number | null
+}
+
+export interface UsageOverviewComparisons {
+  models: UsageComparisonItem[]
+  api_keys?: UsageComparisonItem[]
+  auth_files?: UsageComparisonItem[]
+  ai_providers?: UsageComparisonItem[]
+}
+
 export interface UsageOverviewResponse {
+  comparisons?: UsageOverviewComparisons
   usage: UsageOverviewUsageSnapshot
   summary?: UsageOverviewSummary
   series?: UsageOverviewSeries
@@ -379,6 +421,15 @@ export interface UsageSubscriptionInfo {
   tierName?: string
 }
 
+export interface UsageIdentityPeriodStats {
+  total_requests: number
+  success_count: number
+  failure_count: number
+  input_tokens: number
+  cache_read_tokens: number
+  total_tokens: number
+}
+
 export interface UsageIdentity {
   id: string
   name: string
@@ -410,6 +461,8 @@ export interface UsageIdentity {
   first_used_at?: string
   last_used_at?: string
   stats_updated_at?: string
+  stats_reset_at?: string
+  period_stats?: UsageIdentityPeriodStats
   credential_health?: UsageCredentialHealth
   is_deleted: boolean
   created_at: string
@@ -470,10 +523,19 @@ export interface UsageQuotaCheckResponse {
   rateLimitResetCreditsAvailableCount?: number | null
 }
 
+export interface UsageQuotaUpstreamResponse {
+  method: string
+  url: string
+  status_code: number
+  header?: Record<string, string[]>
+  body: string
+}
+
 export interface UsageQuotaResetResponse {
   authIndex: string
   code?: string
   windowsReset?: number
+  recoveryFailed?: boolean
 }
 
 export interface UsageQuotaResetCredit {
@@ -498,6 +560,7 @@ export interface UsageQuotaCacheItem {
   http_status_code?: number
   expires_at?: string
   refreshed_at?: string
+  upstream_responses?: UsageQuotaUpstreamResponse[]
 }
 
 export interface UsageQuotaCacheResponse {
@@ -579,6 +642,7 @@ export interface UsageQuotaRefreshTaskResponse {
   file_name?: string
   status: 'queued' | 'running' | 'completed' | 'failed'
   quota?: UsageQuotaCheckResponse
+  upstream_responses?: UsageQuotaUpstreamResponse[]
   error?: string
   http_status_code?: number
   refreshed_at?: string
@@ -931,7 +995,10 @@ export interface PricingSyncMatch {
 	cache_write_price_per_1m: number
 }
 
+export type PricingSyncSource = 'models-dev' | 'litellm'
+
 export interface PricingSyncPreviewResponse {
+  source_id: PricingSyncSource
   source: string
   source_url: string
   metadata_models: number

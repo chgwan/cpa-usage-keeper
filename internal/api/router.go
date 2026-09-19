@@ -33,6 +33,7 @@ type StatusProvider interface {
 
 type QuotaProvider interface {
 	GetCodexQuotaHistory(context.Context, quota.CodexQuotaHistoryRequest) (quota.CodexQuotaHistoryResponse, error)
+	DeleteCodexQuotaHistoryCycle(context.Context, string, int64) error
 	GetCachedQuota(context.Context, quota.CacheRequest) (quota.CacheResponse, error)
 	Refresh(context.Context, quota.RefreshRequest) (quota.RefreshResponse, error)
 	GetRefreshTaskByAuthIndex(context.Context, string) (quota.RefreshTaskResponse, error)
@@ -57,6 +58,7 @@ type OptionalProviders struct {
 	// CPAAPIKeyManagement 提供 key 生命周期与限额策略管理路由；为空时相关路由统一返回 501。
 	CPAAPIKeyManagement service.CPAAPIKeyManagementProvider
 	AuthFiles           service.AuthFilesManagementProvider
+	CredentialStatus    service.CredentialStatusProvider
 	RequestLogs         service.RequestLogProvider
 	Ranking             rankinghttpapi.Provider
 	LocalRanking        rankinghttpapi.LocalProvider
@@ -102,6 +104,7 @@ func NewRouter(
 	var cpaAPIKeyProvider service.CPAAPIKeyProvider
 	var cpaAPIKeyManagementProvider service.CPAAPIKeyManagementProvider
 	var authFilesProvider service.AuthFilesManagementProvider
+	var credentialStatusProvider service.CredentialStatusProvider
 	var requestLogProvider service.RequestLogProvider
 	var rankingProvider rankinghttpapi.Provider
 	var localRankingProvider rankinghttpapi.LocalProvider
@@ -113,6 +116,7 @@ func NewRouter(
 		cpaAPIKeyProvider = optionalProviders[0].CPAAPIKeys
 		cpaAPIKeyManagementProvider = optionalProviders[0].CPAAPIKeyManagement
 		authFilesProvider = optionalProviders[0].AuthFiles
+		credentialStatusProvider = optionalProviders[0].CredentialStatus
 		requestLogProvider = optionalProviders[0].RequestLogs
 		rankingProvider = optionalProviders[0].Ranking
 		localRankingProvider = optionalProviders[0].LocalRanking
@@ -138,6 +142,7 @@ func NewRouter(
 	registerUsageIdentityRoutes(adminProtected, usageIdentityProvider)
 	registerErrorEventRoutes(adminProtected, errorEventProvider)
 	registerAuthFileManagementRoutes(adminProtected, authFilesProvider)
+	registerCredentialStatusRoutes(adminProtected, credentialStatusProvider)
 	registerAuthSessionManagementRoutes(adminProtected, authHandler)
 	registerTOTPManagementRoutes(adminProtected, authHandler)
 	registerCPAAPIKeyRoutes(adminProtected, cpaAPIKeyProvider, cpaAPIKeyManagementProvider)

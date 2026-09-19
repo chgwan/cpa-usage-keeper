@@ -137,7 +137,7 @@ const (
 	UsageIdentityPageSortLastUsedAt    = "last_used_at"
 )
 
-const usageIdentityReadColumns = "id, name, alias, auth_type, auth_type_name, identity, type, provider, lookup_key, prefix, base_url, file_name, file_path, priority, disabled, note, account_id, project_id, xai_user_id, active_start, active_until, plan_type, total_requests, success_count, failure_count, input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_read_tokens, total_tokens, last_aggregated_usage_event_id, first_used_at, last_used_at, stats_updated_at, is_deleted, created_at, updated_at, deleted_at"
+const usageIdentityReadColumns = "id, name, alias, auth_type, auth_type_name, identity, type, provider, lookup_key, prefix, base_url, file_name, file_path, priority, disabled, note, account_id, project_id, xai_user_id, active_start, active_until, plan_type, total_requests, success_count, failure_count, input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_read_tokens, total_tokens, last_aggregated_usage_event_id, first_used_at, last_used_at, stats_updated_at, is_deleted, created_at, updated_at, deleted_at, stats_reset_at, reset_total_requests, reset_success_count, reset_failure_count, reset_input_tokens, reset_cache_read_tokens, reset_total_tokens"
 
 const usageIdentityAggregationColumns = "id, auth_type, identity, total_requests, success_count, failure_count, input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_read_tokens, total_tokens, last_aggregated_usage_event_id, first_used_at, last_used_at"
 
@@ -220,6 +220,26 @@ func FindUsageIdentityByID(ctx context.Context, db *gorm.DB, id int64) (entities
 	return identity, nil
 }
 
+// FindActiveUsageIdentityByAuthTypeAndIdentity 按页面公开的 auth_index 精确读取可操作身份。
+func FindActiveUsageIdentityByAuthTypeAndIdentity(ctx context.Context, db *gorm.DB, authType entities.UsageIdentityAuthType, identity string) (entities.UsageIdentity, error) {
+	var row entities.UsageIdentity
+	if db == nil {
+		return row, fmt.Errorf("database is nil")
+	}
+	identity = strings.TrimSpace(identity)
+	if identity == "" {
+		return row, fmt.Errorf("usage identity is required")
+	}
+	if err := db.WithContext(ctx).
+		Clauses(dbresolver.Write).
+		Select(usageIdentityReadColumns).
+		Where("auth_type = ? AND identity = ? AND is_deleted = ?", authType, identity, false).
+		First(&row).Error; err != nil {
+		return row, fmt.Errorf("find active usage identity: %w", err)
+	}
+	return row, nil
+}
+
 func UpdateUsageIdentityAlias(ctx context.Context, db *gorm.DB, id int64, alias string) error {
 	if db == nil {
 		return fmt.Errorf("database is nil")
@@ -233,6 +253,28 @@ func UpdateUsageIdentityAlias(ctx context.Context, db *gorm.DB, id int64, alias 
 		Model(&entities.UsageIdentity{}).
 		Where("id = ? AND is_deleted = ?", id, false).
 		Update("alias", value)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+// UpdateUsageIdentityDisabled 在上游状态成功后写回 Keeper 的即时状态。
+func UpdateUsageIdentityDisabled(ctx context.Context, db *gorm.DB, authType entities.UsageIdentityAuthType, identity string, disabled bool) error {
+	if db == nil {
+		return fmt.Errorf("database is nil")
+	}
+	identity = strings.TrimSpace(identity)
+	if identity == "" {
+		return fmt.Errorf("usage identity is required")
+	}
+	result := db.WithContext(ctx).
+		Model(&entities.UsageIdentity{}).
+		Where("auth_type = ? AND identity = ? AND is_deleted = ?", authType, identity, false).
+		Update("disabled", disabled)
 	if result.Error != nil {
 		return result.Error
 	}
@@ -297,11 +339,11 @@ func applyUsageIdentityPageSort(query *gorm.DB, sort string, authType *entities.
 		}
 		return query.Order("id ASC")
 	case UsageIdentityPageSortTotalTokens:
-		return query.Order("total_tokens DESC").Order("id ASC")
+		return query.Order("(total_tokens - reset_total_tokens) DESC").Order("id ASC")
 	case UsageIdentityPageSortLastUsedAt:
 		return query.Order("last_used_at IS NULL ASC").Order("last_used_at DESC").Order("id ASC")
 	default:
-		return query.Order("total_requests DESC").Order("id ASC")
+		return query.Order("(total_requests - reset_total_requests) DESC").Order("id ASC")
 	}
 }
 
@@ -529,7 +571,8 @@ func aggregateUsageIdentityDelta(tx *gorm.DB, identity entities.UsageIdentity) (
 		return delta, nil
 	}
 
-	// 再用 last_aggregated_usage_event_id 做增量游标，只累计上次之后的新事件。
+	// 同一次增量查询取齐累计和首尾时间，减少唯一 writer 事务内的重复查询。
+	// MIN/MAX 沿用原先 timestamp 排序口径，DTO serializer 兼容新旧存储时间格式。
 	if err := query.
 		Select(`
 			COUNT(*) AS total_requests,
@@ -541,36 +584,13 @@ func aggregateUsageIdentityDelta(tx *gorm.DB, identity entities.UsageIdentity) (
 			COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
 			COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
 			COALESCE(SUM(total_tokens), 0) AS total_tokens,
+			MIN(timestamp) AS first_used_at,
+			MAX(timestamp) AS last_used_at,
 			COALESCE(MAX(id), 0) AS max_usage_event_id`).
 		Where("id > ?", identity.LastAggregatedUsageEventID).
 		Scan(&delta).Error; err != nil {
 		return delta, fmt.Errorf("aggregate usage identity stats for %q: %w", identity.Identity, err)
 	}
-	if delta.TotalRequests == 0 {
-		return delta, nil
-	}
-
-	// 统计总量不包含首尾时间，首尾时间用同一组身份过滤条件分别取最早和最晚事件。
-	var firstEvent struct {
-		Timestamp time.Time
-	}
-	firstQuery, _ := usageIdentityEventsQuery(tx.Model(&entities.UsageEvent{}), identity)
-	if err := firstQuery.Select("timestamp").Where("id > ?", identity.LastAggregatedUsageEventID).Order("timestamp asc, id asc").First(&firstEvent).Error; err != nil {
-		return delta, fmt.Errorf("find first usage identity event for %q: %w", identity.Identity, err)
-	}
-	firstUsedAt := firstEvent.Timestamp
-	delta.FirstUsedAt = &firstUsedAt
-
-	var lastEvent struct {
-		Timestamp time.Time
-	}
-	lastQuery, _ := usageIdentityEventsQuery(tx.Model(&entities.UsageEvent{}), identity)
-	if err := lastQuery.Select("timestamp").Where("id > ?", identity.LastAggregatedUsageEventID).Order("timestamp desc, id desc").First(&lastEvent).Error; err != nil {
-		return delta, fmt.Errorf("find last usage identity event for %q: %w", identity.Identity, err)
-	}
-	lastUsedAt := lastEvent.Timestamp
-	delta.LastUsedAt = &lastUsedAt
-
 	return delta, nil
 }
 

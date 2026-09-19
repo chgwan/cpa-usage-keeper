@@ -216,8 +216,9 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 
 	cpaClient := cpa.NewClient(cfg.CPABaseURL, cfg.CPAManagementKey, cfg.RequestTimeout, cfg.TLSSkipVerify)
 	quotaService := quota.NewServiceWithOptions(db, cpaClient, quota.ServiceOptions{
-		RefreshWorkerLimit: cfg.QuotaRefreshWorkerLimit,
-		PricingCatalog:     pricingCatalog,
+		RefreshWorkerLimit:            cfg.QuotaRefreshWorkerLimit,
+		QuotaUpstreamResponsesEnabled: cfg.QuotaUpstreamResponsesEnabled,
+		PricingCatalog:                pricingCatalog,
 	})
 	// 单 writer aggregation runner 只维护 rollups/Identity，并在 App.Run 时主动追平。
 	usageAggregationRunner := poller.NewUsageAggregationRunner(db)
@@ -330,6 +331,8 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 	// 生命周期与限额策略服务复用同一个 DB、CPA client 和价格目录，并与限额 runner 共享 key 变更互斥锁。
 	cpaAPIKeyManagementService := service.NewCPAAPIKeyManagementService(db, cpaClient, pricingCatalog, keyMutationMutex)
 	authFilesManagementService := service.NewAuthFilesManagementService(cpaClient)
+	// 单条凭证开关成功后立即与 CPA 对齐；runner 自带合并窗口和 nil 保护。
+	credentialStatusService := service.NewCredentialStatusService(db, cpaClient, metadataSyncRunner)
 	if cfg.TLSSkipVerify {
 		logrus.WithField("cpa_base_url", cfg.CPABaseURL).Warn("TLS certificate verification is disabled for CPA and Redis queue connections")
 	}
@@ -392,9 +395,11 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 				// CPAAPIKeyManagement 让管理端 key 生命周期与限额策略路由可用。
 				CPAAPIKeyManagement: cpaAPIKeyManagementService,
 				AuthFiles:           authFilesManagementService,
-				RequestLogs:         requestLogService,
-				Ranking:             rankingService,
-				LocalRanking:        localRankingService,
+				// 认证文件与 AI 供应商共用一个 service，路由层按类型分发。
+				CredentialStatus: credentialStatusService,
+				RequestLogs:      requestLogService,
+				Ranking:          rankingService,
+				LocalRanking:     localRankingService,
 				Status: api.StatusRouteConfig{
 					CPAPublicURL:               cfg.CPAPublicURL,
 					CPARequestLogAccessEnabled: cfg.CPARequestLogAccessEnabled,

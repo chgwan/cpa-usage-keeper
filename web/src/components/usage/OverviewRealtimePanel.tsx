@@ -1,7 +1,9 @@
+import { RealtimeCacheChart, RealtimeDiagnostics, RealtimeWindowCards } from './RealtimeInsights';
+import { UsageShareList } from './UsageShareList';
 import { useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/chartjs';
-import type { ChartData, ChartOptions } from 'chart.js';
+import type { ChartData, ChartOptions, Plugin } from 'chart.js';
 import { Chart, Line } from 'react-chartjs-2';
 import type {
   OverviewRealtimeBlock,
@@ -15,7 +17,6 @@ import {
   formatDurationMs,
   formatFixedTwoDecimals,
   formatPerMinuteValue,
-  formatUsd,
 } from '@/utils/usage';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import styles from '@/pages/UsagePage.module.scss';
@@ -32,6 +33,20 @@ interface RealtimeMetric {
   label: string;
   value: string;
   tone?: 'up' | 'down' | 'flat';
+}
+
+interface RealtimeMetricPair {
+  label: string;
+  tokenValue: string;
+  requestValue: string;
+  tokenTone?: RealtimeMetric['tone'];
+  requestTone?: RealtimeMetric['tone'];
+}
+
+interface RealtimeThroughputPoint {
+  bucket: string;
+  tokensPerMinute: number | null;
+  requestsPerMinute: number | null;
 }
 
 type ResponseDistributionDatum = { x: number; y: number | null };
@@ -52,12 +67,15 @@ interface OverviewRealtimePanelProps {
 
 const REALTIME_WINDOWS: OverviewRealtimeWindow[] = ['15m', '30m', '60m'];
 const DEFAULT_VISIBLE_DIMENSIONS: readonly RealtimeDimensionKey[] = ['models', 'api_keys', 'auth_files', 'ai_providers'];
+const THROUGHPUT_Y_TICK_COUNT = 6;
+const THROUGHPUT_Y_INTERVAL_COUNT = THROUGHPUT_Y_TICK_COUNT - 1;
+const THROUGHPUT_LEGEND_BOTTOM_GAP = 10;
 
 const CHART_COLORS = {
   token: '#3b82f6',
   ttft: '#f59e0b',
   latency: '#22c55e',
-  request: '#6366f1',
+  request: '#f97316',
   cache: '#14b8a6',
 } as const;
 
@@ -68,6 +86,22 @@ const REALTIME_DURATION_UNITS = {
   s: 's',
   ms: 'ms',
 } as const;
+
+const throughputLegendSpacingPlugin: Plugin<'line'> = {
+  id: 'throughputLegendSpacing',
+  afterInit: (chart) => {
+    const legend = chart.legend;
+    if (!legend) return;
+    const fit = legend.fit.bind(legend);
+    // 图例保持在顶部原位，只把绘图区下移，留出清晰的纵向呼吸空间。
+    legend.fit = () => {
+      fit();
+      legend.height += THROUGHPUT_LEGEND_BOTTOM_GAP;
+    };
+  },
+};
+
+const THROUGHPUT_CHART_PLUGINS: Plugin<'line'>[] = [throughputLegendSpacingPlugin];
 
 const emptyRealtime = (window: OverviewRealtimeWindow): OverviewRealtimeBlock => ({
   window,
@@ -143,7 +177,39 @@ const safeNumber = (value: unknown): number => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
-const formatRealtimeTokenRate = (value: number) => `${formatCompactNumber(value)}/min`;
+function buildRealtimeThroughputPoints(data: OverviewRealtimeBlock): RealtimeThroughputPoint[] {
+  const points = new Map<string, RealtimeThroughputPoint>();
+  // 两组 API 序列都按 bucket 合并，避免单侧缺点时把不同时间的值画在一起。
+  data.token_velocity.forEach((point) => {
+    points.set(point.bucket, {
+      bucket: point.bucket,
+      tokensPerMinute: safeNumber(point.tokens_per_minute),
+      requestsPerMinute: null,
+    });
+  });
+  data.request_level.forEach((point) => {
+    const current = points.get(point.bucket);
+    points.set(point.bucket, {
+      bucket: point.bucket,
+      tokensPerMinute: current?.tokensPerMinute ?? null,
+      requestsPerMinute: safeNumber(point.requests_per_minute),
+    });
+  });
+  return Array.from(points.values()).sort((left, right) => {
+    const leftTime = Date.parse(left.bucket);
+    const rightTime = Date.parse(right.bucket);
+    if (Number.isFinite(leftTime) && Number.isFinite(rightTime)) return leftTime - rightTime;
+    return left.bucket.localeCompare(right.bucket);
+  });
+}
+
+function throughputRequestAxisMax(values: Array<number | null>): number {
+  const maximum = values.reduce<number>((result, value) => (
+    typeof value === 'number' && Number.isFinite(value) ? Math.max(result, value) : result
+  ), 0);
+  const integerStep = Math.max(1, Math.ceil(maximum / THROUGHPUT_Y_INTERVAL_COUNT));
+  return integerStep * THROUGHPUT_Y_INTERVAL_COUNT;
+}
 
 const formatRealtimeDuration = (value: number) => formatDurationMs(value, {
   maxUnits: 2,
@@ -269,16 +335,161 @@ function buildRealtimeLineOptions(
   };
 }
 
-function buildSingleLineData(labels: string[], label: string, values: Array<number | null>, color: string): ChartData<'line', Array<number | null>, string> {
+function buildThroughputOptions(
+  isDark: boolean,
+  isMobile: boolean,
+  tokenLabel: string,
+  requestLabel: string,
+  requestValues: Array<number | null>,
+): ChartOptions<'line'> {
+  const gridColor = isDark ? 'rgba(255, 255, 255, 0.07)' : 'rgba(17, 24, 39, 0.07)';
+  const tickColor = isDark ? 'rgba(255, 255, 255, 0.66)' : 'rgba(17, 24, 39, 0.66)';
+  const tooltipBg = isDark ? 'rgba(17, 24, 39, 0.94)' : 'rgba(255, 255, 255, 0.98)';
+  const tooltipText = isDark ? '#ffffff' : '#111827';
+  const requestMax = throughputRequestAxisMax(requestValues);
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: {
+        display: true,
+        position: 'top',
+        align: 'end',
+        labels: {
+          color: tickColor,
+          boxHeight: 2,
+          usePointStyle: true,
+          pointStyle: 'line',
+          pointStyleWidth: isMobile ? 24 : 32,
+          padding: isMobile ? 10 : 16,
+          font: { size: isMobile ? 10 : 11 },
+          generateLabels: (chart) => chart.data.datasets.map((dataset, datasetIndex) => {
+            const requestSeries = datasetIndex === 1;
+            return {
+              text: dataset.label ?? '',
+              fillStyle: 'transparent',
+              fontColor: tickColor,
+              hidden: !chart.isDatasetVisible(datasetIndex),
+              lineCap: 'butt',
+              lineDash: requestSeries ? [6, 4] : [],
+              lineDashOffset: 0,
+              lineJoin: 'miter',
+              lineWidth: isMobile ? 1.6 : 2,
+              strokeStyle: requestSeries ? CHART_COLORS.request : CHART_COLORS.token,
+              pointStyle: 'line',
+              rotation: 0,
+              datasetIndex,
+            };
+          }),
+        },
+      },
+      tooltip: {
+        backgroundColor: tooltipBg,
+        titleColor: tooltipText,
+        bodyColor: tooltipText,
+        borderColor: isDark ? 'rgba(255, 255, 255, 0.10)' : 'rgba(17, 24, 39, 0.10)',
+        borderWidth: 1,
+        padding: 10,
+        displayColors: true,
+        callbacks: {
+          label: (context) => {
+            const label = context.dataset.label ? `${context.dataset.label}: ` : '';
+            const value = Number(context.parsed.y ?? 0);
+            const formatted = context.dataset.yAxisID === 'requests'
+              ? formatPerMinuteValue(value)
+              : formatCompactNumber(value);
+            return `${label}${formatted}`;
+          },
+        },
+      },
+    },
+    scales: {
+      x: {
+        grid: { display: false },
+        border: { color: gridColor },
+        ticks: {
+          color: tickColor,
+          maxTicksLimit: isMobile ? 5 : 8,
+          font: { size: isMobile ? 10 : 11 },
+        },
+      },
+      tokens: {
+        type: 'linear',
+        position: 'left',
+        beginAtZero: true,
+        grid: { color: gridColor },
+        border: { color: gridColor },
+        title: {
+          display: true,
+          text: tokenLabel,
+          color: tickColor,
+          font: { size: isMobile ? 10 : 11 },
+        },
+        ticks: {
+          color: tickColor,
+          font: { size: isMobile ? 10 : 11 },
+          count: THROUGHPUT_Y_TICK_COUNT,
+          callback: (value) => formatCompactNumber(Number(value)),
+        },
+      },
+      requests: {
+        type: 'linear',
+        position: 'right',
+        beginAtZero: true,
+        max: requestMax,
+        grid: { drawOnChartArea: false },
+        border: { color: gridColor },
+        title: {
+          display: true,
+          text: requestLabel,
+          color: tickColor,
+          font: { size: isMobile ? 10 : 11 },
+        },
+        ticks: {
+          color: tickColor,
+          font: { size: isMobile ? 10 : 11 },
+          count: THROUGHPUT_Y_TICK_COUNT,
+          precision: 0,
+          callback: (value) => Math.round(Number(value)).toLocaleString(),
+        },
+      },
+    },
+    elements: {
+      line: { tension: 0.35, borderWidth: isMobile ? 1.6 : 2 },
+      point: { radius: 0, hoverRadius: 3 },
+    },
+  };
+}
+
+function buildThroughputData(
+  labels: string[],
+  tokenLabel: string,
+  requestLabel: string,
+  tokenValues: Array<number | null>,
+  requestValues: Array<number | null>,
+): ChartData<'line', Array<number | null>, string> {
   return {
     labels,
-    datasets: [{
-      label,
-      data: values,
-      borderColor: color,
-      backgroundColor: `${color}24`,
-      fill: true,
-    }],
+    datasets: [
+      {
+        label: tokenLabel,
+        data: tokenValues,
+        yAxisID: 'tokens',
+        borderColor: CHART_COLORS.token,
+        backgroundColor: `${CHART_COLORS.token}24`,
+        fill: true,
+      },
+      {
+        label: requestLabel,
+        data: requestValues,
+        yAxisID: 'requests',
+        borderColor: CHART_COLORS.request,
+        backgroundColor: CHART_COLORS.request,
+        borderDash: [6, 4],
+        fill: false,
+      },
+    ],
   };
 }
 
@@ -496,9 +707,79 @@ function responseDistributionLogAxisBounds(averageData: ResponseDistributionDatu
   };
 }
 
+function RealtimeMetricPills({ metrics, metricsTooltip, labelPrefix }: { metrics: RealtimeMetric[]; metricsTooltip?: string; labelPrefix?: string }) {
+  return (
+    <div className={styles.overviewRealtimeMetrics}>
+      {metrics.map((metric) => (
+        <span
+          key={metric.label}
+          className={`${styles.overviewRealtimeMetric} ${metric.tone === 'up' ? styles.overviewRealtimeMetricUp : metric.tone === 'down' ? styles.overviewRealtimeMetricDown : metric.tone === 'flat' ? styles.overviewRealtimeMetricFlat : ''}`.trim()}
+          title={metricsTooltip}
+          aria-label={metricsTooltip ? `${labelPrefix ? `${labelPrefix} ` : ''}${metric.label} ${metric.value} ${metricsTooltip}` : undefined}
+        >
+          <span className={styles.overviewRealtimeMetricLabel}>{metric.label}</span>
+          <span className={styles.overviewRealtimeMetricValue}>{metric.value}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function RealtimePairedMetrics({
+  metrics,
+  tokenLabel,
+  requestLabel,
+  tokenShortLabel,
+  requestShortLabel,
+  metricsTooltip,
+}: {
+  metrics: RealtimeMetricPair[];
+  tokenLabel: string;
+  requestLabel: string;
+  tokenShortLabel: string;
+  requestShortLabel: string;
+  metricsTooltip?: string;
+}) {
+  const toneClass = (tone: RealtimeMetric['tone']) => (
+    tone === 'up'
+      ? styles.overviewRealtimePairedMetricValueUp
+      : tone === 'down'
+        ? styles.overviewRealtimePairedMetricValueDown
+        : tone === 'flat'
+          ? styles.overviewRealtimePairedMetricValueFlat
+          : ''
+  );
+  return (
+    <div className={styles.overviewRealtimePairedMetrics}>
+      {metrics.map((metric) => (
+        <span
+          key={metric.label}
+          className={styles.overviewRealtimePairedMetric}
+          title={metricsTooltip}
+        >
+          <span className={styles.overviewRealtimeScreenReaderOnly}>
+            {`${metric.label} ${tokenLabel} ${metric.tokenValue} ${requestLabel} ${metric.requestValue}${metricsTooltip ? ` ${metricsTooltip}` : ''}`}
+          </span>
+          <span className={styles.overviewRealtimePairedMetricLabel} aria-hidden="true">{metric.label}</span>
+          <span className={styles.overviewRealtimePairedMetricSeries} aria-hidden="true">
+            <span className={styles.overviewRealtimePairedMetricTokenLabel}>{tokenShortLabel}</span>
+            <span className={`${styles.overviewRealtimePairedMetricValue} ${toneClass(metric.tokenTone)}`.trim()}>{metric.tokenValue}</span>
+          </span>
+          <span className={styles.overviewRealtimePairedMetricDivider} aria-hidden="true">·</span>
+          <span className={styles.overviewRealtimePairedMetricSeries} aria-hidden="true">
+            <span className={styles.overviewRealtimePairedMetricRequestLabel}>{requestShortLabel}</span>
+            <span className={`${styles.overviewRealtimePairedMetricValue} ${toneClass(metric.requestTone)}`.trim()}>{metric.requestValue}</span>
+          </span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function RealtimeCard({
   title,
   metrics,
+  headerContent,
   children,
   full = false,
   compact = false,
@@ -507,6 +788,7 @@ function RealtimeCard({
 }: {
   title: string;
   metrics?: RealtimeMetric[];
+  headerContent?: ReactNode;
   children: ReactNode;
   full?: boolean;
   compact?: boolean;
@@ -526,21 +808,9 @@ function RealtimeCard({
         <div className="keeper-card-title-track">
           <h3 className="keeper-card-title">{title}</h3>
         </div>
-        {metrics && metrics.length > 0 && (
-          <div className={styles.overviewRealtimeMetrics}>
-            {metrics.map((metric) => (
-              <span
-                key={metric.label}
-                className={`${styles.overviewRealtimeMetric} ${metric.tone === 'up' ? styles.overviewRealtimeMetricUp : metric.tone === 'down' ? styles.overviewRealtimeMetricDown : metric.tone === 'flat' ? styles.overviewRealtimeMetricFlat : ''}`.trim()}
-                title={metricsTooltip}
-                aria-label={metricsTooltip ? `${metric.label} ${metricsTooltip}` : undefined}
-              >
-                <span className={styles.overviewRealtimeMetricLabel}>{metric.label}</span>
-                <span className={styles.overviewRealtimeMetricValue}>{metric.value}</span>
-              </span>
-            ))}
-          </div>
-        )}
+        {headerContent ?? (metrics && metrics.length > 0 ? (
+          <RealtimeMetricPills metrics={metrics} metricsTooltip={metricsTooltip} />
+        ) : null)}
       </div>
       {children}
     </section>
@@ -560,15 +830,6 @@ function RealtimeChartFrame({ loading, emptyLabel, children }: { loading: boolea
   );
 }
 
-function UsageMetaPill({ label, value }: { label: string; value: string }) {
-  return (
-    <span className={styles.overviewRealtimeUsageMetaPill}>
-      <span className={styles.overviewRealtimeUsageMetaLabel}>{label}</span>
-      <span className={styles.overviewRealtimeUsageMetaValue}>{value}</span>
-    </span>
-  );
-}
-
 export function OverviewRealtimePanel({ realtime, loading, error, window, onWindowChange, isDark, isMobile, timezone, visibleDimensions = DEFAULT_VISIBLE_DIMENSIONS }: OverviewRealtimePanelProps) {
   const { t } = useTranslation();
   const data = realtime ?? emptyRealtime(window);
@@ -577,12 +838,15 @@ export function OverviewRealtimePanel({ realtime, loading, error, window, onWind
   const showInlineError = Boolean(error && hasRealtimeData);
   const showErrorOnly = Boolean(error && !hasRealtimeData);
   const [activeDimension, setActiveDimension] = useState<RealtimeDimensionKey>('models');
-  const labels = useMemo(() => data.token_velocity.map((point) => formatBucketLabel(point.bucket, data.timezone ?? timezone)), [data.timezone, data.token_velocity, timezone]);
+  const throughputPoints = useMemo(() => buildRealtimeThroughputPoints(data), [data]);
+  const labels = useMemo(() => throughputPoints.map((point) => formatBucketLabel(point.bucket, data.timezone ?? timezone)), [data.timezone, throughputPoints, timezone]);
+  const cacheLabels = useMemo(() => data.cache_level.map((point) => formatBucketLabel(point.bucket, data.timezone ?? timezone)), [data.cache_level, data.timezone, timezone]);
 
-  const tokenValues = useMemo(() => data.token_velocity.map((point) => safeNumber(point.tokens_per_minute)), [data.token_velocity]);
-  const requestValues = useMemo(() => data.request_level.map((point) => safeNumber(point.requests_per_minute)), [data.request_level]);
+  const tokenValues = useMemo(() => throughputPoints.map((point) => point.tokensPerMinute), [throughputPoints]);
+  const requestValues = useMemo(() => throughputPoints.map((point) => point.requestsPerMinute), [throughputPoints]);
   const cacheValues = useMemo(() => data.cache_level.map((point) => point.cache_read_rate == null ? null : safeNumber(point.cache_read_rate)), [data.cache_level]);
   const responseTimezone = data.timezone ?? timezone;
+  const outcomeLabels = useMemo(() => (data.insights?.outcomes ?? []).map(point => formatBucketLabel(point.bucket, data.timezone ?? timezone)), [data.insights?.outcomes, data.timezone, timezone]);
   const ttftAveragePoints = useMemo(() => responseDistributionAveragePoints(
     data.response_distribution.ttft.average_line,
     data.response_level.map((point) => ({ bucket: point.bucket, value: point.ttft_p95_ms })),
@@ -598,14 +862,11 @@ export function OverviewRealtimePanel({ realtime, loading, error, window, onWind
   const ttftParticleValues = useMemo(() => responseDistributionParticleData(data.response_distribution.ttft.particles), [data.response_distribution.ttft.particles]);
   const latencyParticleValues = useMemo(() => responseDistributionParticleData(data.response_distribution.latency.particles), [data.response_distribution.latency.particles]);
   const distributionXBounds = useMemo(() => responseDistributionXBounds(data), [data]);
-  const tokenEmptyLabel = data.token_velocity.length === 0 ? t('usage_stats.overview_realtime_token_empty') : undefined;
-  const requestEmptyLabel = data.request_level.length === 0 ? t('usage_stats.overview_realtime_request_empty') : undefined;
+  const throughputEmptyLabel = throughputPoints.length === 0 ? t('usage_stats.overview_realtime_throughput_empty') : undefined;
   const ttftEmptyLabel = !hasFiniteNumber(ttftAverageValues) && ttftParticleValues.length === 0 ? t('usage_stats.overview_realtime_ttft_empty') : undefined;
   const latencyEmptyLabel = !hasFiniteNumber(latencyAverageValues) && latencyParticleValues.length === 0 ? t('usage_stats.overview_realtime_latency_empty') : undefined;
-  const cacheEmptyLabel = !hasFiniteNumber(cacheValues) ? t('usage_stats.overview_realtime_cache_empty') : undefined;
+  const cacheEmptyLabel = !hasFiniteNumber(cacheValues) && !data.cache_level.some(point => point.input_tokens > 0 || point.cache_read_tokens > 0 || point.cache_creation_tokens > 0) ? t('usage_stats.overview_realtime_cache_empty') : undefined;
 
-  const lineOptions = useMemo(() => buildRealtimeLineOptions(isDark, isMobile, formatCompactNumber), [isDark, isMobile]);
-  const percentLineOptions = useMemo(() => buildRealtimeLineOptions(isDark, isMobile, (value) => `${formatFixedTwoDecimals(value)}%`, { yMaxTicksLimit: 5 }), [isDark, isMobile]);
   const ttftDistributionOptions = useMemo(() => buildResponseDistributionOptions(
     isDark,
     isMobile,
@@ -626,10 +887,14 @@ export function OverviewRealtimePanel({ realtime, loading, error, window, onWind
   const averageLabel = t('usage_stats.overview_realtime_average');
   const trendLabel = t('usage_stats.overview_realtime_trend');
   const rollingMetricHint = t('usage_stats.overview_realtime_rolling_metric_hint');
+  const throughputMetricHint = t('usage_stats.overview_realtime_throughput_hint');
+  const tokenRateLabel = t('usage_stats.overview_realtime_tpm');
+  const requestRateLabel = t('usage_stats.overview_realtime_rpm');
+  const tokenShortLabel = t('usage_stats.tpm');
+  const requestShortLabel = t('usage_stats.rpm');
 
-  const tokenChartData = useMemo(() => buildSingleLineData(labels, t('usage_stats.overview_realtime_tpm'), tokenValues, CHART_COLORS.token), [labels, t, tokenValues]);
-  const requestChartData = useMemo(() => buildSingleLineData(labels, t('usage_stats.overview_realtime_rpm'), requestValues, CHART_COLORS.request), [labels, requestValues, t]);
-  const cacheChartData = useMemo(() => buildSingleLineData(labels, t('usage_stats.overview_realtime_cache_rate'), cacheValues, CHART_COLORS.cache), [cacheValues, labels, t]);
+  const throughputOptions = useMemo(() => buildThroughputOptions(isDark, isMobile, tokenRateLabel, requestRateLabel, requestValues), [isDark, isMobile, requestRateLabel, requestValues, tokenRateLabel]);
+  const throughputChartData = useMemo(() => buildThroughputData(labels, tokenRateLabel, requestRateLabel, tokenValues, requestValues), [labels, requestRateLabel, requestValues, tokenRateLabel, tokenValues]);
   const ttftDistributionChartData = useMemo(() => buildResponseDistributionData(
     t('usage_stats.overview_realtime_ttft_average'),
     t('usage_stats.overview_realtime_ttft_distribution'),
@@ -652,6 +917,17 @@ export function OverviewRealtimePanel({ realtime, loading, error, window, onWind
   const latencyMetrics = useMemo(() => metricChips(latencyAverageValues, formatRealtimeDuration, averageLabel, latestLabel, trendLabel, {
       invertTone: true,
     }), [averageLabel, latencyAverageValues, latestLabel, trendLabel]);
+  const throughputMetrics = useMemo<RealtimeMetricPair[]>(() => {
+    const tokenMetrics = metricChips(tokenValues, formatCompactNumber, averageLabel, latestLabel, trendLabel);
+    const requestMetrics = metricChips(requestValues, formatPerMinuteValue, averageLabel, latestLabel, trendLabel);
+    return tokenMetrics.map((tokenMetric, index) => ({
+      label: tokenMetric.label,
+      tokenValue: tokenMetric.value,
+      requestValue: requestMetrics[index]?.value ?? '--',
+      tokenTone: tokenMetric.tone,
+      requestTone: requestMetrics[index]?.tone,
+    }));
+  }, [averageLabel, latestLabel, requestValues, tokenValues, trendLabel]);
 
   const dimensions = useMemo<RealtimeDimension[]>(() => {
     const next: RealtimeDimension[] = [
@@ -696,17 +972,28 @@ export function OverviewRealtimePanel({ realtime, loading, error, window, onWind
       ) : (
         <>
           {showInlineError && <div className={styles.errorBox}>{error}</div>}
+          {data.insights && <RealtimeWindowCards summary={data.insights.summary} window={data.window} />}
           <div className={styles.overviewRealtimeGrid}>
           <RealtimeCard
-            title={t('usage_stats.overview_realtime_token_velocity')}
-            metrics={metricChips(tokenValues, formatRealtimeTokenRate, averageLabel, latestLabel, trendLabel)}
-            metricsTooltip={rollingMetricHint}
+            title={t('usage_stats.overview_realtime_throughput')}
+            headerContent={(
+              <RealtimePairedMetrics
+                metrics={throughputMetrics}
+                tokenLabel={tokenRateLabel}
+                requestLabel={requestRateLabel}
+                tokenShortLabel={tokenShortLabel}
+                requestShortLabel={requestShortLabel}
+                metricsTooltip={throughputMetricHint}
+              />
+            )}
             full
           >
-            <RealtimeChartFrame loading={loading} emptyLabel={tokenEmptyLabel}>
-              <Line data={tokenChartData} options={lineOptions} />
+            <RealtimeChartFrame loading={loading} emptyLabel={throughputEmptyLabel}>
+              <Line data={throughputChartData} options={throughputOptions} plugins={THROUGHPUT_CHART_PLUGINS} />
             </RealtimeChartFrame>
           </RealtimeCard>
+
+          {data.insights && <RealtimeDiagnostics insights={data.insights} labels={outcomeLabels} isDark={isDark} isMobile={isMobile} />}
 
           <div className={styles.overviewRealtimeResponseUsageRow}>
             <div className={styles.overviewRealtimeResponseStack}>
@@ -747,50 +1034,18 @@ export function OverviewRealtimePanel({ realtime, loading, error, window, onWind
                   </button>
                 ))}
               </div>
-              <div className={styles.overviewRealtimeUsageList} aria-busy={loading}>
-                {(visibleDimension?.items ?? []).length === 0 ? (
-                  <div className={styles.overviewRealtimeEmpty}>{t('usage_stats.overview_realtime_usage_empty')}</div>
-                ) : (
-                  visibleDimension?.items.map((item) => (
-                    <div key={item.key} className={styles.overviewRealtimeUsageItem}>
-                      <div className={styles.overviewRealtimeUsageTopline}>
-                        <span className={styles.overviewRealtimeUsageLabel} title={item.label}>{item.label}</span>
-                        <span className={styles.overviewRealtimeUsageShare}>{formatFixedTwoDecimals(safeNumber(item.share))}%</span>
-                      </div>
-                      <div className={styles.overviewRealtimeUsageTrack}>
-                        {safeNumber(item.share) > 0 && (
-                          <span className={styles.overviewRealtimeUsageBar} style={{ width: `${Math.max(0, Math.min(100, safeNumber(item.share)))}%` }} />
-                        )}
-                      </div>
-                      <div className={styles.overviewRealtimeUsageMeta}>
-                        <UsageMetaPill label={t('usage_stats.overview_realtime_tokens_label')} value={formatCompactNumber(item.tokens)} />
-                        <UsageMetaPill label={t('usage_stats.overview_realtime_requests_label')} value={item.requests.toLocaleString()} />
-                        {typeof item.cost === 'number' && <UsageMetaPill label={t('usage_stats.overview_realtime_cost_label')} value={formatUsd(item.cost)} />}
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
+              <UsageShareList items={visibleDimension?.items ?? []} loading={loading} />
             </RealtimeCard>
           </div>
-
-          <RealtimeCard
-            title={t('usage_stats.overview_realtime_request_level')}
-            metrics={metricChips(requestValues, formatPerMinuteValue, averageLabel, latestLabel, trendLabel)}
-            metricsTooltip={rollingMetricHint}
-          >
-            <RealtimeChartFrame loading={loading} emptyLabel={requestEmptyLabel}>
-              <Line data={requestChartData} options={lineOptions} />
-            </RealtimeChartFrame>
-          </RealtimeCard>
 
           <RealtimeCard
             title={t('usage_stats.overview_realtime_cache_level')}
             metrics={metricChips(cacheValues, (value) => `${formatFixedTwoDecimals(value)}%`, averageLabel, latestLabel, trendLabel)}
             metricsTooltip={rollingMetricHint}
+            full
           >
             <RealtimeChartFrame loading={loading} emptyLabel={cacheEmptyLabel}>
-              <Line data={cacheChartData} options={percentLineOptions} />
+              <RealtimeCacheChart points={data.cache_level} labels={cacheLabels} isDark={isDark} isMobile={isMobile} />
             </RealtimeChartFrame>
           </RealtimeCard>
           </div>

@@ -2,6 +2,7 @@ import type { CSSProperties, ReactNode } from 'react'
 import styles from './CredentialSections.module.scss'
 import { Select } from '@/components/ui/Select'
 import { formatCompactNumber } from '@/utils/usage'
+import { CREDENTIAL_PAGE_SIZE_OPTIONS } from './credentialViewModels'
 
 type CredentialSectionStyle = CSSProperties
 
@@ -21,6 +22,7 @@ interface CredentialRowShellProps {
   subtitle?: ReactNode
   badges: ReactNode
   metrics: ReactNode
+  metricsTitle?: string
   side: ReactNode
   rowClassName?: string
 }
@@ -54,7 +56,7 @@ export function CredentialSectionShell({ title, subtitle, countLabel, titleExtra
   )
 }
 
-export function CredentialRowShell({ icon, title, subtitle, badges, metrics, side, rowClassName }: CredentialRowShellProps) {
+export function CredentialRowShell({ icon, title, subtitle, badges, metrics, metricsTitle, side, rowClassName }: CredentialRowShellProps) {
   // 统一三段式行结构：左侧身份信息、中间指标、右侧 quota/状态区域。
   return (
     <article className={`${styles.credentialRow} ${rowClassName ?? ''}`.trim()}>
@@ -70,7 +72,7 @@ export function CredentialRowShell({ icon, title, subtitle, badges, metrics, sid
           {subtitle && <span className={styles.credentialIdentityText}>{subtitle}</span>}
         </div>
       </div>
-      <div className={styles.credentialMetricGroup}>{metrics}</div>
+      <div className={styles.credentialMetricGroup} title={metricsTitle}>{metrics}</div>
       <div className={styles.credentialSidePanel}>{side}</div>
     </article>
   )
@@ -146,7 +148,6 @@ export function cacheReadRateTone(value: number | null): 'success' | 'warning' |
   return 'neutral'
 }
 
-const CREDENTIAL_PAGE_SIZE_OPTIONS = [5, 10, 20, 50]
 const CREDENTIAL_PAGE_SIZE_SELECT_OPTIONS = CREDENTIAL_PAGE_SIZE_OPTIONS.map((option) => ({
   value: String(option),
   label: String(option),
@@ -209,7 +210,6 @@ export function CredentialsPagination({
                 options={sortOptions}
                 onChange={onSortChange}
                 className={`${styles.credentialPaginationSelect} ${styles.credentialPaginationSortSelect}`}
-                dropdownClassName={styles.credentialPaginationDropdown}
                 ariaLabel={selectedSortLabel ? `${sortLabel}: ${selectedSortLabel}` : sortLabel}
                 fullWidth
                 dropdownMinWidth={180}
@@ -224,7 +224,6 @@ export function CredentialsPagination({
             options={CREDENTIAL_PAGE_SIZE_SELECT_OPTIONS}
             onChange={(value) => onPageSizeChange(Number(value))}
             className={`${styles.credentialPaginationSelect} ${styles.credentialPaginationPageSizeSelect}`}
-            dropdownClassName={styles.credentialPaginationDropdown}
             ariaLabel={`${rowsPerPageLabel}: ${pageSize}`}
             fullWidth={false}
             dropdownMinWidth={72}

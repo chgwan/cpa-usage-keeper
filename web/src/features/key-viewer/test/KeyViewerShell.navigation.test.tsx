@@ -24,22 +24,30 @@ describe('API-key viewer navigation', () => {
     container.remove();
   });
 
-  it.each(['overview', 'analysis'] as const)('offers only Overview and Analysis on the %s page', (activePage) => {
+  it.each([
+    ['overview', 0],
+    ['realtime', 1],
+    ['analysis', 2],
+  ] as const)('offers Overview, Realtime, and Analysis on the %s page', (activePage, activeIndex) => {
     const onNavigate = vi.fn();
 
     act(() => root.render(
-      <KeyViewerShell activePage={activePage} apiKey={{ display_key: 'sk-***' }} toolbar={null} onNavigate={onNavigate}>
+      <KeyViewerShell activePage={activePage} apiKey={{ display_key: 'sk-***' }} onRefresh={() => {}} onNavigate={onNavigate}>
         <p>Key usage</p>
       </KeyViewerShell>,
     ));
 
-    const navigation = container.querySelector('[role="tablist"][aria-label="API Key viewer sections"]');
+    const navigation = container.querySelector('[role="tablist"][aria-label="Usage sections"]');
     expect(navigation).not.toBeNull();
-    const tabs = Array.from(navigation!.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
-    expect(tabs.map((tab) => tab.textContent)).toEqual(['Overview', 'Analysis']);
-    expect(tabs[activePage === 'overview' ? 0 : 1].getAttribute('aria-selected')).toBe('true');
+    const tabs = Array.from(navigation!.querySelectorAll<HTMLAnchorElement>('[role="tab"]'));
+    expect(tabs.map((tab) => tab.textContent)).toEqual(['Overview', 'Realtime', 'Analysis']);
+    expect(tabs[activeIndex].getAttribute('aria-selected')).toBe('true');
 
-    act(() => tabs[1].click());
-    expect(onNavigate).toHaveBeenCalledWith('/key-analysis');
+    const paths = ['/key-overview', '/key-realtime', '/key-analysis'];
+    tabs.forEach((tab, index) => {
+      if (index === activeIndex) return;
+      act(() => tab.click());
+      expect(onNavigate).toHaveBeenCalledWith(paths[index]);
+    });
   });
 });
