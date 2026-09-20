@@ -33,6 +33,8 @@ var (
 	ErrTOTPNotEnrolled    = errors.New("totp: not enrolled")
 	ErrTOTPNoPending      = errors.New("totp: no pending enrollment")
 	ErrTOTPPendingExpired = errors.New("totp: pending enrollment expired")
+	// ErrTOTPEnrollmentUnreadable 表示注册记录存在但无法解读，调用方必须拒绝登录而不是当作未注册。
+	ErrTOTPEnrollmentUnreadable = errors.New("totp: enrollment state is unreadable")
 )
 
 // TOTPEnrollment 是已启用的管理员 TOTP 注册状态，LastStep 用于拒绝窗口内重放。
@@ -64,9 +66,12 @@ func NewTOTPManagerWithClock(db *gorm.DB, now func() time.Time) *TOTPManager {
 	return &TOTPManager{db: db, now: now}
 }
 
-func (m *TOTPManager) Enrolled(ctx context.Context) bool {
-	_, found := m.loadEnrollment(ctx)
-	return found
+func (m *TOTPManager) Enrolled(ctx context.Context) (bool, error) {
+	_, found, err := m.loadEnrollment(ctx)
+	if err != nil {
+		return false, err
+	}
+	return found, nil
 }
 
 func (m *TOTPManager) HasPending(ctx context.Context) bool {
@@ -122,7 +127,10 @@ func (m *TOTPManager) ConfirmPending(ctx context.Context, code string) (bool, er
 }
 
 func (m *TOTPManager) Verify(ctx context.Context, code string) (bool, error) {
-	enrollment, found := m.loadEnrollment(ctx)
+	enrollment, found, err := m.loadEnrollment(ctx)
+	if err != nil {
+		return false, err
+	}
 	if !found {
 		return false, ErrTOTPNotEnrolled
 	}
@@ -177,20 +185,30 @@ func totpVerifyStep(secret, code string, now time.Time) (int64, bool) {
 	return best, best >= 0
 }
 
-func (m *TOTPManager) loadEnrollment(ctx context.Context) (TOTPEnrollment, bool) {
+// loadEnrollment 把“确实没有注册”与“读不出注册状态”分开返回：后者绝不能让调用方跳过第二因素。
+func (m *TOTPManager) loadEnrollment(ctx context.Context) (TOTPEnrollment, bool, error) {
 	if m == nil || m.db == nil {
-		return TOTPEnrollment{}, false
+		return TOTPEnrollment{}, false, fmt.Errorf("totp manager is not configured")
 	}
 	var setting entities.AppSetting
 	err := m.db.WithContext(ctx).Where(&entities.AppSetting{SettingKey: totpSettingKey}).First(&setting).Error
-	if err != nil || setting.Value == nil {
-		return TOTPEnrollment{}, false
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return TOTPEnrollment{}, false, nil
+	}
+	if err != nil {
+		return TOTPEnrollment{}, false, fmt.Errorf("load totp enrollment: %w", err)
+	}
+	if setting.Value == nil {
+		return TOTPEnrollment{}, false, ErrTOTPEnrollmentUnreadable
 	}
 	var enrollment TOTPEnrollment
-	if err := json.Unmarshal([]byte(*setting.Value), &enrollment); err != nil || enrollment.Secret == "" {
-		return TOTPEnrollment{}, false
+	if err := json.Unmarshal([]byte(*setting.Value), &enrollment); err != nil {
+		return TOTPEnrollment{}, false, fmt.Errorf("%w: %v", ErrTOTPEnrollmentUnreadable, err)
 	}
-	return enrollment, true
+	if enrollment.Secret == "" {
+		return TOTPEnrollment{}, false, ErrTOTPEnrollmentUnreadable
+	}
+	return enrollment, true, nil
 }
 
 func (m *TOTPManager) loadPending(ctx context.Context) (TOTPPendingEnrollment, bool) {

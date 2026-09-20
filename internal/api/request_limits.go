@@ -12,7 +12,27 @@ import (
 const (
 	unauthenticatedLoginBodyLimit   int64 = 4 << 10
 	unauthenticatedLoginReadTimeout       = 15 * time.Second
+	// 所有路由（含匿名入口与 404 等拒绝路径）共享的 body 上限，最大的合法请求体仍远小于此值。
+	generalRequestBodyLimit int64 = 1 << 20
 )
+
+// requestBodyLimits 给每个请求的 body 加硬上限，未声明长度的分块请求在超出后由 MaxBytesReader 中断。
+func requestBodyLimits() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Body == nil || c.Request.Body == http.NoBody {
+			c.Next()
+			return
+		}
+		if c.Request.ContentLength > generalRequestBodyLimit {
+			_ = c.Request.Body.Close()
+			writeRequestEntityTooLarge(c)
+			c.Abort()
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, generalRequestBodyLimit)
+		c.Next()
+	}
+}
 
 func unauthenticatedLoginRequestLimits(basePath string) gin.HandlerFunc {
 	prefix := strings.TrimSuffix(basePath, "/") + "/api/v1/auth/"

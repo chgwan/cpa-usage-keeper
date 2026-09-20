@@ -42,7 +42,12 @@ func (h *authHandler) getTOTPStatus(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	c.JSON(http.StatusOK, totpStatusResponse{Enabled: h.totp.Enrolled(ctx), Pending: h.totp.HasPending(ctx)})
+	enrolled, err := h.totp.Enrolled(ctx)
+	if err != nil {
+		writeInternalError(c, "resolve totp enrollment state failed", err)
+		return
+	}
+	c.JSON(http.StatusOK, totpStatusResponse{Enabled: enrolled, Pending: h.totp.HasPending(ctx)})
 }
 
 func (h *authHandler) setupTOTP(c *gin.Context) {
