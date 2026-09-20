@@ -95,6 +95,8 @@ Keep usage history for [CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIP
 - **Investigate requests**: inspect and export request details, and explore success rates, time to first token (TTFT), and total latency.
 - **Track quotas**: monitor credential health and remaining quotas, refresh quotas, edit priorities, and explore Codex quota history.
 - **Share scoped access**: provide a read-only usage view for an individual CPA API Key.
+- **Manage API Keys**: create, regenerate, disable, restore, and delete CPA API Keys, with optional per-key cost quotas that automatically disable a key when exceeded and restore it after the window resets.
+- **Protect admin login**: optionally require a TOTP authenticator code for the admin account.
 
 Optional community rankings and CPA plugin embedding in CPAMC are also available. Deploy with Docker Compose, Homebrew, or binaries; login protection is enabled by default.
 
@@ -467,6 +469,18 @@ For cross-origin CPAMC embedding, `CPA_PUBLIC_URL` must be a complete `http://` 
 After logging in, open the usage page settings and find **Two-Factor Authentication**: click **Enable 2FA**, scan the QR code with an authenticator app (Google Authenticator, 1Password, Authy, ...), and enter the current 6-digit code to confirm. From then on, the admin password login also asks for an authenticator code. Disabling 2FA requires the login password plus a valid code.
 
 If you lose your authenticator, set `AUTH_TOTP_RESET=true`, restart Keeper, log in with the password alone, then remove the variable and restart again. Codes are TOTP (30 s steps, ±1 step tolerance); if every code is rejected, check the server clock.
+
+### API Key Management And Quotas
+
+API keys can be managed from the usage page settings. Creating a key shows the full value exactly once. Regenerating a key replaces its value in CPA while keeping its alias, quota policy, and ranking avatar locally; historical usage stays attributed to the old key string.
+
+Each key can carry quota limits: request count, tokens, or estimated cost (USD), each over the today or this-month window of the `TZ` calendar. When any configured limit is breached, Keeper removes the key from CPA, so requests using it fail within seconds; when the window resets (or usage drops below the limit), the key is re-added automatically. Notes:
+
+- The last remaining key in CPA is never auto-disabled.
+- Enforcement is reactive: requests between the breach and the removal still succeed. Keeper is not in the request path.
+- Cost limits use configured model pricing; unpriced models count as zero.
+- Manually disabled keys stay disabled until restored from the UI.
+- All enforcement actions are recorded per key and visible in the quota dialog.
 
 ### Timezone And Request Behavior
 

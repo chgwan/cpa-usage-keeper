@@ -1,13 +1,14 @@
 import { UsageComparisonCharts } from '@/components/usage/UsageComparisonCharts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ApiError, fetchKeyOverview, fetchKeyOverviewRealtime, isUsageRangeBoundsConflict } from '@/lib/api';
-import type { AuthSessionAPIKeySummary, OverviewRealtimeBlock, OverviewRealtimeWindow, UsageCustomRange, UsageOverviewResponse, UsageTimeRange } from '@/lib/types';
+import { ApiError, fetchKeyOverview, fetchKeyOverviewQuota, fetchKeyOverviewRealtime, isUsageRangeBoundsConflict } from '@/lib/api';
+import type { AuthSessionAPIKeySummary, KeyOverviewQuota, OverviewRealtimeBlock, OverviewRealtimeWindow, UsageCustomRange, UsageOverviewResponse, UsageTimeRange } from '@/lib/types';
 import { KeyViewerShell } from '@/features/key-viewer/KeyViewerShell';
 import type { KeyViewerPath } from '@/features/key-viewer/navigation';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { buildUsageStatsQueryKey, useThemeStore } from '@/stores';
 import {
+  KeyQuotaPanel,
   OverviewRealtimePanel,
   RecentActivityPanel,
   StatCards,
@@ -355,16 +356,37 @@ export function KeyOverviewPage({ page = 'overview', apiKey, onNavigate, onAuthR
     costSparkline,
   } = useSparklines({ usage, loading });
 
+  // 额度是固定日历窗口，与时间范围筛选无关：只在进入页面与手动刷新时拉取。
+  const [quota, setQuota] = useState<KeyOverviewQuota | null>(null);
+  const [quotaLoading, setQuotaLoading] = useState(true);
+  const loadQuota = useCallback(async (signal?: AbortSignal) => {
+    setQuotaLoading(true);
+    try {
+      setQuota(await fetchKeyOverviewQuota(signal));
+    } catch {
+      if (signal?.aborted) return;
+      // 额度接口不可用（例如管理服务未配置）时静默隐藏面板，不阻塞概览。
+      setQuota(null);
+    } finally {
+      if (!signal?.aborted) setQuotaLoading(false);
+    }
+  }, []);
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadQuota(controller.signal);
+    return () => controller.abort();
+  }, [loadQuota]);
+
   const refreshDisabled = manualRefreshLoading;
   const handleManualRefresh = useCallback(async () => {
     if (refreshDisabled) return;
     setManualRefreshLoading(true);
     try {
-      await refreshKeyOverview();
+      await Promise.all([refreshKeyOverview(), loadQuota()]);
     } finally {
       setManualRefreshLoading(false);
     }
-  }, [refreshDisabled, refreshKeyOverview]);
+  }, [refreshDisabled, refreshKeyOverview, loadQuota]);
 
   const displayError = error === 'KEY_OVERVIEW_LOAD_FAILED'
     ? t('key_overview.load_failed')
@@ -403,6 +425,8 @@ export function KeyOverviewPage({ page = 'overview', apiKey, onNavigate, onAuthR
           cost: costSparkline,
         }}
       />
+
+      <KeyQuotaPanel quota={quota} loading={quotaLoading} />
 
       <RecentActivityPanel
         activity={activity}

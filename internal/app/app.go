@@ -14,6 +14,7 @@ import (
 	"cpa-usage-keeper/internal/auth"
 	"cpa-usage-keeper/internal/config"
 	"cpa-usage-keeper/internal/cpa"
+	"cpa-usage-keeper/internal/keypolicy"
 	"cpa-usage-keeper/internal/logging"
 	"cpa-usage-keeper/internal/poller"
 	"cpa-usage-keeper/internal/pricing"
@@ -62,17 +63,19 @@ type App struct {
 	// CPAErrors 是完全独立的 best-effort errors 订阅；停止或失败不影响 Usage 与 HTTP。
 	CPAErrors Runner
 	// UsageAggregation 是唯一串行调度三类派生聚合事务的后台 runner。
-	UsageAggregation  Runner
-	Ranking           Runner
-	LocalRanking      Runner
-	Maintenance       *StorageCleanupRunner
-	MetadataSync      *MetadataSyncRunner
-	QuotaService      QuotaRunner
-	QuotaAutoRefresh  QuotaRunner
-	BackupMaintenance *DatabaseBackupRunner
-	RecentUsageCache  *repository.UsageRecentEventCache
-	PricingCatalog    *pricing.Catalog
-	LogCloser         io.Closer
+	UsageAggregation Runner
+	// KeyPolicyEnforcement 周期评估 api key 限额并把 key 状态收敛到 CPA。
+	KeyPolicyEnforcement Runner
+	Ranking              Runner
+	LocalRanking         Runner
+	Maintenance          *StorageCleanupRunner
+	MetadataSync         *MetadataSyncRunner
+	QuotaService         QuotaRunner
+	QuotaAutoRefresh     QuotaRunner
+	BackupMaintenance    *DatabaseBackupRunner
+	RecentUsageCache     *repository.UsageRecentEventCache
+	PricingCatalog       *pricing.Catalog
+	LogCloser            io.Closer
 
 	backgroundCancel context.CancelFunc
 	backgroundWG     sync.WaitGroup
@@ -218,6 +221,11 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 	})
 	// 单 writer aggregation runner 只维护 rollups/Identity，并在 App.Run 时主动追平。
 	usageAggregationRunner := poller.NewUsageAggregationRunner(db)
+	// keyMutationMutex 串行化管理服务与限额 runner 的全量列表 PUT：任何一方的 GET→PUT
+	// 序列都必须独占，否则交错执行会静默丢失对方刚写入 CPA 的 key。
+	keyMutationMutex := &sync.Mutex{}
+	// api key 限额执行 runner 与管理服务共用同一个 CPA client 和价格目录。
+	keyPolicyRunner := keypolicy.NewRunner(db, cpaClient, pricingCatalog, time.Minute, logrus.StandardLogger(), keyMutationMutex)
 	// syncService 仍然是 metadata 和 usage 处理共享的业务服务入口。
 	syncService := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{
 		UsageRawRetentionDays: cfg.UsageRawRetentionDays,
@@ -227,6 +235,8 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 		RecentUsageEvents: recentUsageCache,
 		// usage 与 metadata 提交后只唤醒单 writer runner，不在前台链路执行派生聚合。
 		UsageAggregationNotifier: usageAggregationRunner,
+		// 限额 runner 同样只被非阻塞唤醒，独立于一分钟兜底 tick 立即重估。
+		KeyPolicyNotifier: keyPolicyRunner,
 		// Header 独立进入 Quota worker 的惰性一分钟窗口，不再等待 Overview 水位。
 		UsageHeaderQuota: quotaService,
 	})
@@ -318,6 +328,8 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 		OnDisplayNameChanged: quotaService.UpdateUsageIdentityDisplayNameSnapshot,
 	})
 	cpaAPIKeyService := service.NewCPAAPIKeyService(db)
+	// 生命周期与限额策略服务复用同一个 DB、CPA client 和价格目录，并与限额 runner 共享 key 变更互斥锁。
+	cpaAPIKeyManagementService := service.NewCPAAPIKeyManagementService(db, cpaClient, pricingCatalog, keyMutationMutex)
 	// 单条凭证开关成功后立即与 CPA 对齐；runner 自带合并窗口和 nil 保护。
 	credentialMutationLocks := &service.CredentialMutationLocks{}
 	authFilesManagementService := service.NewAuthFilesManagementService(cpaClient, credentialMutationLocks)
@@ -355,20 +367,21 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 		ReadDB: readDB,
 		Poller: backgroundPoller,
 		// Redis ingest/process 分成两个后台 runner，避免远端订阅拉取和本地 SQLite 处理互相等待。
-		RedisIngest:       redisIngestRunner,
-		RedisProcess:      redisProcessRunner,
-		CPAErrors:         redisErrorIngestRunner,
-		UsageAggregation:  usageAggregationRunner,
-		Ranking:           rankingRunner,
-		LocalRanking:      localRankingRunner,
-		Maintenance:       NewStorageCleanupRunner(syncService),
-		MetadataSync:      metadataSyncRunner,
-		QuotaService:      quotaService,
-		QuotaAutoRefresh:  quotaService,
-		BackupMaintenance: backupMaintenance,
-		RecentUsageCache:  recentUsageCache,
-		PricingCatalog:    pricingCatalog,
-		LogCloser:         logCloser,
+		RedisIngest:          redisIngestRunner,
+		RedisProcess:         redisProcessRunner,
+		CPAErrors:            redisErrorIngestRunner,
+		UsageAggregation:     usageAggregationRunner,
+		KeyPolicyEnforcement: keyPolicyRunner,
+		Ranking:              rankingRunner,
+		LocalRanking:         localRankingRunner,
+		Maintenance:          NewStorageCleanupRunner(syncService),
+		MetadataSync:         metadataSyncRunner,
+		QuotaService:         quotaService,
+		QuotaAutoRefresh:     quotaService,
+		BackupMaintenance:    backupMaintenance,
+		RecentUsageCache:     recentUsageCache,
+		PricingCatalog:       pricingCatalog,
+		LogCloser:            logCloser,
 		Router: api.NewRouter(
 			webui.Static,
 			backgroundPoller,
@@ -382,7 +395,9 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 				ErrorEvents:   errorEventService,
 				Quota:         quotaService,
 				CPAAPIKeys:    cpaAPIKeyService,
-				AuthFiles:     authFilesManagementService,
+				// CPAAPIKeyManagement 让管理端 key 生命周期与限额策略路由可用。
+				CPAAPIKeyManagement: cpaAPIKeyManagementService,
+				AuthFiles:           authFilesManagementService,
 				// 认证文件与 AI 供应商共用一个 service，路由层按类型分发。
 				CredentialStatus:   credentialStatusService,
 				CredentialPriority: credentialPriorityService,
@@ -506,6 +521,14 @@ func (a *App) Run() error {
 			// runner 错误只终止该后台任务，不影响 HTTP 或已提交 usage 数据。
 			if err := a.UsageAggregation.Run(ctx); err != nil {
 				logrus.Errorf("usage aggregation stopped: %v", err)
+			}
+		})
+	}
+	if a.KeyPolicyEnforcement != nil {
+		a.startBackgroundTask(func() {
+			// 限额 runner 内部自吞单轮评估错误，这里只防御意外实现错误。
+			if err := a.KeyPolicyEnforcement.Run(ctx); err != nil {
+				logrus.Errorf("key policy enforcement stopped: %v", err)
 			}
 		})
 	}

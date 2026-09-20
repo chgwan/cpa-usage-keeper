@@ -16,6 +16,13 @@ type ManagementAPIKeysResult struct {
 	Payload    cpaapikeys.ManagementAPIKeysResponse
 }
 
+// ManagementAPIKeysMutationResult 是 api-keys 写接口返回的 HTTP 包装，保留状态码、原始响应体和解析后的 DTO。
+type ManagementAPIKeysMutationResult struct {
+	StatusCode int
+	Body       []byte
+	Payload    cpaapikeys.MutationResponse
+}
+
 // ModelsResult 是 FetchModels 返回的 HTTP 包装，保留状态码、原始响应体和解析后的 DTO。
 type ModelsResult struct {
 	StatusCode int

@@ -90,6 +90,8 @@ const (
 	migrationAddAuthSessionAlias = "20260824_add_auth_session_alias"
 	// migrationResetQuotaHistory 在新来源判定生效后清空无法证明 provenance 的旧额度历史。
 	migrationResetQuotaHistory = "20260827_reset_quota_history"
+	// migrationCreateAPIKeyPolicies 创建 API Key 限额策略表和执行审计表。
+	migrationCreateAPIKeyPolicies = "20260831_create_api_key_policies"
 	// migrationRepairUsageEventQuotaWindowIndex 修复旧 migration 记录与物理索引不一致的数据库。
 	migrationRepairUsageEventQuotaWindowIndex = "20260902_repair_usage_event_quota_window_index"
 	// migrationAddUsageEventAPIGroupKeyTimestampIndex 用 (api_group_key, timestamp) 复合索引替代单列 Key 索引。
@@ -98,7 +100,9 @@ const (
 	migrationAddUsageEventSessionFields             = "20260912_usage_event_session_fields"
 	migrationAddUsageEventResponseModel             = "20260918_usage_event_response_model"
 	migrationAddUsageEventStreamStatusCode          = "20260919_usage_event_stream_status_code"
-	migrationNormalizeUsageEventParentSessionNull   = "20260922_normalize_usage_event_parent_session_null"
+	// migrationCostOnlyAPIKeyLimits 从策略表剥离已下线的 tokens / requests 限额维度。
+	migrationCostOnlyAPIKeyLimits                 = "20260920_cost_only_api_key_limits"
+	migrationNormalizeUsageEventParentSessionNull = "20260922_normalize_usage_event_parent_session_null"
 	// migrationLimitLatencySamplePoints 缩小已保存散点，事务前必须备份旧 BLOB。
 	migrationLimitLatencySamplePoints = "20260925_limit_latency_sample_points"
 	// migrationAddUsageEventTraceMetadata 只保存上游提供的执行与节点元数据，历史行保持 NULL。
@@ -244,6 +248,7 @@ func orderedMigrations() []databaseMigration {
 		{version: migrationAddAuthSessionAlias, run: addAuthSessionAliasMigration},
 		// 清表前必须先在事务外完成通用数据库备份；DELETE 与版本标记仍使用默认单事务。
 		{version: migrationResetQuotaHistory, run: resetQuotaHistoryMigration, destructive: true},
+		{version: migrationCreateAPIKeyPolicies, run: createAPIKeyPoliciesMigration},
 		// 历史 migration 不会重跑；用新版本幂等补齐额度历史查询强制依赖的索引。
 		{version: migrationRepairUsageEventQuotaWindowIndex, run: repairUsageEventQuotaWindowIndexMigration},
 		// 将单列 Key 索引收敛为 Key+时间复合索引，支持请求记录和历史边界查询。
@@ -252,6 +257,7 @@ func orderedMigrations() []databaseMigration {
 		{version: migrationAddUsageEventSessionFields, run: addUsageEventSessionFieldsMigration},
 		{version: migrationAddUsageEventResponseModel, run: addUsageEventResponseModelMigration},
 		{version: migrationAddUsageEventStreamStatusCode, run: addUsageEventStreamStatusCodeMigration},
+		{version: migrationCostOnlyAPIKeyLimits, run: costOnlyAPIKeyLimitsMigration},
 		{version: migrationNormalizeUsageEventParentSessionNull, run: normalizeUsageEventParentSessionNullMigration},
 		{version: migrationLimitLatencySamplePoints, run: limitLatencySamplePointsMigration, destructive: true},
 		{version: migrationAddUsageEventTraceMetadata, run: addUsageEventTraceMetadataMigration},

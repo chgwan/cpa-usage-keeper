@@ -12,6 +12,7 @@ export { ServiceHealthCard } from './ServiceHealthCard';
 export { TokenActivityCard } from './TokenActivityCard';
 export { ActivityHeatmapGrid } from './ActivityHeatmapGrid';
 export { OverviewActivityCards } from './OverviewActivityCards';
+export { KeyQuotaPanel } from './KeyQuotaPanel';
 export { RecentActivityPanel } from './RecentActivityPanel';
 export { TimeRangeControl } from './TimeRangeControl';
 export { useUsageData } from './hooks/useUsageData';

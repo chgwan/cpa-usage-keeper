@@ -51,17 +51,19 @@ type StatusRouteConfig struct {
 }
 
 type OptionalProviders struct {
-	UsageIdentity      service.UsageIdentityProvider
-	ErrorEvents        service.ErrorEventProvider
-	Quota              QuotaProvider
-	CPAAPIKeys         service.CPAAPIKeyProvider
-	AuthFiles          service.AuthFilesManagementProvider
-	CredentialStatus   service.CredentialStatusProvider
-	CredentialPriority service.CredentialPriorityProvider
-	RequestLogs        service.RequestLogProvider
-	Ranking            rankinghttpapi.Provider
-	LocalRanking       rankinghttpapi.LocalProvider
-	Status             StatusRouteConfig
+	UsageIdentity service.UsageIdentityProvider
+	ErrorEvents   service.ErrorEventProvider
+	Quota         QuotaProvider
+	CPAAPIKeys    service.CPAAPIKeyProvider
+	// CPAAPIKeyManagement 提供 key 生命周期与限额策略管理路由；为空时相关路由统一返回 501。
+	CPAAPIKeyManagement service.CPAAPIKeyManagementProvider
+	AuthFiles           service.AuthFilesManagementProvider
+	CredentialStatus    service.CredentialStatusProvider
+	CredentialPriority  service.CredentialPriorityProvider
+	RequestLogs         service.RequestLogProvider
+	Ranking             rankinghttpapi.Provider
+	LocalRanking        rankinghttpapi.LocalProvider
+	Status              StatusRouteConfig
 }
 
 func NewRouter(
@@ -101,6 +103,7 @@ func NewRouter(
 	var errorEventProvider service.ErrorEventProvider
 	var quotaProvider QuotaProvider
 	var cpaAPIKeyProvider service.CPAAPIKeyProvider
+	var cpaAPIKeyManagementProvider service.CPAAPIKeyManagementProvider
 	var authFilesProvider service.AuthFilesManagementProvider
 	var credentialStatusProvider service.CredentialStatusProvider
 	var credentialPriorityProvider service.CredentialPriorityProvider
@@ -113,6 +116,7 @@ func NewRouter(
 		errorEventProvider = optionalProviders[0].ErrorEvents
 		quotaProvider = optionalProviders[0].Quota
 		cpaAPIKeyProvider = optionalProviders[0].CPAAPIKeys
+		cpaAPIKeyManagementProvider = optionalProviders[0].CPAAPIKeyManagement
 		authFilesProvider = optionalProviders[0].AuthFiles
 		credentialStatusProvider = optionalProviders[0].CredentialStatus
 		credentialPriorityProvider = optionalProviders[0].CredentialPriority
@@ -145,7 +149,8 @@ func NewRouter(
 	registerCredentialPriorityRoutes(adminProtected, credentialPriorityProvider)
 	registerAuthSessionManagementRoutes(adminProtected, authHandler)
 	registerTOTPManagementRoutes(adminProtected, authHandler)
-	registerCPAAPIKeyRoutes(adminProtected, cpaAPIKeyProvider)
+	registerCPAAPIKeyRoutes(adminProtected, cpaAPIKeyProvider, cpaAPIKeyManagementProvider)
+	registerCPAAPIKeyManagementRoutes(adminProtected, cpaAPIKeyManagementProvider)
 	registerPricingRoutes(adminProtected, pricingProvider)
 	registerQuotaRoutes(adminProtected, quotaProvider)
 	if rankingProvider != nil {
@@ -159,6 +164,7 @@ func NewRouter(
 	keyViewerProtected.Use(authHandler.apiKeyViewerMiddleware())
 	keyViewerProtected.Use(authHandler.activeAPIKeyViewerMiddleware())
 	registerKeyOverviewRoute(keyViewerProtected, usageProvider)
+	registerKeyQuotaRoute(keyViewerProtected, cpaAPIKeyManagementProvider)
 	registerKeyActivityRoute(keyViewerProtected, usageProvider)
 	registerKeyUsageAnalysisRoute(keyViewerProtected, usageProvider)
 	if rankingProvider != nil {

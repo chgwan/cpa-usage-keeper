@@ -51,6 +51,10 @@ func (s *SyncService) SyncMetadata(ctx context.Context) error {
 				aggregateErr = fmt.Errorf("aggregate usage identity stats: %w", aggregateErr)
 			}
 		}
+		// key 集合变化会影响限额评估的本地行保护与 key 在场判断，同样只做非阻塞唤醒。
+		if s.keyPolicy != nil {
+			s.keyPolicy.NotifyUsageIdentitiesChanged()
+		}
 	}
 	// 最终顺序保持 persistence、兼容 aggregate、provider warning；生产后台聚合仍有独立生命周期。
 	err := joinErrors(upsertErr, aggregateErr, providerWarningErr)
