@@ -81,6 +81,7 @@ func NewRouter(
 	_ = router.SetTrustedProxies(trustedProxyCIDRs)
 	router.RemoteIPHeaders = []string{"X-Forwarded-For"}
 	router.Use(logging.NewGinRecovery())
+	router.Use(requestBodyLimits())
 
 	appGroup := router.Group(basePath)
 	registerHealthRoutes(appGroup)

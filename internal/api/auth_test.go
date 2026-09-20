@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -62,14 +63,20 @@ func (s *authCPAAPIKeyStub) UpdateCPAAPIKeyAlias(context.Context, int64, string)
 }
 
 type fakeTOTPProvider struct {
-	enrolled  bool
-	pending   bool
-	verifyOK  bool
-	confirmOK bool
-	disabled  bool
+	enrolled    bool
+	enrolledErr error
+	pending     bool
+	verifyOK    bool
+	confirmOK   bool
+	disabled    bool
 }
 
-func (f *fakeTOTPProvider) Enrolled(context.Context) bool   { return f.enrolled }
+func (f *fakeTOTPProvider) Enrolled(context.Context) (bool, error) {
+	if f.enrolledErr != nil {
+		return false, f.enrolledErr
+	}
+	return f.enrolled, nil
+}
 func (f *fakeTOTPProvider) HasPending(context.Context) bool { return f.pending }
 func (f *fakeTOTPProvider) CreatePending(context.Context) (string, string, error) {
 	f.pending = true
@@ -689,6 +696,27 @@ func TestAuthLoginAcceptsPasswordWithValidTOTPCode(t *testing.T) {
 	}
 	if len(resp.Result().Cookies()) == 0 {
 		t.Fatal("expected auth cookie to be set")
+	}
+}
+
+func TestAuthLoginRejectsPasswordWhenEnrollmentStateIsUnreadable(t *testing.T) {
+	sessions := auth.NewSessionManager(time.Hour)
+	config := AuthConfig{Enabled: true, LoginPassword: "secret", SessionTTL: time.Hour}
+	handler := NewAuthHandler(config, sessions)
+	handler.SetTOTPProvider(&fakeTOTPProvider{enrolled: true, verifyOK: true, enrolledErr: errors.New("enrollment storage unavailable")})
+	router := NewRouter(nil, nil, nil, nil, config, handler, "")
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"password":"secret","totp_code":"123456"}`))
+	req.Header.Set(requestIntentHeaderName, requestIntentHeaderValueFetch)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("expected login to fail closed with 500, got %d %s", resp.Code, resp.Body.String())
+	}
+	if len(resp.Result().Cookies()) != 0 {
+		t.Fatal("expected no session cookie when the second factor cannot be evaluated")
 	}
 }
 

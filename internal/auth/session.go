@@ -430,6 +430,20 @@ func (m *SessionManager) Validate(token string) bool {
 	return ok
 }
 
+// Cached 只读内存中的活跃会话，不触碰持久层，供调用方在为未知令牌付出存储成本前先排除已知会话。
+func (m *SessionManager) Cached(token string) (Session, bool) {
+	if token == "" {
+		return Session{}, false
+	}
+	m.mu.RLock()
+	session, ok := m.sessions[token]
+	m.mu.RUnlock()
+	if !ok || !session.ExpiresAt.After(m.now()) {
+		return Session{}, false
+	}
+	return session, true
+}
+
 func (m *SessionManager) Get(token string) (Session, bool) {
 	if token == "" {
 		return Session{}, false
@@ -655,12 +669,28 @@ func (m *SessionManager) cleanupExpiredLocked() {
 	}
 }
 
+const sessionTokenBytes = 32
+
 func generateToken() (string, error) {
-	buf := make([]byte, 32)
+	buf := make([]byte, sessionTokenBytes)
 	if _, err := rand.Read(buf); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(buf), nil
+}
+
+// SessionTokenFormatValid 只接受本服务生成的令牌形状，让伪造的 cookie 在查询存储之前就被丢弃。
+func SessionTokenFormatValid(token string) bool {
+	if len(token) != sessionTokenBytes*2 {
+		return false
+	}
+	for index := 0; index < len(token); index++ {
+		char := token[index]
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeSessionClientMetadata(metadata SessionClientMetadata) SessionClientMetadata {

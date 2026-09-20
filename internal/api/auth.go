@@ -37,6 +37,16 @@ const (
 	loginAttemptSourceMax  = 4096
 )
 
+// 未知会话令牌的查询预算与登录预算分开：伪造 cookie 不应消耗登录额度，也不应无限制地打到存储层。
+const (
+	sessionLookupWindow      = time.Minute
+	sessionLookupSourceMax   = 30
+	sessionLookupGlobalMax   = 3000
+	sessionLookupSourceCount = 4096
+
+	sessionLookupThrottledContextKey = "auth_session_lookup_throttled"
+)
+
 type AuthConfig struct {
 	Enabled              bool
 	LoginPassword        string
@@ -49,7 +59,7 @@ type AuthConfig struct {
 
 // TOTPProvider 是登录与管理端点需要的管理员 TOTP 能力，由 auth.TOTPManager 实现。
 type TOTPProvider interface {
-	Enrolled(context.Context) bool
+	Enrolled(context.Context) (bool, error)
 	HasPending(context.Context) bool
 	CreatePending(context.Context) (string, string, error)
 	ConfirmPending(context.Context, string) (bool, error)
@@ -67,6 +77,7 @@ type authHandler struct {
 	sessions          *auth.SessionManager
 	cpaAPIKeyProvider service.CPAAPIKeyProvider
 	loginAttempts     *auth.LoginAttemptLimiter
+	sessionLookups    *auth.LoginAttemptLimiter
 	totp              TOTPProvider
 }
 
@@ -124,6 +135,12 @@ func NewAuthHandler(config AuthConfig, sessions *auth.SessionManager) *authHandl
 			PerSourceLimit: maxFailedLoginAttempts,
 			GlobalLimit:    loginAttemptGlobalMax,
 			MaxSources:     loginAttemptSourceMax,
+		}),
+		sessionLookups: auth.NewLoginAttemptLimiter(auth.LoginAttemptLimiterOptions{
+			Window:         sessionLookupWindow,
+			PerSourceLimit: sessionLookupSourceMax,
+			GlobalLimit:    sessionLookupGlobalMax,
+			MaxSources:     sessionLookupSourceCount,
 		}),
 	}
 }
@@ -243,9 +260,21 @@ func (h *authHandler) resolveValidSession(c *gin.Context) (resolvedSessionToken,
 		if resolved.Token == "" {
 			continue
 		}
-		session, ok := h.sessions.Get(resolved.Token)
+		session, ok := h.sessions.Cached(resolved.Token)
 		if !ok {
-			h.deleteSession(resolved.Token)
+			if !auth.SessionTokenFormatValid(resolved.Token) {
+				if resolved.Transport == sessionTokenTransportCookie {
+					clearSessionCookie(c, h.config.BasePath, resolved.CookieKind)
+				}
+				continue
+			}
+			if !h.allowSessionLookup(c) {
+				return resolveSessionToken(c), auth.Session{}, false
+			}
+			// 从未存在的令牌只做查询，不做删除：伪造 cookie 不得变成匿名写库。
+			session, ok = h.sessions.Get(resolved.Token)
+		}
+		if !ok {
 			if resolved.Transport == sessionTokenTransportCookie {
 				clearSessionCookie(c, h.config.BasePath, resolved.CookieKind)
 			}
@@ -257,9 +286,26 @@ func (h *authHandler) resolveValidSession(c *gin.Context) (resolvedSessionToken,
 			}
 			continue
 		}
+		h.sessionLookups.Reset(loginClientKey(c))
 		return resolved, session, true
 	}
 	return resolveSessionToken(c), auth.Session{}, false
+}
+
+// allowSessionLookup 为需要查询存储的未知令牌收取预算，用尽后直接拒绝，避免伪造 cookie 打满 SQLite 单写入口。
+func (h *authHandler) allowSessionLookup(c *gin.Context) bool {
+	allowed, retryAfter := h.sessionLookups.Allow(loginClientKey(c))
+	if allowed {
+		return true
+	}
+	c.Set(sessionLookupThrottledContextKey, retryAfter)
+	return false
+}
+
+func sessionLookupThrottled(c *gin.Context) (time.Duration, bool) {
+	value, exists := c.Get(sessionLookupThrottledContextKey)
+	retryAfter, ok := value.(time.Duration)
+	return retryAfter, exists && ok
 }
 
 func (h *authHandler) getSession(c *gin.Context) {
@@ -274,6 +320,10 @@ func (h *authHandler) getSession(c *gin.Context) {
 
 	resolved, session, ok := h.resolveValidSession(c)
 	if !ok {
+		if retryAfter, throttled := sessionLookupThrottled(c); throttled {
+			writeTooManyRequests(c, retryAfter, "too many session lookups")
+			return
+		}
 		c.JSON(http.StatusOK, sessionResponse{Authenticated: false})
 		return
 	}
@@ -322,20 +372,28 @@ func (h *authHandler) login(c *gin.Context) {
 		return
 	}
 	// TOTP 校验失败不重置登录限流，动态码猜测同样消耗每来源预算。
-	if h.totp != nil && h.totp.Enrolled(c.Request.Context()) {
-		code := strings.TrimSpace(request.TOTPCode)
-		if code == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": totpCodeRequiredError})
-			return
-		}
-		valid, err := h.totp.Verify(c.Request.Context(), code)
+	if h.totp != nil {
+		// 注册状态读不出来时拒绝登录：无法判定第二因素就不能跳过它。
+		enrolled, err := h.totp.Enrolled(c.Request.Context())
 		if err != nil {
-			writeInternalError(c, "verify totp code failed", err)
+			writeInternalError(c, "resolve totp enrollment state failed", err)
 			return
 		}
-		if !valid {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": invalidTOTPCodeError})
-			return
+		if enrolled {
+			code := strings.TrimSpace(request.TOTPCode)
+			if code == "" {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": totpCodeRequiredError})
+				return
+			}
+			valid, err := h.totp.Verify(c.Request.Context(), code)
+			if err != nil {
+				writeInternalError(c, "verify totp code failed", err)
+				return
+			}
+			if !valid {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": invalidTOTPCodeError})
+				return
+			}
 		}
 	}
 	h.loginAttempts.Reset(clientKey)
@@ -410,11 +468,11 @@ func (h *authHandler) logout(c *gin.Context) {
 		return
 	}
 	resolved, _, ok := h.resolveValidSession(c)
-	if !ok {
-		resolved = resolveSessionToken(c)
-	}
-	if h.sessions != nil {
+	if ok {
 		h.deleteSession(resolved.Token)
+	} else {
+		// 没有解析出会话就没有东西可删：注销不能替匿名请求发起删除。
+		resolved = resolveSessionToken(c)
 	}
 	clearSessionCookie(c, h.config.BasePath, resolved.CookieKind)
 	c.Status(http.StatusNoContent)
@@ -425,13 +483,17 @@ func (h *authHandler) allowLoginAttempt(c *gin.Context, key string) bool {
 	if allowed {
 		return true
 	}
+	writeTooManyRequests(c, retryAfter, "too many login attempts")
+	return false
+}
+
+func writeTooManyRequests(c *gin.Context, retryAfter time.Duration, message string) {
 	seconds := int64((retryAfter + time.Second - 1) / time.Second)
 	if seconds < 1 {
 		seconds = 1
 	}
 	c.Header("Retry-After", strconv.FormatInt(seconds, 10))
-	c.JSON(http.StatusTooManyRequests, gin.H{"error": "too many login attempts"})
-	return false
+	c.JSON(http.StatusTooManyRequests, gin.H{"error": message})
 }
 
 func (h *authHandler) deleteSession(token string) {
