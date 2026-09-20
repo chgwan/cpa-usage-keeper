@@ -837,8 +837,8 @@ export interface CpaApiKeySettingsItem extends CpaApiKeyDisplayItem {
   apiKey: string
 }
 
-export type ApiKeyLimitType = 'requests' | 'tokens' | 'cost'
-export type ApiKeyLimitWindow = 'daily' | 'monthly'
+export type ApiKeyLimitType = 'cost'
+export type ApiKeyLimitWindow = 'daily' | 'weekly' | 'monthly'
 export type ApiKeyEnforcementState = 'active' | 'disabled_by_quota' | 'disabled_manual'
 
 export interface ApiKeyPolicyLimit {
@@ -848,14 +848,25 @@ export interface ApiKeyPolicyLimit {
 }
 
 export interface ApiKeyPolicyUsageWindow {
-  requests: number
-  tokens: number
   costUsd: number
 }
 
 export interface ApiKeyPolicyUsage {
   daily: ApiKeyPolicyUsageWindow
+  weekly: ApiKeyPolicyUsageWindow
   monthly: ApiKeyPolicyUsageWindow
+}
+
+export interface KeyOverviewQuotaWindow {
+  window: ApiKeyLimitWindow
+  costUsd: number
+  limit?: number
+  ratio?: number
+}
+
+export interface KeyOverviewQuota {
+  enforcementState: ApiKeyEnforcementState
+  windows: KeyOverviewQuotaWindow[]
 }
 
 export interface ApiKeyTightestLimit {

@@ -362,7 +362,7 @@ func (s *cpaAPIKeyManagementService) GetCPAAPIKeyPolicy(ctx context.Context, id 
 		return CPAAPIKeyPolicyView{}, err
 	}
 	now := s.now()
-	usage, err := s.store.SingleKeyUsage(ctx, id, keypolicy.DailyWindow(now), keypolicy.MonthlyWindow(now))
+	usage, err := s.store.SingleKeyUsage(ctx, id, keypolicy.DailyWindow(now), keypolicy.WeeklyWindow(now), keypolicy.MonthlyWindow(now))
 	if err != nil {
 		return CPAAPIKeyPolicyView{}, err
 	}
@@ -408,7 +408,7 @@ func (s *cpaAPIKeyManagementService) ListCPAAPIKeyPolicySummaries(ctx context.Co
 		return nil, err
 	}
 	now := s.now()
-	usage, err := s.store.PerKeyUsage(ctx, keypolicy.DailyWindow(now), keypolicy.MonthlyWindow(now))
+	usage, err := s.store.PerKeyUsage(ctx, keypolicy.DailyWindow(now), keypolicy.WeeklyWindow(now), keypolicy.MonthlyWindow(now))
 	if err != nil {
 		return nil, err
 	}

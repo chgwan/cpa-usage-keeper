@@ -34,39 +34,74 @@ func TestMonthlyWindowUsesLocalCalendar(t *testing.T) {
 	}
 }
 
+func TestWeeklyWindowStartsMondayLocalMidnight(t *testing.T) {
+	loc := time.FixedZone("test", 8*3600)
+	// 2026-09-16 是周三：所在周从周一 2026-09-14 起到下周一 2026-09-21 止。
+	now := time.Date(2026, 9, 16, 15, 4, 5, 0, loc)
+	w := keypolicy.WeeklyWindow(now)
+	if !w.Start.Equal(time.Date(2026, 9, 14, 0, 0, 0, 0, loc)) {
+		t.Fatalf("expected Monday midnight start, got %v", w.Start)
+	}
+	if !w.End.Equal(time.Date(2026, 9, 21, 0, 0, 0, 0, loc)) {
+		t.Fatalf("expected next Monday midnight end, got %v", w.End)
+	}
+	if keypolicy.WindowKey(w) != "2026-W38" {
+		t.Fatalf("expected ISO week window key, got %q", keypolicy.WindowKey(w))
+	}
+}
+
+func TestWeeklyWindowSundayBelongsToPrecedingMonday(t *testing.T) {
+	loc := time.FixedZone("test", 8*3600)
+	// 周日晚归属本周（周一开始的那一周），而不是下一周。
+	now := time.Date(2026, 9, 20, 23, 0, 0, 0, loc)
+	w := keypolicy.WeeklyWindow(now)
+	if !w.Start.Equal(time.Date(2026, 9, 14, 0, 0, 0, 0, loc)) {
+		t.Fatalf("expected preceding Monday start, got %v", w.Start)
+	}
+}
+
+func TestWeeklyWindowMondayStartsSameDay(t *testing.T) {
+	loc := time.FixedZone("test", 8*3600)
+	now := time.Date(2026, 9, 14, 0, 30, 0, 0, loc)
+	w := keypolicy.WeeklyWindow(now)
+	if !w.Start.Equal(time.Date(2026, 9, 14, 0, 0, 0, 0, loc)) {
+		t.Fatalf("expected same-day Monday start, got %v", w.Start)
+	}
+}
+
 func sampleUsage() keypolicy.UsageByWindow {
 	return keypolicy.UsageByWindow{
-		keypolicy.LimitWindowDaily:   {Requests: 5, Tokens: 900, CostUSD: 0.4},
-		keypolicy.LimitWindowMonthly: {Requests: 200, Tokens: 50000, CostUSD: 20},
+		keypolicy.LimitWindowDaily:   {CostUSD: 0.4},
+		keypolicy.LimitWindowWeekly:  {CostUSD: 5},
+		keypolicy.LimitWindowMonthly: {CostUSD: 20},
 	}
 }
 
 func TestEvaluateReturnsNilWhenUnderAllLimits(t *testing.T) {
 	limits := keypolicy.Limits{
-		{Type: keypolicy.LimitTypeRequests, Window: keypolicy.LimitWindowDaily, Value: 10},
-		{Type: keypolicy.LimitTypeTokens, Window: keypolicy.LimitWindowDaily, Value: 5000},
+		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowDaily, Value: 10},
+		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowWeekly, Value: 100},
 	}
 	if breach := keypolicy.Evaluate(limits, sampleUsage()); breach != nil {
 		t.Fatalf("expected no breach, got %+v", breach)
 	}
 }
 
-func TestEvaluateDetectsEachDimensionAtLimit(t *testing.T) {
+func TestEvaluateDetectsEachWindowAtLimit(t *testing.T) {
 	cases := []struct {
-		limit  keypolicy.Limit
-		used   float64
-		wanted keypolicy.LimitType
+		limit keypolicy.Limit
+		used  float64
 	}{
-		{keypolicy.Limit{Type: keypolicy.LimitTypeRequests, Window: keypolicy.LimitWindowDaily, Value: 5}, 5, keypolicy.LimitTypeRequests},
-		{keypolicy.Limit{Type: keypolicy.LimitTypeTokens, Window: keypolicy.LimitWindowDaily, Value: 900}, 900, keypolicy.LimitTypeTokens},
-		{keypolicy.Limit{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowMonthly, Value: 20}, 20, keypolicy.LimitTypeCost},
+		{keypolicy.Limit{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowDaily, Value: 0.4}, 0.4},
+		{keypolicy.Limit{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowWeekly, Value: 5}, 5},
+		{keypolicy.Limit{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowMonthly, Value: 20}, 20},
 	}
 	for i, tc := range cases {
 		breach := keypolicy.Evaluate(keypolicy.Limits{tc.limit}, sampleUsage())
 		if breach == nil {
 			t.Fatalf("case %d: expected breach", i)
 		}
-		if breach.Limit.Type != tc.wanted || breach.Used != tc.used {
+		if breach.Limit.Window != tc.limit.Window || breach.Used != tc.used {
 			t.Fatalf("case %d: unexpected breach %+v", i, breach)
 		}
 	}
@@ -74,17 +109,17 @@ func TestEvaluateDetectsEachDimensionAtLimit(t *testing.T) {
 
 func TestEvaluateFirstBreachWinsInDeclarationOrder(t *testing.T) {
 	limits := keypolicy.Limits{
-		{Type: keypolicy.LimitTypeTokens, Window: keypolicy.LimitWindowMonthly, Value: 10},
-		{Type: keypolicy.LimitTypeRequests, Window: keypolicy.LimitWindowDaily, Value: 1},
+		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowMonthly, Value: 10},
+		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowDaily, Value: 0.1},
 	}
 	breach := keypolicy.Evaluate(limits, sampleUsage())
-	if breach == nil || breach.Limit.Type != keypolicy.LimitTypeTokens {
+	if breach == nil || breach.Limit.Window != keypolicy.LimitWindowMonthly {
 		t.Fatalf("expected first declared breach to win, got %+v", breach)
 	}
 }
 
 func TestEvaluateMissingWindowCountsAsZero(t *testing.T) {
-	limits := keypolicy.Limits{{Type: keypolicy.LimitTypeTokens, Window: keypolicy.LimitWindowMonthly, Value: 1}}
+	limits := keypolicy.Limits{{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowMonthly, Value: 1}}
 	if breach := keypolicy.Evaluate(limits, nil); breach != nil {
 		t.Fatalf("expected zero usage to stay under limit, got %+v", breach)
 	}
@@ -92,11 +127,11 @@ func TestEvaluateMissingWindowCountsAsZero(t *testing.T) {
 
 func TestTightestLimitPicksHighestRatio(t *testing.T) {
 	limits := keypolicy.Limits{
-		{Type: keypolicy.LimitTypeRequests, Window: keypolicy.LimitWindowDaily, Value: 10},
-		{Type: keypolicy.LimitTypeTokens, Window: keypolicy.LimitWindowDaily, Value: 1000},
+		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowDaily, Value: 1},
+		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowWeekly, Value: 5},
 	}
 	tightest := limits.Tightest(sampleUsage())
-	if tightest == nil || tightest.Limit.Type != keypolicy.LimitTypeTokens || tightest.Ratio != 0.9 {
-		t.Fatalf("expected tokens at 0.9, got %+v", tightest)
+	if tightest == nil || tightest.Limit.Window != keypolicy.LimitWindowWeekly || tightest.Ratio != 1 {
+		t.Fatalf("expected weekly at ratio 1, got %+v", tightest)
 	}
 }

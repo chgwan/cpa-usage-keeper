@@ -137,7 +137,7 @@ func TestRegenerateCPAAPIKeyKeepsAliasAndPolicy(t *testing.T) {
 	provider, fake, db := newManagementTestEnv(t)
 	created, fullKey, _ := provider.CreateCPAAPIKey(context.Background(), "alias-1", "")
 	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), created.ID, keypolicy.Limits{
-		{Type: keypolicy.LimitTypeTokens, Window: keypolicy.LimitWindowDaily, Value: 100},
+		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowDaily, Value: 100},
 	}, true); err != nil {
 		t.Fatalf("save policy: %v", err)
 	}
@@ -253,6 +253,19 @@ func injectRunnerDisableOnPolicyRead(t *testing.T, db *gorm.DB, cpaAPIKeyID int6
 	}
 }
 
+// TestSaveCPAAPIKeyPolicyRejectsLegacyDimensions 验证已下线的 tokens / requests 维度
+// 在保存入口就被 ErrInvalidInput 拒绝，不会重新写入策略表。
+func TestSaveCPAAPIKeyPolicyRejectsLegacyDimensions(t *testing.T) {
+	provider, _, _ := newManagementTestEnv(t)
+	created, _, _ := provider.CreateCPAAPIKey(context.Background(), "", "")
+	for _, legacy := range []string{"tokens", "requests"} {
+		limits := keypolicy.Limits{{Type: keypolicy.LimitType(legacy), Window: keypolicy.LimitWindowDaily, Value: 100}}
+		if err := provider.SaveCPAAPIKeyPolicy(context.Background(), created.ID, limits, true); !errors.Is(err, service.ErrInvalidInput) {
+			t.Fatalf("expected %s limit rejected as ErrInvalidInput, got %v", legacy, err)
+		}
+	}
+}
+
 // TestSaveCPAAPIKeyPolicyKeepsRunnerOwnedColumns 验证保存策略只写配置列：
 // 与 runner 并发禁用交错时，enforcement_state/admin_disabled/last_evaluated_at 不能被读到的旧值复活。
 func TestSaveCPAAPIKeyPolicyKeepsRunnerOwnedColumns(t *testing.T) {
@@ -262,7 +275,7 @@ func TestSaveCPAAPIKeyPolicyKeepsRunnerOwnedColumns(t *testing.T) {
 		t.Fatalf("seed policy: %v", err)
 	}
 	injectRunnerDisableOnPolicyRead(t, db, created.ID)
-	newLimits := keypolicy.Limits{{Type: keypolicy.LimitTypeTokens, Window: keypolicy.LimitWindowDaily, Value: 42}}
+	newLimits := keypolicy.Limits{{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowDaily, Value: 42}}
 	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), created.ID, newLimits, false); err != nil {
 		t.Fatalf("save policy: %v", err)
 	}

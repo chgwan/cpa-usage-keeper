@@ -1,13 +1,11 @@
 package keypolicy
 
-// Usage 是一个 key 在单个周期窗口内的用量快照。
+// Usage 是一个 key 在单个周期窗口内的用量快照；费用是唯一的限额维度。
 type Usage struct {
-	Requests int64
-	Tokens   int64
-	CostUSD  float64
+	CostUSD float64
 }
 
-// UsageByWindow 按窗口缓存一次查询得到的两组用量。
+// UsageByWindow 按窗口缓存一次查询得到的三组用量。
 type UsageByWindow map[LimitWindow]Usage
 
 // Breach 描述触发禁用的那条限额与当时的实际用量。
@@ -18,12 +16,7 @@ type Breach struct {
 
 // usedValue 把指定维度的用量归一成 float64 参与 >= 比较。
 func usedValue(limitType LimitType, usage Usage) float64 {
-	switch limitType {
-	case LimitTypeRequests:
-		return float64(usage.Requests)
-	case LimitTypeTokens:
-		return float64(usage.Tokens)
-	case LimitTypeCost:
+	if limitType == LimitTypeCost {
 		return usage.CostUSD
 	}
 	return 0

@@ -98,6 +98,8 @@ const (
 	migrationAddUsageEventAPIGroupKeyTimestampIndex = "20260905_usage_event_api_group_key_timestamp_index"
 	migrationAddUsageIdentityStatsReset             = "20260910_usage_identity_stats_reset"
 	migrationAddUsageEventSessionFields             = "20260912_usage_event_session_fields"
+	// migrationCostOnlyAPIKeyLimits 从策略表剥离已下线的 tokens / requests 限额维度。
+	migrationCostOnlyAPIKeyLimits = "20260920_cost_only_api_key_limits"
 )
 
 type schemaMigration struct {
@@ -246,6 +248,7 @@ func orderedMigrations() []databaseMigration {
 		{version: migrationAddUsageEventAPIGroupKeyTimestampIndex, run: addUsageEventAPIGroupKeyTimestampIndexMigration},
 		{version: migrationAddUsageIdentityStatsReset, run: addUsageIdentityStatsResetMigration},
 		{version: migrationAddUsageEventSessionFields, run: addUsageEventSessionFieldsMigration},
+		{version: migrationCostOnlyAPIKeyLimits, run: costOnlyAPIKeyLimitsMigration},
 	}
 }
 

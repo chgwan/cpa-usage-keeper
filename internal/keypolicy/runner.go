@@ -138,8 +138,8 @@ func (r *Runner) EvaluateOnce(ctx context.Context) error {
 		return err
 	}
 	now := r.now()
-	daily, monthly := DailyWindow(now), MonthlyWindow(now)
-	usage, err := r.store.PerKeyUsage(ctx, daily, monthly)
+	daily, weekly, monthly := DailyWindow(now), WeeklyWindow(now), MonthlyWindow(now)
+	usage, err := r.store.PerKeyUsage(ctx, daily, weekly, monthly)
 	if err != nil {
 		return err
 	}
@@ -154,7 +154,7 @@ func (r *Runner) EvaluateOnce(ctx context.Context) error {
 	}
 	round := &roundState{remaining: len(currentKeys.Payload.APIKeys), present: present}
 	for _, row := range rows {
-		r.reconcileRow(ctx, row, usage[row.CPAAPIKeyID], round, daily, monthly, now)
+		r.reconcileRow(ctx, row, usage[row.CPAAPIKeyID], round, daily, weekly, monthly, now)
 	}
 	return nil
 }
@@ -176,7 +176,7 @@ func (s *roundState) shrink(apiKey string) {
 }
 
 // reconcileRow 把单条策略收敛到目标态，所有分支独立容错。
-func (r *Runner) reconcileRow(ctx context.Context, row repository.CPAAPIKeyPolicyRow, usage UsageByWindow, round *roundState, daily, monthly Window, now time.Time) {
+func (r *Runner) reconcileRow(ctx context.Context, row repository.CPAAPIKeyPolicyRow, usage UsageByWindow, round *roundState, daily, weekly, monthly Window, now time.Time) {
 	limits, err := ParseLimits(row.Limits)
 	if err != nil {
 		r.logger.WithError(err).WithField("cpa_api_key_id", row.CPAAPIKeyID).Warn("parse api key limits failed")
@@ -190,7 +190,10 @@ func (r *Runner) reconcileRow(ctx context.Context, row repository.CPAAPIKeyPolic
 	breach := Evaluate(limits, usage)
 	if breach != nil {
 		windowKey := WindowKey(daily)
-		if breach.Limit.Window == LimitWindowMonthly {
+		switch breach.Limit.Window {
+		case LimitWindowWeekly:
+			windowKey = WindowKey(weekly)
+		case LimitWindowMonthly:
 			windowKey = WindowKey(monthly)
 		}
 		if state == StateDisabledByQuota {
@@ -250,7 +253,7 @@ func (r *Runner) reconcileRow(ctx context.Context, row repository.CPAAPIKeyPolic
 	// 未超限但处于超限禁用态：自动恢复。必须先 re-add 再改状态——
 	// 状态一旦先变 active，sync 的策略保护立即失效，下一个 sync tick 会在 key 回到 CPA 前软删本地行。
 	if state == StateDisabledByQuota {
-		if err := r.restoreKey(ctx, row, daily, monthly, now); err != nil {
+		if err := r.restoreKey(ctx, row, daily, weekly, monthly, now); err != nil {
 			r.logger.WithError(err).WithField("cpa_api_key_id", row.CPAAPIKeyID).Warn("restore api key in cpa failed")
 			r.writeLog(row.CPAAPIKeyID, "failed", "retry", nil, err.Error())
 			return
@@ -263,7 +266,7 @@ func (r *Runner) reconcileRow(ctx context.Context, row repository.CPAAPIKeyPolic
 // 全量 PUT 与管理服务的 Create/Restore 共享同一把 keyMutations 锁：GET 与 PUT 必须原子，
 // 否则与管理员的 GET→追加→PUT 交错会静默丢弃对方刚写入的 key。
 // PUT 成功但随后的状态更新失败时，下一轮仍处于 disabled_by_quota，会再次进入这里并直接跳过 PUT。
-func (r *Runner) restoreKey(ctx context.Context, row repository.CPAAPIKeyPolicyRow, daily, monthly Window, now time.Time) error {
+func (r *Runner) restoreKey(ctx context.Context, row repository.CPAAPIKeyPolicyRow, daily, weekly, monthly Window, now time.Time) error {
 	r.keyMutations.Lock()
 	defer r.keyMutations.Unlock()
 	current, err := r.client.FetchManagementAPIKeys(ctx)
@@ -280,7 +283,8 @@ func (r *Runner) restoreKey(ctx context.Context, row repository.CPAAPIKeyPolicyR
 		return err
 	}
 	reason := "policy_updated"
-	if row.DisabledWindowKey != "" && row.DisabledWindowKey != WindowKey(daily) && row.DisabledWindowKey != WindowKey(monthly) {
+	if row.DisabledWindowKey != "" && row.DisabledWindowKey != WindowKey(daily) &&
+		row.DisabledWindowKey != WindowKey(weekly) && row.DisabledWindowKey != WindowKey(monthly) {
 		reason = "window_reset"
 	}
 	r.writeLog(row.CPAAPIKeyID, "restored", reason, nil, "")

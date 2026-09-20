@@ -64,23 +64,21 @@ func newEmptySnapshotForTest(t *testing.T) *pricing.Snapshot {
 	return pricing.EmptySnapshot()
 }
 
-func TestPerKeyUsageAggregatesWindowsAndPricesCost(t *testing.T) {
+func TestPerKeyUsageAggregatesThreeWindowsAndPricesCost(t *testing.T) {
 	db := newKeypolicyTestDB(t)
 	key := entities.CPAAPIKey{APIKey: "sk-agg", DisplayKey: "sk-agg"}
 	if err := db.Create(&key).Error; err != nil {
 		t.Fatalf("seed key: %v", err)
 	}
-	now := time.Now()
-	// 固定取当日正午，保证事件一定落在日窗口内（简报的 now-1h 在本地 0 点后会跨到昨天）。
-	today := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, now.Location())
-	thisMonth := time.Date(now.Year(), now.Month(), 1, 12, 0, 0, 0, now.Location())
-	monthlySeed := thisMonth
-	if now.Day() == 1 {
-		monthlySeed = thisMonth.AddDate(0, 0, 1) // 1 号时与 today 重叠，顺延一天避开日窗口
-	}
-	insertEvent := func(ts time.Time, model string, tokens int64) {
+	// 三个窗口从固定的周三构造，事件时间戳全部确定：
+	// 日窗口 09-16、周窗口 09-14~09-21、月窗口 09-01~10-01。
+	anchor := time.Date(2026, 9, 16, 15, 0, 0, 0, time.Local)
+	daily := keypolicy.DailyWindow(anchor)
+	weekly := keypolicy.WeeklyWindow(anchor)
+	monthly := keypolicy.MonthlyWindow(anchor)
+	insertEvent := func(ts time.Time, tokens int64) {
 		event := entities.UsageEvent{
-			APIGroupKey: "sk-agg", Model: model,
+			APIGroupKey: "sk-agg", Model: "gpt-5",
 			InputTokens: tokens, OutputTokens: 0, TotalTokens: tokens,
 			Timestamp: ts,
 		}
@@ -88,32 +86,30 @@ func TestPerKeyUsageAggregatesWindowsAndPricesCost(t *testing.T) {
 			t.Fatalf("seed event: %v", err)
 		}
 	}
-	insertEvent(today, "gpt-5", 100)
-	insertEvent(monthlySeed, "claude-x", 50)
-	insertEvent(thisMonth.AddDate(0, 0, -40), "old-beyond-month", 999) // 月窗口外
+	insertEvent(time.Date(2026, 9, 16, 12, 0, 0, 0, time.Local), 100) // 三个窗口都命中
+	insertEvent(time.Date(2026, 9, 15, 12, 0, 0, 0, time.Local), 50)  // 周 + 月
+	insertEvent(time.Date(2026, 9, 2, 12, 0, 0, 0, time.Local), 200)  // 仅月
+	insertEvent(time.Date(2026, 8, 20, 12, 0, 0, 0, time.Local), 999) // 全部窗口之外
 
 	catalog := pricing.NewCatalog(newSnapshotForTest(t, map[string]entities.ModelPriceSetting{
-		"gpt-5":    {Model: "gpt-5", PromptPricePer1M: 1},
-		"claude-x": {Model: "claude-x", PromptPricePer1M: 2},
+		"gpt-5": {Model: "gpt-5", PromptPricePer1M: 1},
 	}))
 	store := keypolicy.NewStore(db, catalog)
-	daily := keypolicy.DailyWindow(now)
-	monthly := keypolicy.MonthlyWindow(now)
-	usage, err := store.PerKeyUsage(context.Background(), daily, monthly)
+	usage, err := store.PerKeyUsage(context.Background(), daily, weekly, monthly)
 	if err != nil {
 		t.Fatalf("per key usage: %v", err)
 	}
 	got := usage[key.ID]
-	if got[keypolicy.LimitWindowDaily].Requests != 1 || got[keypolicy.LimitWindowDaily].Tokens != 100 {
-		t.Fatalf("daily usage mismatch: %+v", got[keypolicy.LimitWindowDaily])
+	assertCost := func(window keypolicy.LimitWindow, want float64) {
+		t.Helper()
+		if diff := got[window].CostUSD - want; diff > 1e-12 || diff < -1e-12 {
+			t.Fatalf("%s cost mismatch: got %v want %v", window, got[window].CostUSD, want)
+		}
 	}
-	if got[keypolicy.LimitWindowMonthly].Requests != 2 || got[keypolicy.LimitWindowMonthly].Tokens != 150 {
-		t.Fatalf("monthly usage mismatch: %+v", got[keypolicy.LimitWindowMonthly])
-	}
-	// gpt-5 100 tokens @ 1/M = 0.0001；claude-x 50 tokens @ 2/M = 0.0001。
-	if diff := got[keypolicy.LimitWindowMonthly].CostUSD - 0.0002; diff > 1e-12 || diff < -1e-12 {
-		t.Fatalf("monthly cost mismatch: %v", got[keypolicy.LimitWindowMonthly].CostUSD)
-	}
+	// gpt-5 @1/M：100 tokens = 0.0001，150 = 0.00015，350 = 0.00035。
+	assertCost(keypolicy.LimitWindowDaily, 0.0001)
+	assertCost(keypolicy.LimitWindowWeekly, 0.00015)
+	assertCost(keypolicy.LimitWindowMonthly, 0.00035)
 }
 
 func TestPerKeyUsageUnknownModelCostsZero(t *testing.T) {
@@ -128,7 +124,7 @@ func TestPerKeyUsageUnknownModelCostsZero(t *testing.T) {
 		t.Fatalf("seed event: %v", err)
 	}
 	store := keypolicy.NewStore(db, pricing.NewCatalog(newEmptySnapshotForTest(t)))
-	usage, err := store.PerKeyUsage(context.Background(), keypolicy.DailyWindow(now), keypolicy.MonthlyWindow(now))
+	usage, err := store.PerKeyUsage(context.Background(), keypolicy.DailyWindow(now), keypolicy.WeeklyWindow(now), keypolicy.MonthlyWindow(now))
 	if err != nil {
 		t.Fatalf("per key usage: %v", err)
 	}

@@ -147,7 +147,7 @@ func TestPolicyRoutesRoundTrip(t *testing.T) {
 	provider := &stubManagementProvider{}
 	router := newManagementTestRouter(provider)
 	save := httptest.NewRecorder()
-	body := `{"enabled": true, "limits": [{"type":"tokens","window":"daily","value": 100}]}`
+	body := `{"enabled": true, "limits": [{"type":"cost","window":"weekly","value": 100}]}`
 	request := httptest.NewRequest(http.MethodPut, "/api/v1/usage/api-keys/9/policy", bytes.NewReader([]byte(body)))
 	router.ServeHTTP(save, request)
 	if save.Code != http.StatusNoContent {
@@ -171,7 +171,7 @@ func TestPolicyRoutesRoundTrip(t *testing.T) {
 func TestPolicyRouteRejectsInvalidLimits(t *testing.T) {
 	router := newManagementTestRouter(&stubManagementProvider{})
 	response := httptest.NewRecorder()
-	body := `{"enabled": true, "limits": [{"type":"tokens","window":"daily","value": -5}]}`
+	body := `{"enabled": true, "limits": [{"type":"cost","window":"daily","value": -5}]}`
 	request := httptest.NewRequest(http.MethodPut, "/api/v1/usage/api-keys/9/policy", bytes.NewReader([]byte(body)))
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
@@ -208,7 +208,7 @@ func TestCPAAPIKeyListRouteAttachesPolicySummaries(t *testing.T) {
 		1: {
 			Enabled: true, EnforcementState: "active",
 			Tightest: &keypolicy.TightestLimit{
-				Limit: keypolicy.Limit{Type: keypolicy.LimitTypeTokens, Window: keypolicy.LimitWindowDaily, Value: 100},
+				Limit: keypolicy.Limit{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowDaily, Value: 100},
 				Used:  40,
 				Ratio: 0.4,
 			},

@@ -24,17 +24,15 @@ func NewStore(db *gorm.DB, catalog *pricing.Catalog) *Store {
 	return &Store{db: db, catalog: catalog}
 }
 
-// usageModelRow 是按 (key, model) 分组的一行聚合结果。
+// usageModelRow 是按 (key, model) 分组的一行聚合结果；各 token 分量只用于计价。
 type usageModelRow struct {
 	APIKeyID            int64  `gorm:"column:api_key_id"`
 	APIGroupKey         string `gorm:"column:api_group_key"`
 	Model               string `gorm:"column:model"`
-	RequestCount        int64  `gorm:"column:request_count"`
 	InputTokens         int64  `gorm:"column:input_tokens"`
 	OutputTokens        int64  `gorm:"column:output_tokens"`
 	CacheReadTokens     int64  `gorm:"column:cache_read_tokens"`
 	CacheCreationTokens int64  `gorm:"column:cache_creation_tokens"`
-	TotalTokens         int64  `gorm:"column:total_tokens"`
 }
 
 // windowPredicate 复刻 ranking.rankingTimeRangePredicate 的 DST 安全双条件：
@@ -56,12 +54,10 @@ SELECT
 	keys.id AS api_key_id,
 	TRIM(events.api_group_key) AS api_group_key,
 	events.model AS model,
-	COUNT(*) AS request_count,
 	SUM(events.input_tokens) AS input_tokens,
 	SUM(events.output_tokens) AS output_tokens,
 	SUM(events.cache_read_tokens) AS cache_read_tokens,
-	SUM(events.cache_creation_tokens) AS cache_creation_tokens,
-	SUM(events.total_tokens) AS total_tokens
+	SUM(events.cache_creation_tokens) AS cache_creation_tokens
 FROM usage_events AS events
 JOIN cpa_api_keys AS keys ON keys.api_key = TRIM(events.api_group_key)
 WHERE %s
@@ -88,15 +84,15 @@ func (s *Store) priceRow(resolver pricing.Resolver, row usageModelRow) float64 {
 	return resolver.Calculate(subject).Cost.TotalCostUSD
 }
 
-// PerKeyUsage 返回每个 key 在两个窗口内的用量，供 runner 一次评估全部策略。
-func (s *Store) PerKeyUsage(ctx context.Context, daily, monthly Window) (map[int64]UsageByWindow, error) {
+// PerKeyUsage 返回每个 key 在三个窗口内的费用，供 runner 一次评估全部策略。
+func (s *Store) PerKeyUsage(ctx context.Context, daily, weekly, monthly Window) (map[int64]UsageByWindow, error) {
 	result := make(map[int64]UsageByWindow)
 	var resolver pricing.Resolver
 	if s.catalog != nil {
 		// 一次评估固定一个快照，避免中途换价。
 		resolver = s.catalog.NewResolver()
 	}
-	for _, w := range []Window{daily, monthly} {
+	for _, w := range []Window{daily, weekly, monthly} {
 		rows, err := s.queryWindowRows(ctx, w)
 		if err != nil {
 			return nil, err
@@ -108,8 +104,6 @@ func (s *Store) PerKeyUsage(ctx context.Context, daily, monthly Window) (map[int
 				result[row.APIKeyID] = usage
 			}
 			windowUsage := usage[w.Kind]
-			windowUsage.Requests += row.RequestCount
-			windowUsage.Tokens += row.TotalTokens
 			windowUsage.CostUSD += s.priceRow(resolver, row)
 			usage[w.Kind] = windowUsage
 		}
@@ -118,8 +112,8 @@ func (s *Store) PerKeyUsage(ctx context.Context, daily, monthly Window) (map[int
 }
 
 // SingleKeyUsage 只评估单个 key，供策略查询接口使用。
-func (s *Store) SingleKeyUsage(ctx context.Context, cpaAPIKeyID int64, daily, monthly Window) (UsageByWindow, error) {
-	all, err := s.PerKeyUsage(ctx, daily, monthly)
+func (s *Store) SingleKeyUsage(ctx context.Context, cpaAPIKeyID int64, daily, weekly, monthly Window) (UsageByWindow, error) {
+	all, err := s.PerKeyUsage(ctx, daily, weekly, monthly)
 	if err != nil {
 		return nil, err
 	}

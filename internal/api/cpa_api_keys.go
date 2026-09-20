@@ -279,13 +279,12 @@ type saveCPAAPIKeyPolicyRequest struct {
 }
 
 type cpaAPIKeyPolicyUsageWindowResponse struct {
-	Requests int64   `json:"requests"`
-	Tokens   int64   `json:"tokens"`
-	CostUSD  float64 `json:"costUsd"`
+	CostUSD float64 `json:"costUsd"`
 }
 
 type cpaAPIKeyPolicyUsageResponse struct {
 	Daily   cpaAPIKeyPolicyUsageWindowResponse `json:"daily"`
+	Weekly  cpaAPIKeyPolicyUsageWindowResponse `json:"weekly"`
 	Monthly cpaAPIKeyPolicyUsageWindowResponse `json:"monthly"`
 }
 
@@ -452,10 +451,13 @@ func registerCPAAPIKeyToggleRoutes(router gin.IRoutes, provider service.CPAAPIKe
 
 func toCPAAPIKeyPolicyUsageResponse(usage keypolicy.UsageByWindow) cpaAPIKeyPolicyUsageResponse {
 	toWindow := func(w keypolicy.LimitWindow) cpaAPIKeyPolicyUsageWindowResponse {
-		u := usage[w]
-		return cpaAPIKeyPolicyUsageWindowResponse{Requests: u.Requests, Tokens: u.Tokens, CostUSD: u.CostUSD}
+		return cpaAPIKeyPolicyUsageWindowResponse{CostUSD: usage[w].CostUSD}
 	}
-	return cpaAPIKeyPolicyUsageResponse{Daily: toWindow(keypolicy.LimitWindowDaily), Monthly: toWindow(keypolicy.LimitWindowMonthly)}
+	return cpaAPIKeyPolicyUsageResponse{
+		Daily:   toWindow(keypolicy.LimitWindowDaily),
+		Weekly:  toWindow(keypolicy.LimitWindowWeekly),
+		Monthly: toWindow(keypolicy.LimitWindowMonthly),
+	}
 }
 
 // toCPAAPIKeyTightestLimitResponse 把最紧张限额领域对象转成 UI 进度条响应；nil 原样透传。

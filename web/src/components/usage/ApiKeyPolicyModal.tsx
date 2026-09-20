@@ -14,12 +14,12 @@ import type {
 } from '@/lib/types';
 import styles from '@/pages/UsagePage.module.scss';
 
-const LIMIT_TYPES: readonly ApiKeyLimitType[] = ['requests', 'tokens', 'cost'];
-const LIMIT_WINDOWS: readonly ApiKeyLimitWindow[] = ['daily', 'monthly'];
+const LIMIT_TYPES: readonly ApiKeyLimitType[] = ['cost'];
+const LIMIT_WINDOWS: readonly ApiKeyLimitWindow[] = ['daily', 'weekly', 'monthly'];
 // 后端 enforcement-logs 的 limit 上限是 200；默认 50 条已足够弹窗审阅。
 const ENFORCEMENT_LOG_FETCH_LIMIT = 50;
 
-// 六个限额输入框以 `${type}:${window}` 为键，空串表示该槽位不限额。
+// 三个费用限额输入框以 `${type}:${window}` 为键，空串表示该槽位不限额。
 export function limitsToForm(limits: ApiKeyPolicyLimit[]): Record<string, string> {
   const form: Record<string, string> = {};
   for (const limit of limits) {
@@ -54,13 +54,13 @@ export interface ApiKeyPolicyModalProps {
   onNotice?: (kind: 'success' | 'info' | 'error', message: string) => void;
 }
 
-function formatUsageValue(usage: ApiKeyPolicyUsage | undefined, window: ApiKeyLimitWindow, type: ApiKeyLimitType): string {
+function formatUsageValue(usage: ApiKeyPolicyUsage | undefined, window: ApiKeyLimitWindow): string {
   const bucket = usage?.[window];
   if (!bucket) {
     return '';
   }
-  // 费用固定 4 位小数；请求与 Tokens 按本地化数字展示。
-  return type === 'cost' ? bucket.costUsd.toFixed(4) : bucket[type].toLocaleString();
+  // 费用固定 4 位小数。
+  return bucket.costUsd.toFixed(4);
 }
 
 function formatLogNumber(type: string | null, value: number): string {
@@ -221,7 +221,7 @@ export function ApiKeyPolicyModal({ apiKeyId, apiKeyLabel, onClose, onSaved, onN
               {LIMIT_TYPES.map((type) => LIMIT_WINDOWS.map((window) => {
                 const key = `${type}:${window}`;
                 const raw = form[key] ?? '';
-                const usageHint = raw.trim() ? formatUsageValue(policy?.usage, window, type) : '';
+                const usageHint = raw.trim() ? formatUsageValue(policy?.usage, window) : '';
                 return (
                   <div key={key} className={styles.apiKeyPolicyField}>
                     <Input

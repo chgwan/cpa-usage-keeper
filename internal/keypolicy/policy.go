@@ -6,20 +6,19 @@ import (
 	"fmt"
 )
 
-// LimitType 限定限额统计的维度，当前支持次数、tokens 和费用。
+// LimitType 限定限额统计的维度，当前只支持费用。
 type LimitType string
 
 const (
-	LimitTypeRequests LimitType = "requests"
-	LimitTypeTokens   LimitType = "tokens"
-	LimitTypeCost     LimitType = "cost"
+	LimitTypeCost LimitType = "cost"
 )
 
-// LimitWindow 限定限额统计的周期，跟随项目 TZ 的本地日历。
+// LimitWindow 限定限额统计的周期，跟随项目 TZ 的本地日历；周窗口从周一起算。
 type LimitWindow string
 
 const (
 	LimitWindowDaily   LimitWindow = "daily"
+	LimitWindowWeekly  LimitWindow = "weekly"
 	LimitWindowMonthly LimitWindow = "monthly"
 )
 
@@ -45,17 +44,18 @@ func ParseLimits(raw string) (Limits, error) {
 	return limits, nil
 }
 
-// Validate 拒绝未知维度、未知周期、非正数和重复的 (维度, 周期) 组合。
+// Validate 拒绝未知维度（含已下线的 tokens / requests）、未知周期、
+// 非正数和重复的 (维度, 周期) 组合。
 func (limits Limits) Validate() error {
 	seen := make(map[Limit]struct{}, len(limits))
 	for _, limit := range limits {
 		switch limit.Type {
-		case LimitTypeRequests, LimitTypeTokens, LimitTypeCost:
+		case LimitTypeCost:
 		default:
 			return fmt.Errorf("unknown limit type %q", limit.Type)
 		}
 		switch limit.Window {
-		case LimitWindowDaily, LimitWindowMonthly:
+		case LimitWindowDaily, LimitWindowWeekly, LimitWindowMonthly:
 		default:
 			return fmt.Errorf("unknown limit window %q", limit.Window)
 		}

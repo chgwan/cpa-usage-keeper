@@ -4941,3 +4941,89 @@
   }
   @media (max-width: 360px) { padding-inline: 16px; }
 }
+
+// —— API Key viewer 费用额度面板：固定日历窗口（项目 TZ），与顶部时间范围筛选无关 ——
+.keyQuotaSection {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.keyQuotaHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.keyQuotaTitle {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.keyQuotaGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.keyQuotaCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
+  border-radius: 12px;
+  background: var(--bg-secondary);
+
+  &[data-breached='true'] {
+    border-color: var(--danger-badge-border, #fca5a5);
+  }
+}
+
+.keyQuotaCardHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.keyQuotaWindowLabel {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.keyQuotaResetHint {
+  font-size: 11px;
+  color: var(--text-tertiary, var(--text-secondary));
+}
+
+.keyQuotaValue {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.keyQuotaBarTrack {
+  height: 6px;
+  border-radius: $radius-full;
+  background: color-mix(in srgb, var(--border-color) 55%, transparent);
+  overflow: hidden;
+}
+
+.keyQuotaBarFill {
+  display: block;
+  height: 100%;
+  border-radius: $radius-full;
+  background: var(--accent-primary, #6366f1);
+}
+
+.keyQuotaBarFillBreached {
+  background: var(--danger-badge-text, #991b1b);
+}
