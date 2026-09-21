@@ -198,6 +198,15 @@ type ClaudeExtraUsage struct {
 	Utilization  *float64 `json:"utilization,omitempty"`
 }
 
+// ClaudeUsageLimit 是 Anthropic 的结构化限额条目，按模型给出窗口，比扁平字段更新得早。
+type ClaudeUsageLimit struct {
+	Kind      string   `json:"kind,omitempty"`
+	ModelName string   `json:"modelName,omitempty"`
+	Percent   *float64 `json:"percent,omitempty"`
+	ResetsAt  string   `json:"resetsAt,omitempty"`
+	IsActive  bool     `json:"isActive,omitempty"`
+}
+
 type ClaudeUsagePayload struct {
 	FiveHour          *ClaudeUsageWindow `json:"fiveHour,omitempty"`
 	SevenDay          *ClaudeUsageWindow `json:"sevenDay,omitempty"`
@@ -205,8 +214,10 @@ type ClaudeUsagePayload struct {
 	SevenDayOpus      *ClaudeUsageWindow `json:"sevenDayOpus,omitempty"`
 	SevenDaySonnet    *ClaudeUsageWindow `json:"sevenDaySonnet,omitempty"`
 	SevenDayCowork    *ClaudeUsageWindow `json:"sevenDayCowork,omitempty"`
-	IguanaNecktie     *ClaudeUsageWindow `json:"iguanaNecktie,omitempty"`
-	ExtraUsage        *ClaudeExtraUsage  `json:"extraUsage,omitempty"`
+	// IguanaNecktie 是 Anthropic 给 Fable 周限额用的内部代号字段。
+	IguanaNecktie *ClaudeUsageWindow `json:"iguanaNecktie,omitempty"`
+	Limits        []ClaudeUsageLimit `json:"limits,omitempty"`
+	ExtraUsage    *ClaudeExtraUsage  `json:"extraUsage,omitempty"`
 }
 
 type ClaudeProfileAccount struct {

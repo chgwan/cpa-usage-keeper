@@ -218,8 +218,33 @@ func parseClaudeUsagePayload(response *apicall.Response) (*ClaudeUsagePayload, e
 		SevenDaySonnet:    parseClaudeUsageWindow(objectField(object, "seven_day_sonnet", "sevenDaySonnet")),
 		SevenDayCowork:    parseClaudeUsageWindow(objectField(object, "seven_day_cowork", "sevenDayCowork")),
 		IguanaNecktie:     parseClaudeUsageWindow(objectField(object, "iguana_necktie", "iguanaNecktie")),
+		Limits:            parseClaudeUsageLimits(arrayField(object, "limits")),
 		ExtraUsage:        parseClaudeExtraUsage(objectField(object, "extra_usage", "extraUsage")),
 	}, nil
+}
+
+func parseClaudeUsageLimits(raws []json.RawMessage) []ClaudeUsageLimit {
+	if len(raws) == 0 {
+		return nil
+	}
+	limits := make([]ClaudeUsageLimit, 0, len(raws))
+	for _, raw := range raws {
+		object := rawObject(raw)
+		if object == nil {
+			continue
+		}
+		limit := ClaudeUsageLimit{
+			Kind:     stringField(object, "kind"),
+			Percent:  floatPtrField(object, "percent"),
+			ResetsAt: stringField(object, "resets_at", "resetsAt"),
+			IsActive: boolField(object, "is_active", "isActive"),
+		}
+		if model := objectField(objectField(object, "scope"), "model"); model != nil {
+			limit.ModelName = stringField(model, "display_name", "displayName")
+		}
+		limits = append(limits, limit)
+	}
+	return limits
 }
 
 func parseClaudeUsageWindow(object map[string]json.RawMessage) *ClaudeUsageWindow {

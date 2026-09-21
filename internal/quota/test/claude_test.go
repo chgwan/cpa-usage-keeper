@@ -65,6 +65,47 @@ func TestClaudeProviderCallsUsageAndProfile(t *testing.T) {
 	}
 }
 
+func TestClaudeProviderParsesScopedModelLimits(t *testing.T) {
+	usageBody := `{"five_hour":{"utilization":36,"resets_at":"2026-05-09T12:00:00Z"},"iguana_necktie":{"utilization":61,"resets_at":"2026-05-01T12:00:00Z"},"limits":[{"kind":"weekly_scoped","scope":{"model":{"display_name":"Fable 5"}},"percent":44.5,"resets_at":"2026-05-14T12:00:00Z","is_active":true},{"kind":"weekly_scoped","scope":{"model":{"display_name":"Opus"}},"percent":10,"resets_at":"2026-05-12T12:00:00Z"}]}`
+	caller := &recordingManagementCaller{responses: []*apicall.Response{
+		{StatusCode: 200, BodyText: usageBody, Body: json.RawMessage(usageBody)},
+		{StatusCode: 200, BodyText: `{}`, Body: json.RawMessage(`{}`)},
+	}}
+	configs := quota.DefaultProviderConfigs()
+	provider := quota.NewClaudeProvider(caller, configs.ClaudeUsage, configs.ClaudeProfile)
+
+	output, err := provider.Check(context.Background(), quota.ProviderInput{Identity: entities.UsageIdentity{Identity: "claude-auth"}})
+	if err != nil {
+		t.Fatalf("Check returned error: %v", err)
+	}
+	result := output.Result.(quota.ClaudeResult)
+	if result.Usage == nil || len(result.Usage.Limits) != 2 {
+		t.Fatalf("expected two parsed scoped limits, got %#v", result.Usage)
+	}
+	fable := result.Usage.Limits[0]
+	if fable.Kind != "weekly_scoped" || fable.ModelName != "Fable 5" || fable.Percent == nil || *fable.Percent != 44.5 || fable.ResetsAt != "2026-05-14T12:00:00Z" || !fable.IsActive {
+		t.Fatalf("unexpected fable limit: %#v", fable)
+	}
+	if opus := result.Usage.Limits[1]; opus.ModelName != "Opus" || opus.IsActive {
+		t.Fatalf("unexpected opus limit: %#v", opus)
+	}
+
+	rows := quota.NormalizeQuotaRows(output)
+	var seen bool
+	for _, row := range rows {
+		if row.Key != "seven_day_fable" {
+			continue
+		}
+		seen = true
+		if row.Label != "7d Fable 5" || row.UsedPercent == nil || *row.UsedPercent != 44.5 {
+			t.Fatalf("unexpected fable row: %#v", row)
+		}
+	}
+	if !seen {
+		t.Fatalf("expected a fable quota row, got %#v", rows)
+	}
+}
+
 func TestClaudeProviderKeepsUsageWhenProfileIsUnavailable(t *testing.T) {
 	tests := []struct {
 		name     string

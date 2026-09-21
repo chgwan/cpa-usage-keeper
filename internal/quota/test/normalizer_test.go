@@ -46,6 +46,96 @@ func TestNormalizeClaudeQuotaRows(t *testing.T) {
 	assertBoolField(t, extra.Allowed, true, "extra_usage allowed")
 }
 
+func TestNormalizeClaudeQuotaRowsPrefersStructuredFableLimit(t *testing.T) {
+	stale := 12.0
+	active := 44.0
+	rows := quota.NormalizeQuotaRows(quota.ProviderOutput{Provider: "claude", Result: quota.ClaudeResult{
+		Usage: &quota.ClaudeUsagePayload{
+			FiveHour:      &quota.ClaudeUsageWindow{Utilization: 36, ResetsAt: "2026-05-09T12:00:00Z"},
+			IguanaNecktie: &quota.ClaudeUsageWindow{Utilization: 99, ResetsAt: "2026-05-01T12:00:00Z"},
+			Limits: []quota.ClaudeUsageLimit{
+				{Kind: "five_hour_scoped", ModelName: "Fable 5", Percent: &active, ResetsAt: "2026-05-11T12:00:00Z", IsActive: true},
+				{Kind: "weekly_scoped", ModelName: "Opus", Percent: &stale, ResetsAt: "2026-05-12T12:00:00Z", IsActive: true},
+				{Kind: "weekly_scoped", ModelName: "Fable 5", Percent: &stale, ResetsAt: "2026-05-13T12:00:00Z"},
+				{Kind: "weekly_scoped", ModelName: "Fable 5", Percent: &active, ResetsAt: "2026-05-14T12:00:00Z", IsActive: true},
+			},
+		},
+	}})
+
+	fable := findQuotaRow(t, rows, "seven_day_fable")
+	assertQuotaText(t, fable, "7d Fable 5", "model", "")
+	assertFloatField(t, fable.UsedPercent, 44, "seven_day_fable usedPercent")
+	if fable.ResetAt != "2026-05-14T12:00:00Z" {
+		t.Fatalf("expected the active weekly Fable entry to win, got %#v", fable)
+	}
+	assertIntField(t, fable.Window.Seconds, 604800, "seven_day_fable window seconds")
+	for _, row := range rows {
+		if row.Key == "iguana_necktie" {
+			t.Fatalf("expected the codename row to be replaced by the Fable row, got %#v", rows)
+		}
+	}
+}
+
+func TestNormalizeClaudeQuotaRowsLabelsIguanaNecktieAsFable(t *testing.T) {
+	unusable := 50.0
+	rows := quota.NormalizeQuotaRows(quota.ProviderOutput{Provider: "claude", Result: quota.ClaudeResult{
+		Usage: &quota.ClaudeUsagePayload{
+			IguanaNecktie: &quota.ClaudeUsageWindow{Utilization: 61, ResetsAt: "2026-05-10T12:00:00Z"},
+			Limits: []quota.ClaudeUsageLimit{
+				{Kind: "weekly_scoped", ModelName: "Sonnet", Percent: &unusable, IsActive: true},
+				{Kind: "weekly_scoped", ModelName: "Fable 5", IsActive: true},
+			},
+		},
+	}})
+
+	// iguana_necktie 是 Anthropic 给 Fable 周限额的内部代号，没有可用结构化条目时仍要显示它。
+	fable := findQuotaRow(t, rows, "seven_day_fable")
+	assertQuotaText(t, fable, "7d Fable 5", "model", "")
+	assertFloatField(t, fable.UsedPercent, 61, "seven_day_fable usedPercent")
+	if fable.ResetAt != "2026-05-10T12:00:00Z" {
+		t.Fatalf("unexpected fallback resetAt: %#v", fable)
+	}
+	assertIntField(t, fable.Window.Seconds, 604800, "seven_day_fable window seconds")
+}
+
+func TestNormalizeClaudeQuotaRowsKeepsFableLabelInSyncWithUpstreamName(t *testing.T) {
+	percent := 7.5
+	for _, testCase := range []struct {
+		name      string
+		modelName string
+		label     string
+	}{
+		// Anthropic 当前回的就是不带版本号的 "Fable"，展示上与 CliProxyAPI 对齐。
+		{name: "bare family name", modelName: "Fable", label: "7d Fable 5"},
+		{name: "explicit version", modelName: "Fable 5", label: "7d Fable 5"},
+		{name: "future version", modelName: "Fable 5.1", label: "7d Fable 5.1"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			rows := quota.NormalizeQuotaRows(quota.ProviderOutput{Provider: "claude", Result: quota.ClaudeResult{
+				Usage: &quota.ClaudeUsagePayload{
+					Limits: []quota.ClaudeUsageLimit{{Kind: "weekly_scoped", ModelName: testCase.modelName, Percent: &percent, IsActive: true}},
+				},
+			}})
+
+			fable := findQuotaRow(t, rows, "seven_day_fable")
+			assertQuotaText(t, fable, testCase.label, "model", "")
+			assertFloatField(t, fable.UsedPercent, 7.5, "seven_day_fable usedPercent")
+		})
+	}
+}
+
+func TestNormalizeClaudeQuotaRowsOmitsFableWhenUpstreamIsSilent(t *testing.T) {
+	rows := quota.NormalizeQuotaRows(quota.ProviderOutput{Provider: "claude", Result: quota.ClaudeResult{
+		Usage: &quota.ClaudeUsagePayload{FiveHour: &quota.ClaudeUsageWindow{Utilization: 36}},
+	}})
+
+	for _, row := range rows {
+		if row.Key == "seven_day_fable" {
+			t.Fatalf("expected no Fable row without upstream data, got %#v", rows)
+		}
+	}
+}
+
 func TestNormalizeCodexQuotaRows(t *testing.T) {
 	previousLocal := time.Local
 	location, err := time.LoadLocation("Asia/Shanghai")

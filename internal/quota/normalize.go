@@ -18,6 +18,9 @@ const (
 	quotaWindowAverageMonthSeconds int64 = 365 * 24 * 60 * 60 / 12
 	antigravityGeminiGroupKey            = "antigravity-gemini-models"
 	antigravityClaudeGPTGroupKey         = "antigravity-claude-and-gpt-models"
+	claudeFableQuotaKey                  = "seven_day_fable"
+	claudeWeeklyScopedLimitKind          = "weekly_scoped"
+	claudeFableModelPrefix               = "fable"
 )
 
 func NormalizeQuotaRows(output ProviderOutput) []QuotaRow {
@@ -81,7 +84,7 @@ func normalizeClaudeQuotaRows(result ClaudeResult) []QuotaRow {
 	rows = appendClaudeWindowQuotaRow(rows, "seven_day_opus", "7d Opus", "model", result.Usage.SevenDayOpus)
 	rows = appendClaudeWindowQuotaRow(rows, "seven_day_sonnet", "7d Sonnet", "model", result.Usage.SevenDaySonnet)
 	rows = appendClaudeWindowQuotaRow(rows, "seven_day_cowork", "7d Cowork", "window", result.Usage.SevenDayCowork)
-	rows = appendClaudeWindowQuotaRow(rows, "iguana_necktie", "Iguana Necktie", "window", result.Usage.IguanaNecktie)
+	rows = appendClaudeFableQuotaRow(rows, result.Usage)
 	if result.Usage.ExtraUsage != nil {
 		rows = append(rows, QuotaRow{
 			Key:         "extra_usage",
@@ -94,6 +97,52 @@ func normalizeClaudeQuotaRows(result ClaudeResult) []QuotaRow {
 		})
 	}
 	return rows
+}
+
+// appendClaudeFableQuotaRow 优先用结构化 limits 里的 Fable 周条目，退回到扁平的 iguana_necktie 代号字段。
+func appendClaudeFableQuotaRow(rows []QuotaRow, usage *ClaudeUsagePayload) []QuotaRow {
+	if limit := claudeFableWeeklyLimit(usage.Limits); limit != nil {
+		return append(rows, QuotaRow{
+			Key:         claudeFableQuotaKey,
+			Label:       claudeFableQuotaLabel(limit.ModelName),
+			Scope:       "model",
+			UsedPercent: floatPtr(*limit.Percent),
+			ResetAt:     limit.ResetsAt,
+			Window:      &QuotaWindow{Seconds: intPtr(quotaWindowSevenDaySeconds)},
+		})
+	}
+	return appendClaudeWindowQuotaRow(rows, claudeFableQuotaKey, claudeFableQuotaLabel(""), "model", usage.IguanaNecktie)
+}
+
+// claudeFableWeeklyLimit 复刻 CliProxyAPI 的匹配：按周计的 Fable 条目，优先取当前生效的那条。
+func claudeFableWeeklyLimit(limits []ClaudeUsageLimit) *ClaudeUsageLimit {
+	var fallback *ClaudeUsageLimit
+	for index := range limits {
+		limit := &limits[index]
+		if !strings.EqualFold(strings.TrimSpace(limit.Kind), claudeWeeklyScopedLimitKind) || limit.Percent == nil {
+			continue
+		}
+		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(limit.ModelName)), claudeFableModelPrefix) {
+			continue
+		}
+		if limit.IsActive {
+			return limit
+		}
+		if fallback == nil {
+			fallback = limit
+		}
+	}
+	return fallback
+}
+
+// claudeFableQuotaLabel 跟随上游模型名，避免 Anthropic 改版本号后标签落后；
+// 上游目前只给不带版本号的 "Fable"，此时沿用 CliProxyAPI 的展示写法。
+func claudeFableQuotaLabel(modelName string) string {
+	name := strings.TrimSpace(modelName)
+	if name == "" || strings.EqualFold(name, claudeFableModelPrefix) {
+		return "7d Fable 5"
+	}
+	return "7d " + name
 }
 
 func appendClaudeWindowQuotaRow(rows []QuotaRow, key string, label string, scope string, window *ClaudeUsageWindow) []QuotaRow {
