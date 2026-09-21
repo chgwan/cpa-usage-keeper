@@ -98,6 +98,8 @@ const (
 	migrationAddUsageEventAPIGroupKeyTimestampIndex = "20260905_usage_event_api_group_key_timestamp_index"
 	migrationAddUsageIdentityStatsReset             = "20260910_usage_identity_stats_reset"
 	migrationAddUsageEventSessionFields             = "20260912_usage_event_session_fields"
+	migrationAddUsageEventResponseModel             = "20260918_usage_event_response_model"
+	migrationAddUsageEventStreamStatusCode          = "20260919_usage_event_stream_status_code"
 	// migrationCostOnlyAPIKeyLimits 从策略表剥离已下线的 tokens / requests 限额维度。
 	migrationCostOnlyAPIKeyLimits = "20260920_cost_only_api_key_limits"
 )
@@ -248,6 +250,8 @@ func orderedMigrations() []databaseMigration {
 		{version: migrationAddUsageEventAPIGroupKeyTimestampIndex, run: addUsageEventAPIGroupKeyTimestampIndexMigration},
 		{version: migrationAddUsageIdentityStatsReset, run: addUsageIdentityStatsResetMigration},
 		{version: migrationAddUsageEventSessionFields, run: addUsageEventSessionFieldsMigration},
+		{version: migrationAddUsageEventResponseModel, run: addUsageEventResponseModelMigration},
+		{version: migrationAddUsageEventStreamStatusCode, run: addUsageEventStreamStatusCodeMigration},
 		{version: migrationCostOnlyAPIKeyLimits, run: costOnlyAPIKeyLimitsMigration},
 	}
 }

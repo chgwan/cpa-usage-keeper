@@ -8,6 +8,7 @@ import type { UsageQuotaInspectionResult, UsageQuotaInspectionResultStatus } fro
 
 const createAuthFileSectionProps = (overrides: Partial<Parameters<typeof AuthFileCredentialsSection>[0]> = {}) => ({
   rows: [],
+  timeZone: 'Asia/Shanghai',
   total: 0,
   page: 1,
   totalPages: 1,
@@ -40,21 +41,20 @@ vi.mock('react-i18next', () => ({
   }),
 }))
 
-const formatLocalResetTime = (resetAt: string) => {
-  const resetTime = new Date(resetAt)
-  const month = String(resetTime.getMonth() + 1).padStart(2, '0')
-  const day = String(resetTime.getDate()).padStart(2, '0')
-  const hour = String(resetTime.getHours()).padStart(2, '0')
-  const minute = String(resetTime.getMinutes()).padStart(2, '0')
-  return `${month}/${day} ${hour}:${minute}`
-}
-
 describe('AuthFileCredentialsSection quota reset formatting', () => {
+  it('does not guess a timezone before the Keeper project timezone is available', () => {
+    expect(formatQuotaResetLabel('2026-05-12T03:15:00-07:00')).toBe('')
+  })
+
+  it('does not pass Go Local timezone names to Intl', () => {
+    expect(formatQuotaResetLabel('2026-05-12T03:15:00-07:00', 'Local')).toBe('')
+  })
+
   it('formats reset labels with days when remaining time exceeds 24 hours', () => {
     vi.setSystemTime(new Date('2026-05-10T10:00:00Z'))
     try {
-      const resetAt = '2026-05-12T10:15:00Z'
-      expect(formatQuotaResetLabel(resetAt)).toBe(formatLocalResetTime(resetAt))
+      const resetAt = '2026-05-12T03:15:00-07:00'
+      expect(formatQuotaResetLabel(resetAt, 'Asia/Shanghai')).toBe('05/12 18:15')
       expect(formatQuotaResetDuration(resetAt)).toBe('2d0h15m')
     } finally {
       vi.useRealTimers()
@@ -64,8 +64,8 @@ describe('AuthFileCredentialsSection quota reset formatting', () => {
   it('formats reset labels without days when remaining time is under 24 hours', () => {
     vi.setSystemTime(new Date('2026-05-10T10:00:00Z'))
     try {
-      const resetAt = '2026-05-10T14:15:00Z'
-      expect(formatQuotaResetLabel(resetAt)).toBe(formatLocalResetTime(resetAt))
+      const resetAt = '2026-05-10T07:15:00-07:00'
+      expect(formatQuotaResetLabel(resetAt, 'Asia/Shanghai')).toBe('05/10 22:15')
       expect(formatQuotaResetDuration(resetAt)).toBe('4h15m')
     } finally {
       vi.useRealTimers()
@@ -547,9 +547,10 @@ describe('AuthFileCredentialsSection quota usage mode rendering', () => {
       }],
     } as AuthFileCredentialRow
 
-    const html = renderToStaticMarkup(createElement(AuthFileQuotaPanel, { row: noUsageRow, quotaUsageMode: 'current' }))
+    const html = renderToStaticMarkup(createElement(AuthFileQuotaPanel, { row: noUsageRow, quotaUsageMode: 'current', timeZone: 'Asia/Shanghai' }))
 
     expect(html).toContain('credentialQuotaResetTime')
+    expect(html).toContain('05/09 20:00')
   })
 
   it('renders xai billing spend without token usage metrics', () => {

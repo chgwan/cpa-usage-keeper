@@ -92,6 +92,8 @@ func TestOrderedMigrationsPreservesExecutionOrder(t *testing.T) {
 		"20260905_usage_event_api_group_key_timestamp_index",
 		"20260910_usage_identity_stats_reset",
 		"20260912_usage_event_session_fields",
+		"20260918_usage_event_response_model",
+		"20260919_usage_event_stream_status_code",
 		"20260920_cost_only_api_key_limits",
 	}
 	assertStringSlicesEqual(t, want, got)

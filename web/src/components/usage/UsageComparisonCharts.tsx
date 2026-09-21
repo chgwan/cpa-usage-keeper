@@ -19,6 +19,11 @@ const rowStyle = (row: ComparisonRow, index: number): CSSProperties => {
 };
 const formatCost = (value: number | null) => value === null ? '—' : formatUsd(value);
 const formatShare = (value: number | null) => value === null ? '—' : `${value.toFixed(1)}%`;
+const TILE_SLOT_GAP = 4;
+const TILE_MIN_WIDTH = 56 + TILE_SLOT_GAP;
+const TILE_MIN_HEIGHT = 32 + TILE_SLOT_GAP;
+const TILE_NAME_MIN_WIDTH = 96 + TILE_SLOT_GAP;
+const TILE_NAME_MIN_HEIGHT = 52 + TILE_SLOT_GAP;
 
 type UsageDimension = 'api_keys' | 'auth_files' | 'ai_providers';
 const DIMENSION_KEYS: readonly UsageDimension[] = ['api_keys', 'auth_files', 'ai_providers'];
@@ -49,7 +54,13 @@ function ComparisonChart({ items, dimension, loading, dimensions, titleKey }: { 
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
-  const rects = useMemo(() => layoutComparisonTreemap(view.rows, treeSize.width / treeSize.height), [view.rows, treeSize]);
+  const rects = useMemo(() => layoutComparisonTreemap(view.rows, treeSize.width / treeSize.height, {
+    widthPx: treeSize.width,
+    heightPx: treeSize.height,
+    minWidthPx: TILE_MIN_WIDTH,
+    minHeightPx: TILE_MIN_HEIGHT,
+  }), [view.rows, treeSize]);
+  const rowIndexByKey = useMemo(() => new Map(view.rows.map((row, index) => [row.key, index])), [view.rows]);
   const tooltipLines = (row: ComparisonRow) => [
     row.label,
     `${t('usage_stats.comparison_tokens')}: ${formatCompactNumber(row.total_tokens)} · ${formatShare(row.share)}`,
@@ -72,11 +83,17 @@ function ComparisonChart({ items, dimension, loading, dimensions, titleKey }: { 
   return <Card title={title} className={styles.card} data-comparison={dimension}>
     {dimension === 'models' ? <div className={styles.chartSurface} aria-busy={loading}>
       <div ref={treeRef} className={styles.treemap} aria-label={title}>
-        {rects.length === 0 ? <div className={styles.empty}>{empty}</div> : rects.map((rect, index) => {
-          const tiny = rect.width * treeSize.width / 100 < 48 || rect.height * treeSize.height / 100 < 28;
+        {rects.length === 0 ? <div className={styles.empty}>{empty}</div> : rects.map((rect) => {
+          const tileWidth = rect.width * treeSize.width / 100 - TILE_SLOT_GAP;
+          const tileHeight = rect.height * treeSize.height / 100 - TILE_SLOT_GAP;
+          const compact = tileWidth < TILE_NAME_MIN_WIDTH || tileHeight < TILE_NAME_MIN_HEIGHT;
+          const share = formatShare(rect.row.share);
           return <div key={rect.row.key} className={styles.tileSlot} style={{left:`${rect.x}%`, top:`${rect.y}%`, width:`${rect.width}%`, height:`${rect.height}%`}}>
-            <button type="button" data-comparison-entry={rect.row.key} className={styles.tile} style={rowStyle(rect.row,index)} aria-label={tooltipLines(rect.row).join(', ')} data-tiny={tiny} {...events(rect.row)}>
-              <span className={styles.tileName}>{rect.row.label}</span>
+            <button type="button" data-comparison-entry={rect.row.key} className={styles.tile} style={rowStyle(rect.row,rowIndexByKey.get(rect.row.key) ?? 0)} aria-label={tooltipLines(rect.row).join(', ')} data-tile-mode={compact ? 'compact' : 'full'} {...events(rect.row)}>
+              <span className={styles.tileContent}>
+                {!compact && <span className={styles.tileName}>{rect.row.label}</span>}
+                <span className={styles.tileShare}>{share}</span>
+              </span>
             </button>
           </div>;
         })}

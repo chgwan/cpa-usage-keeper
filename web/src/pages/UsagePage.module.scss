@@ -3607,6 +3607,18 @@
   line-height: 1.25;
 }
 
+.requestEventsStackedResponse {
+  display: block;
+  margin-top: 3px;
+  color: #d97706;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .requestEventsStackedLabel {
   color: var(--text-secondary);
 }
