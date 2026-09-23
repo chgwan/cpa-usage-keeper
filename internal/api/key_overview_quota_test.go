@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,27 @@ import (
 	"cpa-usage-keeper/internal/service"
 )
 
+// quotaViewerKeyStub 只回答 viewer 会话需要的活跃 key 查询。
+type quotaViewerKeyStub struct {
+	row entities.CPAAPIKey
+}
+
+func (s *quotaViewerKeyStub) ListCPAAPIKeys(context.Context) ([]entities.CPAAPIKey, error) {
+	return []entities.CPAAPIKey{s.row}, nil
+}
+
+func (s *quotaViewerKeyStub) FindActiveCPAAPIKeyByValue(context.Context, string) (entities.CPAAPIKey, error) {
+	return s.row, nil
+}
+
+func (s *quotaViewerKeyStub) FindActiveCPAAPIKeyByID(context.Context, int64) (entities.CPAAPIKey, error) {
+	return s.row, nil
+}
+
+func (s *quotaViewerKeyStub) UpdateCPAAPIKeyAlias(context.Context, int64, string) (entities.CPAAPIKey, error) {
+	return s.row, nil
+}
+
 // keyOverviewQuotaTestRouter 组装带 viewer 会话与管理 provider 的路由。
 func keyOverviewQuotaTestRouter(t *testing.T, management service.CPAAPIKeyManagementProvider) (http.Handler, string) {
 	t.Helper()
@@ -21,7 +43,7 @@ func keyOverviewQuotaTestRouter(t *testing.T, management service.CPAAPIKeyManage
 	if err != nil {
 		t.Fatalf("CreateAPIKeyViewer returned error: %v", err)
 	}
-	keyProvider := &authCPAAPIKeyStub{row: entities.CPAAPIKey{ID: 42, DisplayKey: "sk-*********live"}}
+	keyProvider := &quotaViewerKeyStub{row: entities.CPAAPIKey{ID: 42, DisplayKey: "sk-*********live"}}
 	config := AuthConfig{Enabled: true, LoginPassword: "secret", SessionTTL: time.Hour}
 	router := NewRouter(nil, nil, nil, nil, config, NewAuthHandler(config, sessions), "", OptionalProviders{
 		CPAAPIKeys: keyProvider, CPAAPIKeyManagement: management,

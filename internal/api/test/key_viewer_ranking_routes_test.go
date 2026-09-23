@@ -37,7 +37,7 @@ func (s *keyViewerRankingKeyStub) UpdateCPAAPIKeyAlias(context.Context, int64, s
 	return s.row, nil
 }
 
-func newKeyViewerRankingRouter(t *testing.T) (string, *rankingRouteProviderStub, *adminLocalRankingProviderStub, http.Handler) {
+func newKeyViewerRankingRouter(t *testing.T) (*auth.SessionManager, string, *rankingRouteProviderStub, *adminLocalRankingProviderStub, http.Handler) {
 	t.Helper()
 	sessions := auth.NewSessionManager(time.Hour)
 	viewerToken, _, err := sessions.CreateAPIKeyViewer(42)
@@ -57,7 +57,7 @@ func newKeyViewerRankingRouter(t *testing.T) (string, *rankingRouteProviderStub,
 		Ranking:      community,
 		LocalRanking: local,
 	})
-	return viewerToken, community, local, router
+	return sessions, viewerToken, community, local, router
 }
 
 func viewerRankingRequest(method, target, token string) *http.Request {
@@ -80,7 +80,7 @@ func TestKeyViewerRankingRoutesAreUnavailable(t *testing.T) {
 		{http.MethodGet, "/ranking/local/leaderboards?period=today&metric=overall", http.StatusForbidden},
 	} {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
-			viewerToken, community, local, router := newKeyViewerRankingRouter(t)
+			_, viewerToken, community, local, router := newKeyViewerRankingRouter(t)
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, viewerRankingRequest(tc.method, "/api/v1"+tc.path, viewerToken))
 			if response.Code != tc.status {
@@ -94,7 +94,7 @@ func TestKeyViewerRankingRoutesAreUnavailable(t *testing.T) {
 }
 
 func TestKeyViewerSessionOmitsRankingCapability(t *testing.T) {
-	viewerToken, _, _, router := newKeyViewerRankingRouter(t)
+	_, viewerToken, _, _, router := newKeyViewerRankingRouter(t)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, viewerRankingRequest(http.MethodGet, "/api/v1/auth/session", viewerToken))
 	if response.Code != http.StatusOK {

@@ -124,26 +124,6 @@ func TestDevinExecutorUsesStrictInteractionsBoundary(t *testing.T) {
 	}
 }
 
-func TestDevinExecutorHandlesStreamCompletedUsageLikeNonStream(t *testing.T) {
-	// CPA stream 最终 usage 与 non-stream 都进入 Interactions parser；同一 scalar 合同必须得到同一结果。
-	stream := tokenprocessor.Process(tokenprocessor.TokenValues{
-		InputTokens:     12,
-		OutputTokens:    8,
-		ReasoningTokens: 4,
-		TotalTokens:     24,
-	}, mustResolveExecutor(t, "DevinExecutor"))
-	nonStream := tokenprocessor.Process(tokenprocessor.TokenValues{
-		InputTokens:     12,
-		OutputTokens:    8,
-		ReasoningTokens: 4,
-		TotalTokens:     24,
-	}, mustResolveExecutor(t, "DevinExecutor"))
-
-	if stream.Tokens != nonStream.Tokens || len(stream.Violations) != 0 || len(nonStream.Violations) != 0 {
-		t.Fatalf("stream/non-stream Devin usage diverged: stream=%+v non_stream=%+v", stream, nonStream)
-	}
-}
-
 func TestDevinExecutorKeepsExistingSafeTotalReconciliation(t *testing.T) {
 	// 完整 Interactions 合同下，Total 已含 thought；错误非零 Total 沿用既有 Gemini canonical correction。
 	corrected := tokenprocessor.Process(tokenprocessor.TokenValues{

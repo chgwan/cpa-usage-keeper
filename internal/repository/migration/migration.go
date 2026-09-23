@@ -101,7 +101,8 @@ const (
 	migrationAddUsageEventResponseModel             = "20260918_usage_event_response_model"
 	migrationAddUsageEventStreamStatusCode          = "20260919_usage_event_stream_status_code"
 	// migrationCostOnlyAPIKeyLimits 从策略表剥离已下线的 tokens / requests 限额维度。
-	migrationCostOnlyAPIKeyLimits = "20260920_cost_only_api_key_limits"
+	migrationCostOnlyAPIKeyLimits                 = "20260920_cost_only_api_key_limits"
+	migrationNormalizeUsageEventParentSessionNull = "20260922_normalize_usage_event_parent_session_null"
 )
 
 type schemaMigration struct {
@@ -253,6 +254,7 @@ func orderedMigrations() []databaseMigration {
 		{version: migrationAddUsageEventResponseModel, run: addUsageEventResponseModelMigration},
 		{version: migrationAddUsageEventStreamStatusCode, run: addUsageEventStreamStatusCodeMigration},
 		{version: migrationCostOnlyAPIKeyLimits, run: costOnlyAPIKeyLimitsMigration},
+		{version: migrationNormalizeUsageEventParentSessionNull, run: normalizeUsageEventParentSessionNullMigration},
 	}
 }
 

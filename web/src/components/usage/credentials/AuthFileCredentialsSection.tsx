@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
+import { Button } from '@/components/ui/Button'
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner'
 import { MainActionButton } from '@/components/ui/MainActionButton'
 import { Modal } from '@/components/ui/Modal'
@@ -1415,19 +1416,20 @@ function InvalidInspectionAccountModal({
       closeDisabled={submitting}
       footer={(
         <div className={styles.credentialInvalidAccountFooter}>
-          <button type="button" className={styles.credentialInvalidAccountCancelButton} onClick={onCancel} disabled={submitting}>
+          <Button type="button" variant="secondary" appearance="action" onClick={onCancel} disabled={submitting}>
             {t('common.cancel')}
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
-            className={`${styles.credentialInvalidAccountConfirmButton} ${action === 'delete' ? styles.credentialInvalidAccountConfirmButtonDanger : ''}`.trim()}
+            variant={action === 'delete' ? 'danger' : 'primary'}
+            appearance="action"
             onClick={onConfirm}
             disabled={submitting || selectedFileNames.length === 0}
+            loading={submitting}
             aria-busy={submitting}
           >
-            {submitting && <LoadingSpinner size={13} />}
-            <span>{t('usage_stats.credentials_inspection_invalid_accounts_confirm', { action: actionLabel })}</span>
-          </button>
+            {t('usage_stats.credentials_inspection_invalid_accounts_confirm', { action: actionLabel })}
+          </Button>
         </div>
       )}
     >

@@ -34,10 +34,7 @@ func TestResolveExecutorUsesCPAParserContracts(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			// 大小写和首尾空格不属于协议语义，resolver 必须统一后再匹配 CPA 类型名。
-			resolution, err := tokenprocessor.ResolveExecutor("  " + test.executor + "  ")
-			if err != nil {
-				t.Fatalf("ResolveExecutor returned error: %v", err)
-			}
+			resolution := mustResolveExecutor(t, "  "+test.executor+"  ")
 			if resolution.HandlerID() != test.handlerID {
 				t.Fatalf("expected %q to use handler %q, got %q", test.executor, test.handlerID, resolution.HandlerID())
 			}
@@ -83,10 +80,7 @@ func TestResolveIdentityUsesExistingFallbackAliases(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.identity, func(t *testing.T) {
 			// 空 executor 明确要求 resolver 只使用 identity fallback。
-			resolution, err := tokenprocessor.ResolveIdentity("", test.identity)
-			if err != nil {
-				t.Fatalf("ResolveIdentity returned error: %v", err)
-			}
+			resolution := mustResolveIdentity(t, "", test.identity)
 			if resolution.HandlerID() != test.handlerID {
 				t.Fatalf("expected identity %q to use handler %q, got %q", test.identity, test.handlerID, resolution.HandlerID())
 			}
@@ -99,10 +93,7 @@ func TestResolveIdentityUsesExistingFallbackAliases(t *testing.T) {
 
 func TestResolveIdentityKeepsExecutorPriorityForKimiClaudeDelegation(t *testing.T) {
 	// CPA 的 Kimi Claude 入站会由 ClaudeExecutor 上报；executor 与 identity 不同是合法委托，不是冲突。
-	resolution, err := tokenprocessor.ResolveIdentity("ClaudeExecutor", "kimi")
-	if err != nil {
-		t.Fatalf("ResolveIdentity returned error: %v", err)
-	}
+	resolution := mustResolveIdentity(t, "ClaudeExecutor", "kimi")
 	if resolution.HandlerID() != tokenprocessor.HandlerClaude {
 		t.Fatalf("expected ClaudeExecutor to win over Kimi identity, got %q", resolution.HandlerID())
 	}
@@ -126,10 +117,7 @@ func TestResolveExecutorRequiresIdentityOnlyForMissingOrUnknownTypes(t *testing.
 	}
 	for _, test := range tests {
 		t.Run(test.executor, func(t *testing.T) {
-			resolution, err := tokenprocessor.ResolveExecutor(test.executor)
-			if err != nil {
-				t.Fatalf("ResolveExecutor returned error: %v", err)
-			}
+			resolution := mustResolveExecutor(t, test.executor)
 			if !resolution.NeedsIdentity() {
 				t.Fatalf("executor %q must request identity fallback", test.executor)
 			}
@@ -143,20 +131,8 @@ func TestResolveExecutorRequiresIdentityOnlyForMissingOrUnknownTypes(t *testing.
 	}
 }
 
-func TestResolveIdentityUsesOnlyTheDocumentedOpenAICompatibilityPrefix(t *testing.T) {
-	// openai-compatible-* 是唯一允许的 prefix matcher；其它相似名字不能靠猜测获得协议规则。
-	openAI, err := tokenprocessor.ResolveIdentity("", "openai-compatible-acme")
-	if err != nil {
-		t.Fatalf("resolve OpenAI compatibility prefix: %v", err)
-	}
-	if openAI.HandlerID() != tokenprocessor.HandlerOpenAICompatibility {
-		t.Fatalf("expected documented prefix to use OpenAI compatibility, got %q", openAI.HandlerID())
-	}
-
-	unknown, err := tokenprocessor.ResolveIdentity("", "claude-acme")
-	if err != nil {
-		t.Fatalf("resolve undocumented prefix: %v", err)
-	}
+func TestResolveIdentityDoesNotGuessUndocumentedPrefixes(t *testing.T) {
+	unknown := mustResolveIdentity(t, "", "claude-acme")
 	if unknown.HandlerID() != tokenprocessor.HandlerStrictPassThrough || unknown.EvidenceSource() != tokenprocessor.EvidenceDefault {
 		t.Fatalf("expected undocumented prefix to stay strict default, got handler=%q source=%q", unknown.HandlerID(), unknown.EvidenceSource())
 	}

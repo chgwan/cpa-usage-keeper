@@ -12,7 +12,7 @@ import (
 )
 
 func TestProcessRedisUsageInboxNormalizesMetaAndDevinAuthFileUsage(t *testing.T) {
-	db := openOpenAITokenNormalizationTestDatabase(t)
+	db := openUsageServiceTestDatabase(t)
 	now := time.Date(2026, 9, 19, 8, 0, 0, 0, time.UTC)
 	if err := db.Create([]entities.UsageIdentity{
 		{

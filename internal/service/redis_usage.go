@@ -131,7 +131,7 @@ func (d queuedUsageDetail) toUsageEvent(fetchedAt time.Time) entities.UsageEvent
 		AuthType:            normalizeRedisAuthType(d.AuthType),
 		RequestID:           strings.TrimSpace(d.RequestID),
 		SessionID:           strings.TrimSpace(d.SessionID),
-		ParentSessionID:     strings.TrimSpace(d.ParentSessionID),
+		ParentSessionID:     trimRedisOptionalString(&d.ParentSessionID),
 		ClientIP:            d.ClientIP,
 		XForwardedFor:       d.XForwardedFor,
 		UserAgent:           d.UserAgent,
