@@ -153,13 +153,14 @@ describe('UsagePage toolbar styles', () => {
     expect(analysisChartSurface).toContain('border-radius: var(--keeper-card-radius);')
   })
 
-  it('keeps only the ranking source switch beside Refresh in the shared top toolbar', () => {
+  it('shows only the local leaderboard with no Community scope switch in the toolbar', () => {
     expect(usagePageSource).not.toContain("import { RankingToolbar }")
     expect(usagePageSource).not.toContain('<RankingToolbar')
     expect(usagePageStyles).not.toContain('.rankingToolbarSlot')
-    expect(usagePageSource).toContain("import { RankingScopeSwitch }")
-    expect(usagePageSource).toContain('<RankingScopeSwitch')
-    expect(usagePageSource).toContain('showRankingScopeControl ? styles.rankingScopeTransitionOpen')
+    expect(usagePageSource).not.toContain('RankingScopeSwitch')
+    expect(usagePageSource).not.toContain('showRankingScopeControl')
+    expect(usagePageSource).not.toContain("rankingScope === 'community'")
+    expect(usagePageSource).toContain('scope="local"')
     expect(usagePageSource).not.toContain('buildLocalRankingPreviewLeaderboard')
     expect(usagePageSource).not.toContain('RANKING_PREVIEW_ENABLED')
     expect(usagePageSource).toContain("import { MainActionButton } from '@/components/ui/MainActionButton'")
@@ -704,7 +705,7 @@ describe('UsagePage toolbar styles', () => {
     expect(i18nSource).not.toContain('overview_realtime_latency_p95')
   })
 
-  it('crossfades normal filters and ranking scope in one stable slot while Refresh stays fixed', () => {
+  it('crossfades the normal filters in one stable slot while Refresh stays fixed', () => {
     expect(usagePageSource).toContain("${!isEmbeddedInCPAMC ? styles.toolbarActionsRightAnimated : ''}")
     expect(usagePageSource).toContain('{(!isEmbeddedInCPAMC || showApiKeyFilter) && (')
     expect(usagePageSource).not.toContain("activeTab !== 'ranking' &&")
@@ -714,7 +715,6 @@ describe('UsagePage toolbar styles', () => {
     expect(usagePageSource).not.toContain("key={showRangeControls ? 'open' : 'closed'}")
     expect(usagePageSource).toContain('className={styles.usageRefreshSlot}')
     expect(usagePageSource).toContain('styles.toolbarContextSlotImmediate : styles.toolbarContextSlot')
-    expect(usagePageSource).toContain('styles.rankingScopeTransition')
     expect(usagePageStyles).toMatch(/\.toolbarActionsRightAnimated\s*\{[\s\S]*?display:\s*grid;/)
     expect(usagePageStyles).toMatch(/\.toolbarActionsRightAnimated\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) auto;/)
     expect(usagePageStyles).toMatch(/\.toolbarContextSlot\s*\{[\s\S]*?display:\s*grid;/)
