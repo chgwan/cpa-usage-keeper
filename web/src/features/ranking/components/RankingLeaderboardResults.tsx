@@ -1,3 +1,4 @@
+import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { formatLeaderboardValue, formatOverallMetricValue } from '../format';
 import type {
@@ -24,6 +25,43 @@ const overallMetricsForScope = (scope: RankingScope): RankingDetailMetric[] => (
   scope === 'local' ? [...OVERALL_METRICS, 'cost'] : OVERALL_METRICS
 );
 
+// score 指当前榜单主值列：综合视图下是综合分，单指标视图下是该指标本身。
+type RankingSortColumn = 'score' | RankingDetailMetric;
+type RankingSortDirection = 'descending' | 'ascending';
+interface RankingSort {
+  column: RankingSortColumn;
+  direction: RankingSortDirection;
+}
+
+const sortValue = (entry: RankingLeaderboardEntry, column: RankingSortColumn): number | undefined => (
+  column === 'score' ? entry.value : entry.metrics?.[column]
+);
+
+// 排序只重排表格行，缺值的行不论方向都沉底；领奖台和名次徽标仍按榜单原序。
+const sortEntries = (
+  entries: readonly RankingLeaderboardEntry[],
+  sort: RankingSort | null,
+): Array<{ entry: RankingLeaderboardEntry; position: number }> => {
+  const rows = entries.map((entry, index) => ({ entry, position: index + 1 }));
+  if (!sort) return rows;
+  const factor = sort.direction === 'descending' ? -1 : 1;
+  return rows.sort((left, right) => {
+    const leftValue = sortValue(left.entry, sort.column);
+    const rightValue = sortValue(right.entry, sort.column);
+    if (leftValue === undefined || rightValue === undefined) {
+      if (leftValue === rightValue) return left.position - right.position;
+      return leftValue === undefined ? 1 : -1;
+    }
+    return (leftValue - rightValue) * factor || left.position - right.position;
+  });
+};
+
+// 点击依次为降序、升序、恢复榜单原序；换列时从降序重新开始。
+const nextSort = (current: RankingSort | null, column: RankingSortColumn): RankingSort | null => {
+  if (current?.column !== column) return { column, direction: 'descending' };
+  return current.direction === 'descending' ? { column, direction: 'ascending' } : null;
+};
+
 export interface RankingLeaderboardResultsProps {
   scope: RankingScope;
   metric: RankingMetric;
@@ -40,6 +78,11 @@ export function RankingLeaderboardResults({
   const { t } = useTranslation();
   const podium = entries.slice(0, 3);
   const overallMetrics = overallMetricsForScope(scope);
+  const [selectedSort, setSort] = useState<RankingSort | null>(null);
+  // 切到单指标视图后原来的指标列已不在表头，此时不再沿用它的排序。
+  const sort = selectedSort && (metric === 'overall' || selectedSort.column === 'score') ? selectedSort : null;
+  const rows = useMemo(() => sortEntries(entries, sort), [entries, sort]);
+  const toggleSort = (column: RankingSortColumn) => setSort((current) => nextSort(current, column));
 
   return (
     <div className={styles.leaderboardResults} data-ranking-results>
@@ -65,17 +108,19 @@ export function RankingLeaderboardResults({
               </th>
               {metric === 'overall' ? (
                 <>
-                  <th className={styles.numberCell}>{t('ranking.score')}</th>
-                  {overallMetrics.map((item) => <th key={item} className={styles.numberCell}>{t(`ranking.metric_short_${item}`)}</th>)}
+                  <SortableHeader column="score" label={t('ranking.score')} sort={sort} onSort={toggleSort} />
+                  {overallMetrics.map((item) => (
+                    <SortableHeader key={item} column={item} label={t(`ranking.metric_short_${item}`)} sort={sort} onSort={toggleSort} />
+                  ))}
                 </>
-              ) : <th className={styles.numberCell}>{t(`ranking.metric_${metric}`)}</th>}
+              ) : <SortableHeader column="score" label={t(`ranking.metric_${metric}`)} sort={sort} onSort={toggleSort} />}
             </tr>
           </thead>
           <tbody>
-            {entries.map((entry, index) => (
+            {rows.map(({ entry, position }) => (
               <tr key={entry.participant_id} data-ranking-row>
                 <td className={styles.rankColumn} data-ranking-rank-column>
-                  <span className={styles.rankBadge} data-ranking-position>{index + 1}</span>
+                  <span className={styles.rankBadge} data-ranking-position>{position}</span>
                 </td>
                 <td className={styles.participantColumn} data-ranking-participant-column>
                   <div className={styles.participantCell}>
@@ -102,6 +147,30 @@ export function RankingLeaderboardResults({
         </table>
       </div>
     </div>
+  );
+}
+
+function SortableHeader({ column, label, sort, onSort }: {
+  column: RankingSortColumn;
+  label: string;
+  sort: RankingSort | null;
+  onSort: (column: RankingSortColumn) => void;
+}) {
+  const direction = sort?.column === column ? sort.direction : null;
+  return (
+    <th className={styles.numberCell} aria-sort={direction ?? 'none'}>
+      <button
+        type="button"
+        className={`${styles.sortButton} ${direction ? styles.sortButtonActive : ''}`.trim()}
+        onClick={() => onSort(column)}
+        data-ranking-sort={column}
+      >
+        <span>{label}</span>
+        <span className={styles.sortIndicator} aria-hidden="true">
+          {direction === 'descending' ? '▼' : direction === 'ascending' ? '▲' : '↕'}
+        </span>
+      </button>
+    </th>
   );
 }
 
