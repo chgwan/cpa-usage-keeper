@@ -100,6 +100,9 @@ func localMetricValue(row localRankingPopulationRow, metric LeaderboardMetric) (
 		return row.Peak5MTotalTokens, 0, 0, row.Peak5MTotalTokens > 0
 	case MetricPeakRPM:
 		return row.Peak5MRequestCount, 0, 0, row.Peak5MRequestCount > 0
+	case MetricCost:
+		// 周期内有任何用量即上榜：未命中价格表的 key 费用为 0 但仍列出。
+		return localCostMicroUSD(row.CostUSD), 0, 0, row.RequestCount > 0
 	default:
 		return 0, 0, 0, false
 	}
@@ -114,7 +117,25 @@ func localLeaderboardMetricsMap(row localRankingPopulationRow) map[LeaderboardMe
 		MetricLatencyAverage: scaledRatio(row.LatencySumMS, row.LatencySampleCount, 1_000),
 		MetricPeakTPM:        row.Peak5MTotalTokens,
 		MetricPeakRPM:        row.Peak5MRequestCount,
+		MetricCost:           localCostMicroUSD(row.CostUSD),
 	}
+}
+
+// localCostMicroUSD 把 USD 费用四舍五入成 micro-USD 定点整数，保持榜单 value 的整数语义。
+func localCostMicroUSD(cost float64) int64 {
+	if math.IsNaN(cost) || math.IsInf(cost, 0) || cost <= 0 {
+		return 0
+	}
+	scaled := cost * 1_000_000
+	if scaled >= math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return int64(math.Round(scaled))
+}
+
+// validLocalLeaderboardMetric 在 Community 指标集之外额外接受本地独有的 cost 维度。
+func validLocalLeaderboardMetric(metric LeaderboardMetric) bool {
+	return metric == MetricCost || validLeaderboardMetric(metric)
 }
 
 func scaledRatio(numerator, denominator, scale int64) int64 {

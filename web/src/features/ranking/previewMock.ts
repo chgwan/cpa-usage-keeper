@@ -91,6 +91,7 @@ const PARTICIPANTS: PreviewParticipant[] = PARTICIPANT_NAMES.map((displayName, i
     latency_average: 1_350_000 + index * 115_000,
     peak_tpm: 2_800_000 - index * 95_000,
     peak_rpm: 7_600 - index * 240,
+    cost: 412_500 - index * 17_300,
   },
 }));
 
@@ -107,11 +108,14 @@ const buildEntry = (
   participant: PreviewParticipant,
   period: RankingPeriod,
   metric: RankingMetric,
+  local = false,
 ): RankingLeaderboardEntry => {
   const factor = PERIOD_FACTORS[period];
   const metrics = Object.fromEntries(
     DETAIL_METRICS.map((item) => [item, scaleMetric(item, participant.metrics[item], factor)]),
   ) as Record<RankingDetailMetric, number>;
+  // 费用是本地榜单独有维度，只在本地预览榜单里下发。
+  if (local) metrics.cost = scaleMetric('cost', participant.metrics.cost, factor);
   const periodScoreOffset = period === 'current_month' ? 20 : period === 'previous_month' ? -35 : 0;
   const displayName = participant.keyAlias === undefined
     ? participant.displayName
@@ -121,7 +125,7 @@ const buildEntry = (
     participant_id: participant.participantID,
     display_name: displayName,
     avatar_id: participant.avatarID,
-    value: metric === 'overall' ? participant.score + periodScoreOffset : metrics[metric],
+    value: metric === 'overall' ? participant.score + periodScoreOffset : (metrics[metric] ?? 0),
     metrics,
   };
 };
@@ -135,7 +139,7 @@ const buildLeaderboard = (
   const direction = isLowerBetter(metric) ? 1 : -1;
   const entries = participants
     .map((participant) => {
-      const entry = buildEntry(participant, period, metric);
+      const entry = buildEntry(participant, period, metric, local);
       const localEntry = local ? { ...entry, key_alias: participant.keyAlias ?? '' } : entry;
       return local && metric === 'overall' ? { ...localEntry, value: Math.round(entry.value / 100) } : localEntry;
     })

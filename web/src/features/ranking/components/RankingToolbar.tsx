@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Select } from '@/components/ui/Select';
-import type { RankingMetric, RankingPeriod } from '../types';
+import { rankingMetricsForScope, type RankingMetric, type RankingPeriod, type RankingScope } from '../types';
 import styles from '../RankingPage.module.scss';
 
 const PERIODS: ReadonlyArray<{ value: RankingPeriod; labelKey: string; triggerLabelKey: string }> = [
@@ -11,7 +11,7 @@ const PERIODS: ReadonlyArray<{ value: RankingPeriod; labelKey: string; triggerLa
   { value: 'previous_month', labelKey: 'ranking.period_previous_month', triggerLabelKey: 'ranking.period_trigger_previous_month' },
 ];
 
-// 触发器保持短名称，展开菜单保留完整指标语义。
+// 触发器保持短名称，展开菜单保留完整指标语义；费用只在本地榜单范围出现。
 const METRICS: ReadonlyArray<{ value: RankingMetric; labelKey: string; triggerLabelKey: string }> = [
   { value: 'overall', labelKey: 'ranking.metric_overall', triggerLabelKey: 'ranking.metric_short_overall' },
   { value: 'total_tokens', labelKey: 'ranking.metric_total_tokens', triggerLabelKey: 'ranking.metric_short_total_tokens' },
@@ -21,6 +21,7 @@ const METRICS: ReadonlyArray<{ value: RankingMetric; labelKey: string; triggerLa
   { value: 'latency_average', labelKey: 'ranking.metric_latency_average', triggerLabelKey: 'ranking.metric_short_latency_average' },
   { value: 'peak_tpm', labelKey: 'ranking.metric_peak_tpm', triggerLabelKey: 'ranking.metric_short_peak_tpm' },
   { value: 'peak_rpm', labelKey: 'ranking.metric_peak_rpm', triggerLabelKey: 'ranking.metric_short_peak_rpm' },
+  { value: 'cost', labelKey: 'ranking.metric_cost', triggerLabelKey: 'ranking.metric_short_cost' },
 ];
 
 export interface RankingToolbarProps {
@@ -63,17 +64,23 @@ export function RankingToolbar({
 export interface RankingMetricSelectProps {
   metric: RankingMetric;
   onMetricChange: (metric: RankingMetric) => void;
+  /** cost 是本地榜单独有维度，只有 local 范围会出现在选项里。 */
+  scope?: RankingScope;
 }
 
-export function RankingMetricSelect({ metric, onMetricChange }: RankingMetricSelectProps) {
+export function RankingMetricSelect({ metric, onMetricChange, scope = 'community' }: RankingMetricSelectProps) {
   const { t } = useTranslation();
   const metricOptions = useMemo(
-    () => METRICS.map((option) => ({
-      value: option.value,
-      label: t(option.labelKey),
-      triggerLabel: t(option.triggerLabelKey),
-    })),
-    [t],
+    () => rankingMetricsForScope(scope).map((value) => {
+      const option = METRICS.find((item) => item.value === value);
+      if (!option) throw new Error(`unknown ranking metric option: ${value}`);
+      return {
+        value: option.value,
+        label: t(option.labelKey),
+        triggerLabel: t(option.triggerLabelKey),
+      };
+    }),
+    [scope, t],
   );
   const currentMetricLabel = metricOptions.find((option) => option.value === metric)?.triggerLabel ?? metric;
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -69,6 +70,16 @@ func TestLocalRankingRouteValidatesSelectionAndDisablesCaching(t *testing.T) {
 	invalid := rankingResponse(router, http.MethodGet, "/api/v1/ranking/local/leaderboards?period=today&metric=unknown", "")
 	if invalid.Code != http.StatusBadRequest || !strings.Contains(invalid.Body.String(), "invalid_leaderboard_selection") {
 		t.Fatalf("unexpected invalid local selection response: status=%d body=%s", invalid.Code, invalid.Body.String())
+	}
+}
+
+func TestLocalRankingRouteAcceptsLocalOnlyCostMetric(t *testing.T) {
+	provider := &localRankingProviderStub{}
+	router := localRankingRouter(provider)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/ranking/local/leaderboards?period=today&metric=cost", nil))
+	if response.Code != http.StatusOK || provider.metric != ranking.MetricCost {
+		t.Fatalf("local route should accept the local-only cost metric: status=%d body=%s provider=%+v", response.Code, response.Body.String(), provider)
 	}
 }
 

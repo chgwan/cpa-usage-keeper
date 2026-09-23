@@ -62,11 +62,6 @@ func RegisterLocalRoutes(router gin.IRoutes, provider LocalProvider) {
 	})
 }
 
-// RegisterKeyViewerLocalRoutes 只在显式配置开启时挂载本地榜单读取。
-func RegisterKeyViewerLocalRoutes(router gin.IRoutes, provider LocalLeaderboardProvider) {
-	registerLocalLeaderboardRoute(router, "/key-ranking/local/leaderboards", provider)
-}
-
 func registerLocalLeaderboardRoute(router gin.IRoutes, route string, provider LocalLeaderboardProvider) {
 	router.GET(route, func(c *gin.Context) {
 		setNoStoreHeaders(c)
@@ -81,7 +76,7 @@ func registerLocalLeaderboardRoute(router gin.IRoutes, route string, provider Lo
 		}
 		period := ranking.LeaderboardPeriod(query.Get("period"))
 		metric := ranking.LeaderboardMetric(query.Get("metric"))
-		if !validPeriod(period) || !validMetric(metric) {
+		if !validPeriod(period) || !validLocalMetric(metric) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_leaderboard_selection"})
 			return
 		}
@@ -96,4 +91,9 @@ func registerLocalLeaderboardRoute(router gin.IRoutes, route string, provider Lo
 		}
 		c.JSON(http.StatusOK, board)
 	})
+}
+
+// validLocalMetric 在 Community 指标集之外额外接受本地独有的 cost 维度。
+func validLocalMetric(metric ranking.LeaderboardMetric) bool {
+	return metric == ranking.MetricCost || validMetric(metric)
 }

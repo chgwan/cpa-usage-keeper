@@ -41,6 +41,10 @@ export const formatLeaderboardValue = (
   if (metric === 'peak_tpm' || metric === 'peak_rpm') {
     return formatCompactNumber(entry.value / 5, 2);
   }
+  if (metric === 'cost') {
+    // 后端下发 micro-USD 定点整数；与配额弹窗一致固定 4 位小数。
+    return `$${(entry.value / 1_000_000).toFixed(4)}`;
+  }
   if (metric === 'overall') {
     return scope === 'local' ? `${entry.value} PTS` : `${(entry.value / 100).toFixed(2)} PTS`;
   }

@@ -13,9 +13,21 @@ export const RANKING_METRICS = [
   'latency_average',
   'peak_tpm',
   'peak_rpm',
+  'cost',
 ] as const;
 export type RankingMetric = (typeof RANKING_METRICS)[number];
 export type RankingDetailMetric = Exclude<RankingMetric, 'overall'>;
+
+// 费用是本地榜单独有维度：Community 接口继续拒绝它。
+export const LOCAL_ONLY_RANKING_METRICS: readonly RankingMetric[] = ['cost'];
+
+export const isLocalOnlyRankingMetric = (metric: RankingMetric): boolean =>
+  LOCAL_ONLY_RANKING_METRICS.includes(metric);
+
+export const rankingMetricsForScope = (scope: RankingScope): readonly RankingMetric[] =>
+  scope === 'local'
+    ? RANKING_METRICS
+    : RANKING_METRICS.filter((metric) => !isLocalOnlyRankingMetric(metric));
 
 export type RankingParticipationStatus = 'disabled' | 'joining' | 'active' | 'paused' | 'deleted';
 

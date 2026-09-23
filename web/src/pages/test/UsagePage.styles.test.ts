@@ -35,6 +35,15 @@ const relativeLuminance = (hex: string) => {
 }
 
 describe('UsagePage responsive layout and accessibility', () => {
+  // fork：排行入口只保留本地榜单，工具栏不再出现 Local/Community 切换。
+  it('shows only the local leaderboard with no Community scope switch in the toolbar', () => {
+    const usagePageSource = readSource(new URL('../UsagePage.tsx', import.meta.url))
+    expect(usagePageSource).not.toContain('RankingScopeSwitch')
+    expect(usagePageSource).not.toContain('showRankingScopeControl')
+    expect(usagePageSource).not.toContain("rankingScope === 'community'")
+    expect(usagePageSource).toContain('scope="local"')
+  })
+
   it('lets dashboard page frames consume the mode-specific width cap', () => {
     for (const source of [usagePageStyles, keyOverviewPageStyles]) {
       expect(styleRuleBlock(source, '.pageFrame')).toContain('width: min(var(--keeper-page-max-width, 1245px), 100%);')

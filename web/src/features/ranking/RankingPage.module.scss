@@ -766,6 +766,47 @@
   font-weight: 750;
 }
 
+// 表头排序按钮沿用表头文字样式，只在右对齐的数值列里把指示符贴在标签右侧。
+.sortButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+
+  &:hover,
+  &:focus-visible {
+    color: var(--text-primary);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+}
+
+.sortButtonActive {
+  color: var(--text-primary);
+}
+
+.sortIndicator {
+  font-size: 9px;
+  opacity: 0.45;
+
+  .sortButtonActive & {
+    opacity: 1;
+  }
+}
+
 .participantCell {
   min-width: 170px;
 

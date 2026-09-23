@@ -20,6 +20,7 @@ describe('App usage-page route authorization', () => {
     expect(getRoleTargetPath('admin', '/auth-files/')).toBe('/');
     expect(shouldNormalizeRolePath('admin', '/auth-files/')).toBe(true);
     expect(getRoleTargetPath('admin', '/request-events')).toBe('/request-events');
+    expect(getRoleTargetPath('admin', '/ranking')).toBe('/ranking');
     expect(getRoleTargetPath('admin', '/auth-files/settings')).toBe('/');
     expect(getRoleTargetPath('admin', '//example.com/auth-files')).toBe('/');
   });
@@ -30,12 +31,15 @@ describe('App usage-page route authorization', () => {
     expect(shouldNormalizeRolePath('api_key_viewer', '/key-overview')).toBe(false);
     expect(getRoleTargetPath('api_key_viewer', '/key-analysis')).toBe('/key-analysis');
     expect(shouldNormalizeRolePath('api_key_viewer', '/key-analysis')).toBe(false);
-    expect(getRoleTargetPath('api_key_viewer', '/key-ranking')).toBe('/key-ranking');
-    expect(shouldNormalizeRolePath('api_key_viewer', '/key-ranking')).toBe(false);
     expect(getRoleTargetPath('api_key_viewer', '/key-analysis/')).toBe('/key-overview');
     expect(getRoleTargetPath('api_key_viewer', '//example.com/key-analysis')).toBe('/key-overview');
   });
 
+  it('returns retired viewer ranking links to the key overview', () => {
+    expect(getRoleTargetPath('api_key_viewer', '/key-ranking')).toBe('/key-overview');
+    expect(shouldNormalizeRolePath('api_key_viewer', '/key-ranking')).toBe(true);
+    expect(getRoleTargetPath('api_key_viewer', '/ranking')).toBe('/key-overview');
+  });
 
   it('keeps Ranking unavailable in CPAMC embed mode', () => {
     expect(getRoleTargetPath('admin', '/ranking', true)).toBe('/');

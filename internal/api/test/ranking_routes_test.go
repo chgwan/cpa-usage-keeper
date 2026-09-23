@@ -47,7 +47,7 @@ func (*rankingRouteProviderStub) LeaderboardMetadata(context.Context) (ranking.L
 }
 
 func TestRankingRoutesAreMountedOnlyInsideAdminGroup(t *testing.T) {
-	sessions, viewerToken, community, local, router := newKeyViewerRankingRouter(t, false)
+	sessions, viewerToken, community, local, router := newKeyViewerRankingRouter(t)
 	adminToken, _, err := sessions.Create()
 	if err != nil {
 		t.Fatalf("create admin session: %v", err)

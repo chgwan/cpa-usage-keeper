@@ -102,24 +102,6 @@ export const fetchLocalRankingLeaderboard = (
   return requestRankingJSON<RankingLeaderboardResponse>(`/ranking/local/leaderboards?${query.toString()}`, { signal });
 };
 
-export const fetchKeyRankingLeaderboard = (
-  period: RankingPeriod,
-  metric: RankingMetric,
-  signal?: AbortSignal,
-) => {
-  const query = new URLSearchParams({ period, metric });
-  return requestRankingJSON<RankingLeaderboardResponse>(`/key-ranking/leaderboards?${query.toString()}`, { signal });
-};
-
-export const fetchKeyLocalRankingLeaderboard = (
-  period: RankingPeriod,
-  metric: RankingMetric,
-  signal?: AbortSignal,
-) => {
-  const query = new URLSearchParams({ period, metric });
-  return requestRankingJSON<RankingLeaderboardResponse>(`/key-ranking/local/leaderboards?${query.toString()}`, { signal });
-};
-
 export const updateLocalRankingProfile = (
   participantID: string,
   profile: LocalRankingProfileRequest,

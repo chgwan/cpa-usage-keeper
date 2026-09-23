@@ -121,6 +121,8 @@ const (
 	MetricPeakTPM        LeaderboardMetric = "peak_tpm"
 	MetricPeakRPM        LeaderboardMetric = "peak_rpm"
 	MetricOverall        LeaderboardMetric = "overall"
+	// MetricCost 是本地榜单独有的费用维度；Community 协议指标集与校验不包含它。
+	MetricCost LeaderboardMetric = "cost"
 )
 
 type LeaderboardEntry struct {
