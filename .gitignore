@@ -1,6 +1,9 @@
 # internal docs
 .dev-docs/
 .agents/
+.fake-run/
+bin/
+/cpa-usage-keeper
 .claude/
 .codex/
 .worktrees/
