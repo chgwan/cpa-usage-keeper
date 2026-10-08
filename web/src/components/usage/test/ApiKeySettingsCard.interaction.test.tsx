@@ -302,3 +302,48 @@ describe('ApiKeySettingsCard row actions', () => {
     expect(onDeleteKey).toHaveBeenCalledWith(disabledKey.id)
   })
 })
+
+describe('ApiKeySettingsCard expand action', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+  })
+
+  afterEach(() => {
+    act(() => root.unmount())
+    container.remove()
+  })
+
+  it('moves the card into a body overlay, keeps unsaved drafts, and collapses on Escape', () => {
+    act(() => {
+      root.render(<ApiKeySettingsCard apiKeys={[apiKey]} onSaveAlias={vi.fn()} />)
+    })
+    const aliasInput = () => document.querySelector<HTMLInputElement>('input[aria-label^="Alias"]')!
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+      setter.call(aliasInput(), 'Draft alias')
+      aliasInput().dispatchEvent(new Event('input', { bubbles: true }))
+    })
+
+    act(() => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="usage_stats.api_key_settings_expand"]')!.click()
+    })
+    const dialog = document.body.querySelector('[role="dialog"][aria-modal="true"]')
+    expect(dialog).not.toBeNull()
+    expect(container.contains(dialog)).toBe(false)
+    expect(aliasInput().value).toBe('Draft alias')
+    expect(document.body.style.overflow).toBe('hidden')
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    })
+    expect(document.body.querySelector('[role="dialog"][aria-modal="true"]')).toBeNull()
+    expect(container.querySelector('button[aria-label="usage_stats.api_key_settings_expand"]')).not.toBeNull()
+    expect(aliasInput().value).toBe('Draft alias')
+    expect(document.body.style.overflow).toBe('')
+  })
+})

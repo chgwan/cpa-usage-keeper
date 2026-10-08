@@ -2,7 +2,7 @@ import React from 'react';
 import '@/i18n';
 import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ApiKeySettingsCard, copyApiKeyToClipboard, getApiKeySettingsVisibleKey } from '../ApiKeySettingsCard';
+import { ApiKeySettingsCard, copyApiKeyToClipboard, getApiKeySettingsVisibleKey, nextApiKeySortDirection, sortApiKeySettingsItems, type ApiKeySortDirection } from '../ApiKeySettingsCard';
 import type { CpaApiKeySettingsItem } from '@/lib/types';
 
 const apiKeys: CpaApiKeySettingsItem[] = [
@@ -24,6 +24,46 @@ const renderCard = (props: Partial<React.ComponentProps<typeof ApiKeySettingsCar
 const countOccurrences = (text: string, value: string) => text.split(value).length - 1;
 
 describe('ApiKeySettingsCard', () => {
+  it('sorts by status and alphabetically, alone or combined, in both directions', () => {
+    const item = (id: string, keyAlias: string, displayKey: string, state?: 'active' | 'disabled_manual' | 'disabled_by_quota'): CpaApiKeySettingsItem => ({
+      id, apiKey: '', keyAlias, displayKey, label: keyAlias || displayKey, lastSyncedAt: null,
+      policy: state ? { enabled: true, enforcementState: state, tightest: null } : undefined,
+    });
+    const items = [
+      item('1', 'zeta', 'sk-***1', 'active'),
+      item('2', '', 'sk-***2', 'disabled_manual'),
+      item('3', 'Alpha', 'sk-***3', 'disabled_by_quota'),
+      item('4', 'key10', 'sk-***4', 'active'),
+      item('5', 'key9', 'sk-***5'),
+    ];
+    const ids = (alphabetical: ApiKeySortDirection, status: ApiKeySortDirection) => sortApiKeySettingsItems(items, { alphabetical, status }).map((value) => value.id);
+
+    expect(sortApiKeySettingsItems(items, { alphabetical: null, status: null })).toBe(items);
+    expect(ids('asc', null)).toEqual(['3', '5', '4', '2', '1']);
+    expect(ids('desc', null)).toEqual(['1', '2', '4', '5', '3']);
+    // 只按状态排序时组内保持原顺序。
+    expect(ids(null, 'asc')).toEqual(['1', '4', '2', '3', '5']);
+    expect(ids(null, 'desc')).toEqual(['5', '3', '2', '1', '4']);
+    expect(ids('asc', 'asc')).toEqual(['4', '1', '2', '3', '5']);
+    expect(ids('desc', 'desc')).toEqual(['5', '3', '2', '1', '4']);
+    expect(ids('asc', 'desc')).toEqual(['5', '3', '2', '4', '1']);
+    expect(items.map((value) => value.id)).toEqual(['1', '2', '3', '4', '5']);
+  });
+
+  it('cycles each sort toggle through off, ascending, and descending', () => {
+    expect(nextApiKeySortDirection(null)).toBe('asc');
+    expect(nextApiKeySortDirection('asc')).toBe('desc');
+    expect(nextApiKeySortDirection('desc')).toBeNull();
+  });
+
+  it('renders both sort toggles unpressed by default', () => {
+    const html = renderCard();
+
+    expect(html).toContain('aria-label="Sort keys alphabetically"');
+    expect(html).toContain('aria-label="Sort keys by status"');
+    expect(html).toContain('aria-pressed="false"');
+  });
+
   it('renders alias, masked key, and string ids without local ids by default', () => {
     const html = renderCard();
 

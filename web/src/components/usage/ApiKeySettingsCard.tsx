@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
-import { IconCheck, IconCopy, IconEye, IconEyeOff } from '@/components/ui/icons';
+import { IconCheck, IconCopy, IconEye, IconEyeOff, IconMaximize2, IconMinimize2 } from '@/components/ui/icons';
 import { useScrollBoundaryContainment } from '@/hooks/useScrollBoundaryContainment';
 import { resolveQuotaProgress } from '@/lib/quotaProgress';
 import type { CreatedApiKey, CpaApiKeySettingsItem } from '@/lib/types';
@@ -39,6 +40,80 @@ type CopyContext = {
   clipboard?: ClipboardWriter;
   document?: CopyDocument;
 };
+
+export type ApiKeySortDirection = 'asc' | 'desc' | null;
+
+export interface ApiKeySettingsSort {
+  alphabetical: ApiKeySortDirection;
+  status: ApiKeySortDirection;
+}
+
+const API_KEY_SETTINGS_SORT_STORAGE_KEY = 'cpa-usage-keeper-api-key-settings-sort';
+// 旧版只存了字母序开关；读到 'true' 时迁移为字母升序。
+const LEGACY_API_KEY_SETTINGS_SORT_STORAGE_KEY = 'cpa-usage-keeper-api-key-settings-sort-alphabetical';
+
+const normalizeSortDirection = (value: unknown): ApiKeySortDirection => (
+  value === 'asc' || value === 'desc' ? value : null
+);
+
+const getInitialSort = (): ApiKeySettingsSort => {
+  try {
+    if (typeof window === 'undefined') {
+      return { alphabetical: null, status: null };
+    }
+    const raw = window.localStorage.getItem(API_KEY_SETTINGS_SORT_STORAGE_KEY);
+    if (raw) {
+      const stored = JSON.parse(raw) as Record<string, unknown>;
+      return { alphabetical: normalizeSortDirection(stored?.alphabetical), status: normalizeSortDirection(stored?.status) };
+    }
+    const legacy = window.localStorage.getItem(LEGACY_API_KEY_SETTINGS_SORT_STORAGE_KEY) === 'true';
+    return { alphabetical: legacy ? 'asc' : null, status: null };
+  } catch {
+    return { alphabetical: null, status: null };
+  }
+};
+
+// 排序按钮循环：关闭 → 升序 → 降序 → 关闭。
+export const nextApiKeySortDirection = (current: ApiKeySortDirection): ApiKeySortDirection => (
+  current === null ? 'asc' : current === 'asc' ? 'desc' : null
+);
+
+const apiKeySortCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
+// 状态升序：可用 → 手动停用 → 限额停用 → 状态未知。
+const API_KEY_STATUS_RANK: Record<string, number> = {
+  active: 0,
+  disabled_manual: 1,
+  disabled_by_quota: 2,
+};
+
+const apiKeyStatusRank = (item: CpaApiKeySettingsItem) => (
+  API_KEY_STATUS_RANK[item.policy?.enforcementState ?? ''] ?? 3
+);
+
+// 状态与字母序可叠加：状态作为主序分组，组内再按别名（未设置时回落脱敏 key）排序；都关闭时保持服务端顺序。
+export function sortApiKeySettingsItems(items: CpaApiKeySettingsItem[], sort: ApiKeySettingsSort) {
+  if (!sort.alphabetical && !sort.status) {
+    return items;
+  }
+  const sortLabel = (item: CpaApiKeySettingsItem) => item.keyAlias.trim() || item.displayKey;
+  const statusSign = sort.status === 'desc' ? -1 : 1;
+  const alphabeticalSign = sort.alphabetical === 'desc' ? -1 : 1;
+  return [...items].sort((left, right) => {
+    if (sort.status) {
+      const byStatus = (apiKeyStatusRank(left) - apiKeyStatusRank(right)) * statusSign;
+      if (byStatus !== 0) return byStatus;
+    }
+    if (sort.alphabetical) {
+      return alphabeticalSign * (
+        apiKeySortCollator.compare(sortLabel(left), sortLabel(right))
+        || apiKeySortCollator.compare(left.displayKey, right.displayKey)
+        || apiKeySortCollator.compare(left.id, right.id)
+      );
+    }
+    return 0;
+  });
+}
 
 export function getApiKeySettingsVisibleKey(item: CpaApiKeySettingsItem, showFullApiKeys: boolean) {
   return showFullApiKeys && item.apiKey ? item.apiKey : item.displayKey;
@@ -135,6 +210,10 @@ export function ApiKeySettingsCard({
 }: ApiKeySettingsCardProps) {
   const { t } = useTranslation();
   const [showFullApiKeys, setShowFullApiKeys] = useState(false);
+  const [sort, setSort] = useState<ApiKeySettingsSort>(getInitialSort);
+  // 展开态把同一张卡片挂到 body 上的全屏遮罩里；状态都在本组件内，切换时草稿不丢。
+  const [expanded, setExpanded] = useState(false);
+  const sortedApiKeys = useMemo(() => sortApiKeySettingsItems(apiKeys, sort), [apiKeys, sort]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const apiKeySettingsBodyRef = useRef<HTMLDivElement | null>(null);
@@ -258,11 +337,51 @@ export function ApiKeySettingsCard({
   }, [onDisableKey, onRestoreKey, runRowAction]);
 
   const confirmPending = confirmAction !== null && pendingId === confirmAction.id;
+  const innerModalOpen = createOpen || reveal.phase === 'revealed' || confirmAction !== null;
+
+  useEffect(() => {
+    if (!expanded) {
+      return undefined;
+    }
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [expanded]);
+
+  useEffect(() => {
+    // 内层弹窗打开时 Esc 交给弹窗自己处理，避免一次按键同时收起卡片。
+    if (!expanded || innerModalOpen) {
+      return undefined;
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setExpanded(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [expanded, innerModalOpen]);
+
+  const cycleSort = useCallback((field: keyof ApiKeySettingsSort) => {
+    setSort((current) => {
+      const next = { ...current, [field]: nextApiKeySortDirection(current[field]) };
+      try { window.localStorage.setItem(API_KEY_SETTINGS_SORT_STORAGE_KEY, JSON.stringify(next)); } catch { /* 浏览器存储不可用时仅保留当前选择。 */ }
+      return next;
+    });
+  }, []);
+  const alphabeticalSortLabel = t(`usage_stats.api_key_settings_sort_alphabetical_${sort.alphabetical ?? 'off'}`);
+  const statusSortLabel = t(`usage_stats.api_key_settings_sort_status_${sort.status ?? 'off'}`);
+  const sortArrow = (direction: ApiKeySortDirection) => (direction === 'asc' ? ' ↑' : direction === 'desc' ? ' ↓' : '');
   const toggleLabel = showFullApiKeys
     ? t('usage_stats.api_key_settings_hide_full')
     : t('usage_stats.api_key_settings_show_full');
+  const expandLabel = expanded
+    ? t('usage_stats.api_key_settings_collapse')
+    : t('usage_stats.api_key_settings_expand');
 
-  return (
+  const card = (
     <Card
       title={t('usage_stats.api_key_settings_title')}
       subtitle={t('usage_stats.api_key_settings_subtitle')}
@@ -284,6 +403,30 @@ export function ApiKeySettingsCard({
             type="button"
             variant="ghost"
             size="sm"
+            className={`${styles.apiKeyVisibilityToggle} ${styles.apiKeySortToggle} ${sort.status ? styles.apiKeyVisibilityToggleActive : ''}`.trim()}
+            onClick={() => cycleSort('status')}
+            aria-label={statusSortLabel}
+            aria-pressed={sort.status !== null}
+            title={statusSortLabel}
+          >
+            {t('usage_stats.api_key_settings_sort_status')}{sortArrow(sort.status)}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className={`${styles.apiKeyVisibilityToggle} ${styles.apiKeySortToggle} ${sort.alphabetical ? styles.apiKeyVisibilityToggleActive : ''}`.trim()}
+            onClick={() => cycleSort('alphabetical')}
+            aria-label={alphabeticalSortLabel}
+            aria-pressed={sort.alphabetical !== null}
+            title={alphabeticalSortLabel}
+          >
+            {sort.alphabetical === 'desc' ? 'Z–A' : 'A–Z'}{sortArrow(sort.alphabetical)}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
             className={`${styles.apiKeyVisibilityToggle} ${showFullApiKeys ? styles.apiKeyVisibilityToggleActive : ''}`.trim()}
             onClick={() => setShowFullApiKeys((current) => !current)}
             aria-label={toggleLabel}
@@ -294,7 +437,24 @@ export function ApiKeySettingsCard({
           </Button>
         </div>
       }
-      className={`${styles.detailsFixedCard} ${styles.apiKeySettingsCard}`}
+      extra={
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className={`${styles.apiKeyVisibilityToggle} ${expanded ? styles.apiKeyVisibilityToggleActive : ''}`.trim()}
+          onClick={() => setExpanded((current) => !current)}
+          aria-label={expandLabel}
+          aria-pressed={expanded}
+          title={expandLabel}
+        >
+          {expanded ? <IconMinimize2 size={15} /> : <IconMaximize2 size={15} />}
+        </Button>
+      }
+      className={`${styles.detailsFixedCard} ${styles.apiKeySettingsCard} ${expanded ? styles.apiKeySettingsCardExpanded : ''}`.trim()}
+      role={expanded ? 'dialog' : undefined}
+      aria-modal={expanded ? true : undefined}
+      aria-label={expanded ? t('usage_stats.api_key_settings_title') : undefined}
     >
       <div ref={apiKeySettingsBodyRef} className={styles.apiKeySettingsBody}>
         {loading && apiKeys.length === 0 ? (
@@ -303,7 +463,7 @@ export function ApiKeySettingsCard({
           <div className={styles.hint}>{t('usage_stats.api_key_settings_empty')}</div>
         ) : (
           <div className={styles.apiKeySettingsList}>
-            {apiKeys.map((item) => {
+            {sortedApiKeys.map((item) => {
               const draftAlias = draftAliases[item.id] ?? '';
               const disabled = savingId === item.id;
               const rowBusy = disabled || pendingId === item.id;
@@ -536,5 +696,22 @@ export function ApiKeySettingsCard({
         </div>
       </Modal>
     </Card>
+  );
+
+  if (!expanded || typeof document === 'undefined') {
+    return card;
+  }
+  return createPortal(
+    <div
+      className={styles.apiKeySettingsExpandedOverlay}
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          setExpanded(false);
+        }
+      }}
+    >
+      {card}
+    </div>,
+    document.body,
   );
 }
