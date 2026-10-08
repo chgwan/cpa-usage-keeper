@@ -1,12 +1,13 @@
-# Fork improvements vs upstream — 2026-09-21 (updated 2026-09-23)
+# Fork improvements vs upstream — 2026-09-21 (updated 2026-10-08)
 
-Baseline: local `dev` @ `7f3fb3a` compared against `origin/main` @ `dab6760`
-(`Willxup/cpa-usage-keeper`). Deployed to TxNj as `v1.15.6-289-g7f3fb3a8`.
+Baseline: local `dev` @ `4ce068f` compared against `origin/main` @ `2c09d65`
+(`Willxup/cpa-usage-keeper`). Deployed to TxNj as `v1.15.10-15-g4ce068fd`.
 
-- **54 commits ahead, 0 behind** — fully synced with upstream as of 2026-09-23.
-- 132 files changed, ~10,000 insertions, ~900 deletions.
+- **10 commits ahead, 0 behind** — fully synced with upstream as of 2026-10-08.
+  The fork history was reorganised into one commit per feature on 2026-10-08.
+- 133 files changed, ~10,700 insertions, ~900 deletions.
 - Every feature below ships with tests; the full `go test ./...` and web suites
-  pass (1319 web tests after upstream's test consolidation).
+  pass (1444 web tests).
 
 ---
 
@@ -35,6 +36,15 @@ Full create/regenerate/delete/enable/disable for CPA API keys from the Keeper UI
 - Metadata sync keeps policy-disabled keys from being resurrected, and a
   last-key guard prevents locking yourself out of CPA.
 - Web: single-column key list with inline actions and an edit modal.
+- **Key list sorting.** Status and A–Z toggles in the card header; each click
+  cycles off → ascending → descending. Status order is active → manually
+  disabled → disabled by quota. With both on, status groups the keys and the
+  alias (or masked key) orders them within each group. Both choices persist in
+  `localStorage`.
+- **Expanded view.** A ⤢ button in the card's top-right corner opens the card as
+  a near-full-screen overlay through a portal on `document.body`. Esc, ⤡ or a
+  backdrop click closes it, unsaved alias drafts survive the switch, and the
+  create / reveal / confirm dialogs still stack above it.
 
 ## 3. Per-key cost quota enforcement
 
@@ -66,6 +76,12 @@ A quota engine that disables a key automatically when it burns through its budge
 
 - Cost dimension added to local leaderboards (`internal/ranking/local_cost.go`),
   alongside the existing token and request dimensions.
+- **This Week and Last Week periods.** Weeks start Monday 00:00 in the ranking
+  timezone (Asia/Shanghai) and use ISO week keys (`2026-W41`). Week boards are
+  aggregated from `usage_events` on demand instead of from the day/month
+  snapshot table, so no migration was needed; unlike the month boards they also
+  count usage from before local ranking was enabled. The periods are local-only:
+  the Community protocol and its period validation are unchanged.
 - **Ranking tab is local-only.** The Local/Community switch is gone and the
   Community leaderboard (which ranks this Keeper against other instances through
   an external service) is no longer requested. The change is confined to
