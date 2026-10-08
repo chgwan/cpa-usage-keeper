@@ -735,6 +735,7 @@ function LeaderboardCard({
               <RankingToolbar
                 period={period}
                 onPeriodChange={onPeriodChange}
+                scope={scope}
               />
             </div>
           </div>

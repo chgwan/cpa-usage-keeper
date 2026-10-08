@@ -1,4 +1,4 @@
-export const RANKING_PERIODS = ['today', 'yesterday', 'current_month', 'previous_month'] as const;
+export const RANKING_PERIODS = ['today', 'yesterday', 'current_week', 'previous_week', 'current_month', 'previous_month'] as const;
 export type RankingPeriod = (typeof RANKING_PERIODS)[number];
 
 export const RANKING_SCOPES = ['local', 'community'] as const;
@@ -23,6 +23,17 @@ export const LOCAL_ONLY_RANKING_METRICS: readonly RankingMetric[] = ['cost'];
 
 export const isLocalOnlyRankingMetric = (metric: RankingMetric): boolean =>
   LOCAL_ONLY_RANKING_METRICS.includes(metric);
+
+// 自然周是本地榜单独有周期：Community 协议只定义日 / 月周期。
+export const LOCAL_ONLY_RANKING_PERIODS: readonly RankingPeriod[] = ['current_week', 'previous_week'];
+
+export const isLocalOnlyRankingPeriod = (period: RankingPeriod): boolean =>
+  LOCAL_ONLY_RANKING_PERIODS.includes(period);
+
+export const rankingPeriodsForScope = (scope: RankingScope): readonly RankingPeriod[] =>
+  scope === 'local'
+    ? RANKING_PERIODS
+    : RANKING_PERIODS.filter((period) => !isLocalOnlyRankingPeriod(period));
 
 export const rankingMetricsForScope = (scope: RankingScope): readonly RankingMetric[] =>
   scope === 'local'

@@ -1,6 +1,7 @@
 package ranking
 
 import (
+	"fmt"
 	"math"
 	"math/big"
 	"sort"
@@ -133,6 +134,15 @@ func localCostMicroUSD(cost float64) int64 {
 	return int64(math.Round(scaled))
 }
 
+// validLocalLeaderboardPeriod 在 Community 周期集之外额外接受本地独有的自然周周期。
+func validLocalLeaderboardPeriod(period LeaderboardPeriod) bool {
+	return localRankingWeekPeriod(period) || validLeaderboardPeriod(period)
+}
+
+func localRankingWeekPeriod(period LeaderboardPeriod) bool {
+	return period == LeaderboardCurrentWeek || period == LeaderboardPreviousWeek
+}
+
 // validLocalLeaderboardMetric 在 Community 指标集之外额外接受本地独有的 cost 维度。
 func validLocalLeaderboardMetric(metric LeaderboardMetric) bool {
 	return metric == MetricCost || validLeaderboardMetric(metric)
@@ -164,7 +174,32 @@ func localRankingPeriodWindows(now time.Time) []localRankingPeriodWindow {
 	}
 }
 
+// localRankingWeekWindows 返回本周与上周（周一起始）窗口；周榜没有快照行，读取时直接从 usage_events 现算。
+func localRankingWeekWindows(now time.Time) []localRankingPeriodWindow {
+	now = now.In(localRankingPeriodLocation)
+	dayStart := localRankingStartOfDay(now)
+	weekStart := dayStart.AddDate(0, 0, -((int(dayStart.Weekday()) + 6) % 7))
+	previousWeekStart := weekStart.AddDate(0, 0, -7)
+	return []localRankingPeriodWindow{
+		{Period: LeaderboardCurrentWeek, Key: localRankingWeekKey(weekStart), Start: weekStart, End: now},
+		{Period: LeaderboardPreviousWeek, Key: localRankingWeekKey(previousWeekStart), Start: previousWeekStart, End: weekStart},
+	}
+}
+
+func localRankingWeekKey(start time.Time) string {
+	year, week := start.ISOWeek()
+	return fmt.Sprintf("%04d-W%02d", year, week)
+}
+
 func localRankingWindowForPeriod(now time.Time, period LeaderboardPeriod) (localRankingPeriodWindow, bool) {
+	if localRankingWeekPeriod(period) {
+		for _, window := range localRankingWeekWindows(now) {
+			if window.Period == period {
+				return window, true
+			}
+		}
+		return localRankingPeriodWindow{}, false
+	}
 	for _, window := range localRankingPeriodWindows(now) {
 		if window.Period == period {
 			return window, true

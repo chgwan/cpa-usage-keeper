@@ -12,6 +12,7 @@ import type {
   RankingProfileRequest,
   RankingStatusResponse,
 } from './types';
+import { rankingPeriodsForScope } from './types';
 
 const ACTIVE_PROFILE: RankingStatusResponse = {
   status: 'active',
@@ -36,6 +37,8 @@ const DETAIL_METRICS: RankingDetailMetric[] = [
 const PERIOD_KEYS: Record<RankingPeriod, string> = {
   today: '2026-07-25',
   yesterday: '2026-07-24',
+  current_week: '2026-W30',
+  previous_week: '2026-W29',
   current_month: '2026-07',
   previous_month: '2026-06',
 };
@@ -43,6 +46,8 @@ const PERIOD_KEYS: Record<RankingPeriod, string> = {
 const PERIOD_FACTORS: Record<RankingPeriod, number> = {
   today: 0.082,
   yesterday: 0.091,
+  current_week: 0.31,
+  previous_week: 0.27,
   current_month: 1,
   previous_month: 0.92,
 };
@@ -192,7 +197,7 @@ const buildMetadata = (): RankingMetadataResponse => ({
   read_marker_version: 1,
   refresh_interval_seconds: 60,
   suggested_sync_interval_seconds: 1800,
-  periods: (Object.keys(PERIOD_KEYS) as RankingPeriod[]).map((period) => ({
+  periods: rankingPeriodsForScope('community').map((period) => ({
     period,
     period_key: PERIOD_KEYS[period],
     online: true,

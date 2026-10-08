@@ -81,6 +81,40 @@ func TestLocalRankingServiceBuildsTodayWithoutBackfillingOlderPeriods(t *testing
 	}
 }
 
+func TestLocalRankingServiceComputesWeekBoardsFromUsageEvents(t *testing.T) {
+	location := localRankingLocation(t)
+	// 2026-10-08 是周四：本周从 10-05 周一开始，上周为 09-28 至 10-05。
+	now := time.Date(2026, 10, 8, 12, 0, 0, 0, location)
+	db := openRankingDatabase(t)
+	keys := seedLocalRankingAPIKeys(t, db)
+	insertLocalRankingEvents(t, db, []entities.UsageEvent{
+		{EventKey: "a-week-start", APIGroupKey: keys[0].APIKey, Model: "gpt-5", Timestamp: time.Date(2026, 10, 5, 0, 30, 0, 0, location), TotalTokens: 300},
+		{EventKey: "b-this-week", APIGroupKey: keys[1].APIKey, Model: "gpt-5", Timestamp: time.Date(2026, 10, 7, 9, 0, 0, 0, location), TotalTokens: 100},
+		{EventKey: "a-previous-week-end", APIGroupKey: keys[0].APIKey, Model: "gpt-5", Timestamp: time.Date(2026, 10, 4, 23, 30, 0, 0, location), TotalTokens: 50},
+		{EventKey: "b-previous-week-start", APIGroupKey: keys[1].APIKey, Model: "gpt-5", Timestamp: time.Date(2026, 9, 28, 0, 0, 0, 0, location), TotalTokens: 70},
+		{EventKey: "b-before-previous-week", APIGroupKey: keys[1].APIKey, Model: "gpt-5", Timestamp: time.Date(2026, 9, 27, 23, 0, 0, 0, location), TotalTokens: 1_000},
+	})
+	// 周榜不依赖 AggregateOnce 快照，直接读取即可得到结果。
+	service := newLocalRankingService(t, db, func() time.Time { return now })
+
+	currentWeek := loadLocalBoard(t, service, ranking.LeaderboardCurrentWeek, ranking.MetricTotalTokens)
+	if currentWeek.PeriodKey != "2026-W41" || len(currentWeek.Entries) != 2 ||
+		currentWeek.Entries[0].ParticipantID != "1" || currentWeek.Entries[0].DisplayName != "Alpha" || currentWeek.Entries[0].Value != 300 ||
+		currentWeek.Entries[1].Value != 100 {
+		t.Fatalf("unexpected current week board: %+v", currentWeek)
+	}
+	previousWeek := loadLocalBoard(t, service, ranking.LeaderboardPreviousWeek, ranking.MetricTotalTokens)
+	if previousWeek.PeriodKey != "2026-W40" || len(previousWeek.Entries) != 2 ||
+		previousWeek.Entries[0].ParticipantID != "2" || previousWeek.Entries[0].Value != 70 ||
+		previousWeek.Entries[1].ParticipantID != "1" || previousWeek.Entries[1].Value != 50 {
+		t.Fatalf("unexpected previous week board: %+v", previousWeek)
+	}
+	overall := loadLocalBoard(t, service, ranking.LeaderboardCurrentWeek, ranking.MetricOverall)
+	if overall.PeriodKey != "2026-W41" || overall.ScoreExplanation == nil {
+		t.Fatalf("unexpected current week overall board: %+v", overall)
+	}
+}
+
 func TestLocalRankingProfileKeepsDefaultAvatarUntilAnOverrideIsSaved(t *testing.T) {
 	location := localRankingLocation(t)
 	now := time.Date(2026, 8, 3, 12, 0, 0, 0, location)

@@ -19,7 +19,7 @@ import type {
   RankingProfileRequest,
   RankingStatusResponse,
 } from '../types';
-import { isLocalOnlyRankingMetric } from '../types';
+import { isLocalOnlyRankingMetric, isLocalOnlyRankingPeriod } from '../types';
 
 export const RANKING_POLL_INTERVAL_MS = 60_000;
 export const RANKING_MIN_POLL_INTERVAL_MS = 30_000;
@@ -305,8 +305,8 @@ export function useRankingData({
   }, [metadata]);
 
   useEffect(() => {
-    // cost 等本地独有指标不会被 Community 接口接受，等待页面把它回落到共有指标。
-    if (!enabled || isLocalOnlyRankingMetric(metric)) return;
+    // cost、自然周等本地独有选项不会被 Community 接口接受，等待页面把它回落到共有选项。
+    if (!enabled || isLocalOnlyRankingMetric(metric) || isLocalOnlyRankingPeriod(period)) return;
     if (selectedPeriodOffline) {
       leaderboardControllerRef.current?.abort();
       setLeaderboard(leaderboardCacheRef.current.get(leaderboardKey(period, metric)) ?? null);
@@ -319,7 +319,7 @@ export function useRankingData({
   }, [enabled, loadLeaderboard, metric, period, selectedPeriodOffline]);
 
   useEffect(() => {
-    if (!enabled || isLocalOnlyRankingMetric(metric)) return;
+    if (!enabled || isLocalOnlyRankingMetric(metric) || isLocalOnlyRankingPeriod(period)) return;
     // 中心统一下发读取频率；周期关闭时仍轮询 metadata，以便管理员重新开启后页面自动恢复。
     const interval = window.setInterval(() => {
       if (document.visibilityState === 'hidden') return;

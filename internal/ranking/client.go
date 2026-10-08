@@ -108,6 +108,9 @@ const (
 	LeaderboardYesterday     LeaderboardPeriod = "yesterday"
 	LeaderboardCurrentMonth  LeaderboardPeriod = "current_month"
 	LeaderboardPreviousMonth LeaderboardPeriod = "previous_month"
+	// LeaderboardCurrentWeek / LeaderboardPreviousWeek 是本地榜单独有的自然周周期；Community 协议不包含它们。
+	LeaderboardCurrentWeek  LeaderboardPeriod = "current_week"
+	LeaderboardPreviousWeek LeaderboardPeriod = "previous_week"
 )
 
 type LeaderboardMetric string

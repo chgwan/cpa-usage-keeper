@@ -76,7 +76,7 @@ func registerLocalLeaderboardRoute(router gin.IRoutes, route string, provider Lo
 		}
 		period := ranking.LeaderboardPeriod(query.Get("period"))
 		metric := ranking.LeaderboardMetric(query.Get("metric"))
-		if !validPeriod(period) || !validLocalMetric(metric) {
+		if !validLocalPeriod(period) || !validLocalMetric(metric) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_leaderboard_selection"})
 			return
 		}
@@ -91,6 +91,11 @@ func registerLocalLeaderboardRoute(router gin.IRoutes, route string, provider Lo
 		}
 		c.JSON(http.StatusOK, board)
 	})
+}
+
+// validLocalPeriod 在 Community 周期集之外额外接受本地独有的自然周周期。
+func validLocalPeriod(period ranking.LeaderboardPeriod) bool {
+	return period == ranking.LeaderboardCurrentWeek || period == ranking.LeaderboardPreviousWeek || validPeriod(period)
 }
 
 // validLocalMetric 在 Community 指标集之外额外接受本地独有的 cost 维度。

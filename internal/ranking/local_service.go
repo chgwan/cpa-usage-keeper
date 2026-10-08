@@ -409,7 +409,7 @@ func (s *LocalRankingService) Leaderboard(ctx context.Context, period Leaderboar
 	if s == nil || s.db == nil || s.now == nil {
 		return Leaderboard{}, fmt.Errorf("local ranking service is not configured")
 	}
-	if !validLeaderboardPeriod(period) || !validLocalLeaderboardMetric(metric) {
+	if !validLocalLeaderboardPeriod(period) || !validLocalLeaderboardMetric(metric) {
 		return Leaderboard{}, ErrInvalidLeaderboard
 	}
 	snapshotAt := timeutil.NormalizeStorageTime(s.now())
@@ -417,7 +417,13 @@ func (s *LocalRankingService) Leaderboard(ctx context.Context, period Leaderboar
 	if !ok {
 		return Leaderboard{}, ErrInvalidLeaderboard
 	}
-	rows, err := s.loadLocalRankingPopulation(ctx, window)
+	var rows []localRankingPopulationRow
+	var err error
+	if localRankingWeekPeriod(period) {
+		rows, err = s.loadLocalRankingLivePopulation(ctx, window, snapshotAt)
+	} else {
+		rows, err = s.loadLocalRankingPopulation(ctx, window)
+	}
 	if err != nil {
 		return Leaderboard{}, err
 	}
@@ -485,6 +491,44 @@ func (s *LocalRankingService) loadLocalRankingPopulation(ctx context.Context, wi
 				LatencySumMS: item.LatencySumMS, LatencySampleCount: item.LatencySampleCount,
 				Peak5MRequestCount: item.Peak5MRequestCount, Peak5MTotalTokens: item.Peak5MTotalTokens,
 			},
+		})
+	}
+	return result, nil
+}
+
+// loadLocalRankingLivePopulation 为没有快照行的周榜直接聚合 usage_events，再补齐 API Key 展示信息。
+func (s *LocalRankingService) loadLocalRankingLivePopulation(ctx context.Context, window localRankingPeriodWindow, snapshotAt time.Time) ([]localRankingPopulationRow, error) {
+	aggregates, err := s.aggregateLocalRankingWindow(ctx, window)
+	if err != nil {
+		return nil, err
+	}
+	if len(aggregates) == 0 {
+		return []localRankingPopulationRow{}, nil
+	}
+	ids := make([]int64, 0, len(aggregates))
+	for _, aggregate := range aggregates {
+		ids = append(ids, aggregate.APIKeyID)
+	}
+	var keys []entities.CPAAPIKey
+	if err := s.db.Clauses(dbresolver.Read).WithContext(ctx).
+		Select("id, api_key, display_key, key_alias, local_ranking_avatar_id").
+		Where("id IN ?", ids).
+		Find(&keys).Error; err != nil {
+		return nil, fmt.Errorf("load local ranking keys: %w", err)
+	}
+	keyByID := make(map[int64]entities.CPAAPIKey, len(keys))
+	for _, key := range keys {
+		keyByID[key.ID] = key
+	}
+	result := make([]localRankingPopulationRow, 0, len(aggregates))
+	for _, aggregate := range aggregates {
+		key, ok := keyByID[aggregate.APIKeyID]
+		if !ok {
+			continue
+		}
+		result = append(result, localRankingPopulationRow{
+			APIKeyID: aggregate.APIKeyID, APIKey: key.APIKey, DisplayKey: key.DisplayKey, KeyAlias: key.KeyAlias, LocalRankingAvatarID: key.LocalRankingAvatarID, UpdatedAt: snapshotAt,
+			localRankingMetrics: localRankingMetricsFromRaw(aggregate),
 		})
 	}
 	return result, nil

@@ -83,6 +83,16 @@ func TestLocalRankingRouteAcceptsLocalOnlyCostMetric(t *testing.T) {
 	}
 }
 
+func TestLocalRankingRouteAcceptsLocalOnlyWeekPeriods(t *testing.T) {
+	for _, period := range []ranking.LeaderboardPeriod{ranking.LeaderboardCurrentWeek, ranking.LeaderboardPreviousWeek} {
+		provider := &localRankingProviderStub{}
+		response := rankingResponse(localRankingRouter(provider), http.MethodGet, "/api/v1/ranking/local/leaderboards?period="+string(period)+"&metric=overall", "")
+		if response.Code != http.StatusOK || provider.period != period {
+			t.Fatalf("local route should accept the local-only %s period: status=%d body=%s provider=%+v", period, response.Code, response.Body.String(), provider)
+		}
+	}
+}
+
 func TestLocalRankingRouteUsesLocalFailureCode(t *testing.T) {
 	response := rankingResponse(localRankingRouter(&localRankingProviderStub{err: errors.New("boom")}), http.MethodGet, "/api/v1/ranking/local/leaderboards?period=today&metric=overall", "")
 	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "local_ranking_failed") {

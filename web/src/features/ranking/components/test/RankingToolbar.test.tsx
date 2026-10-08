@@ -51,6 +51,23 @@ describe('RankingToolbar', () => {
     expect(onPeriodChange).toHaveBeenCalledWith('yesterday');
   });
 
+  it('offers week periods only for the local scope', () => {
+    const periodLabels = () => {
+      act(() => container.querySelector<HTMLButtonElement>('[data-ranking-period] button')!.click());
+      const labels = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="listbox"] button'))
+        .map((button) => button.textContent ?? '');
+      act(() => container.querySelector<HTMLButtonElement>('[data-ranking-period] button')!.click());
+      return labels;
+    };
+
+    act(() => root.render(<RankingToolbar period="today" onPeriodChange={vi.fn()} scope="local" />));
+    expect(periodLabels().some((label) => label.includes('ranking.period_current_week'))).toBe(true);
+    expect(periodLabels().some((label) => label.includes('ranking.period_previous_week'))).toBe(true);
+
+    act(() => root.render(<RankingToolbar period="today" onPeriodChange={vi.fn()} scope="community" />));
+    expect(periodLabels().some((label) => label.includes('week'))).toBe(false);
+  });
+
   it('includes the current metric in the collapsed select accessible name', () => {
     act(() => root.render(
       <RankingMetricSelect metric="overall" onMetricChange={vi.fn()} />,

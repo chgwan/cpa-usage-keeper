@@ -1,12 +1,14 @@
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Select } from '@/components/ui/Select';
-import { rankingMetricsForScope, type RankingMetric, type RankingPeriod, type RankingScope } from '../types';
+import { rankingMetricsForScope, rankingPeriodsForScope, type RankingMetric, type RankingPeriod, type RankingScope } from '../types';
 import styles from '../RankingPage.module.scss';
 
 const PERIODS: ReadonlyArray<{ value: RankingPeriod; labelKey: string; triggerLabelKey: string }> = [
   { value: 'today', labelKey: 'ranking.period_today', triggerLabelKey: 'ranking.period_trigger_today' },
   { value: 'yesterday', labelKey: 'ranking.period_yesterday', triggerLabelKey: 'ranking.period_trigger_yesterday' },
+  { value: 'current_week', labelKey: 'ranking.period_current_week', triggerLabelKey: 'ranking.period_trigger_current_week' },
+  { value: 'previous_week', labelKey: 'ranking.period_previous_week', triggerLabelKey: 'ranking.period_trigger_previous_week' },
   { value: 'current_month', labelKey: 'ranking.period_current_month', triggerLabelKey: 'ranking.period_trigger_current_month' },
   { value: 'previous_month', labelKey: 'ranking.period_previous_month', triggerLabelKey: 'ranking.period_trigger_previous_month' },
 ];
@@ -27,20 +29,27 @@ const METRICS: ReadonlyArray<{ value: RankingMetric; labelKey: string; triggerLa
 export interface RankingToolbarProps {
   period: RankingPeriod;
   onPeriodChange: (period: RankingPeriod) => void;
+  /** 自然周是本地榜单独有周期，只有 local 范围会出现在选项里。 */
+  scope?: RankingScope;
 }
 
 export function RankingToolbar({
   period,
   onPeriodChange,
+  scope = 'community',
 }: RankingToolbarProps) {
   const { t } = useTranslation();
   const periodOptions = useMemo(
-    () => PERIODS.map((option) => ({
-      value: option.value,
-      label: t(option.labelKey),
-      triggerLabel: t(option.triggerLabelKey),
-    })),
-    [t],
+    () => rankingPeriodsForScope(scope).map((value) => {
+      const option = PERIODS.find((item) => item.value === value);
+      if (!option) throw new Error(`unknown ranking period option: ${value}`);
+      return {
+        value: option.value,
+        label: t(option.labelKey),
+        triggerLabel: t(option.triggerLabelKey),
+      };
+    }),
+    [scope, t],
   );
   const currentPeriodLabel = periodOptions.find((option) => option.value === period)?.triggerLabel ?? period;
 
