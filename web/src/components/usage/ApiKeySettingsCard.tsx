@@ -519,8 +519,8 @@ export function ApiKeySettingsCard({
                         <div className={styles.apiKeyQuotaBarFill} style={{ width: `${quotaPercent}%` }} />
                       </div>
                     )}
-                    {/* 展开视图逐条列出已配置的日 / 周 / 月限额；未配置的窗口不显示。 */}
-                    {expanded && item.policy?.limits && item.policy.limits.length > 0 && (
+                    {/* 逐条列出已配置的日 / 周 / 月限额；未配置的窗口不显示。 */}
+                    {item.policy?.limits && item.policy.limits.length > 0 && (
                       <ul className={styles.apiKeyQuotaWindows} data-api-key-quota-windows>
                         {item.policy.limits.map((limit) => {
                           const breached = limit.ratio >= 1;
