@@ -2154,6 +2154,44 @@
   background: color-mix(in srgb, var(--border-color) 62%, transparent);
 }
 
+.apiKeyQuotaWindows {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  max-width: 260px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.apiKeyQuotaWindow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.apiKeyQuotaWindowLabel {
+  font-weight: 600;
+}
+
+.apiKeyQuotaWindowValue {
+  overflow: hidden;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.apiKeyQuotaWindowPercent {
+  font-variant-numeric: tabular-nums;
+}
+
+.apiKeyQuotaWindowBreached {
+  color: var(--danger-color, #ef4444);
+}
+
 .apiKeyQuotaBarFill {
   height: 100%;
   border-radius: inherit;

@@ -66,6 +66,8 @@ type CPAAPIKeyPolicySummary struct {
 	Enabled          bool
 	EnforcementState string
 	Tightest         *keypolicy.TightestLimit
+	// Limits 是逐窗口（日 → 周 → 月）的已配置限额用量，供展开视图逐行展示。
+	Limits []keypolicy.TightestLimit
 }
 
 type cpaAPIKeyManagementService struct {
@@ -424,6 +426,7 @@ func (s *cpaAPIKeyManagementService) ListCPAAPIKeyPolicySummaries(ctx context.Co
 			Enabled:          row.Enabled,
 			EnforcementState: row.EnforcementState,
 			Tightest:         limits.Tightest(usage[row.CPAAPIKeyID]),
+			Limits:           limits.WindowUsages(usage[row.CPAAPIKeyID]),
 		}
 	}
 	return summaries, nil

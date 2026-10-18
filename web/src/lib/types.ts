@@ -896,6 +896,8 @@ export interface ApiKeyPolicySummary {
   enabled: boolean
   enforcementState: ApiKeyEnforcementState
   tightest: ApiKeyTightestLimit | null
+  // 已配置限额按日 → 周 → 月逐条给出；旧后端不返回该字段。
+  limits?: ApiKeyTightestLimit[]
 }
 
 export interface ApiKeyPolicyResponse {

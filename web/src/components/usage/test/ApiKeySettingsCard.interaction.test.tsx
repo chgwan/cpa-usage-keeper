@@ -347,3 +347,47 @@ describe('ApiKeySettingsCard expand action', () => {
     expect(document.body.style.overflow).toBe('')
   })
 })
+
+describe('ApiKeySettingsCard expanded quota windows', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+  })
+
+  afterEach(() => {
+    act(() => root.unmount())
+    container.remove()
+  })
+
+  it('lists configured daily and monthly quotas only while expanded', () => {
+    const limited: CpaApiKeySettingsItem = {
+      ...apiKey,
+      policy: {
+        enabled: true,
+        enforcementState: 'active',
+        tightest: { type: 'cost', window: 'daily', value: 2, used: 1.5, ratio: 0.75 },
+        limits: [
+          { type: 'cost', window: 'daily', value: 2, used: 1.5, ratio: 0.75 },
+          { type: 'cost', window: 'monthly', value: 10, used: 12, ratio: 1.2 },
+        ],
+      },
+    }
+    act(() => {
+      root.render(<ApiKeySettingsCard apiKeys={[limited]} onSaveAlias={vi.fn()} />)
+    })
+    expect(document.querySelector('[data-api-key-quota-windows]')).toBeNull()
+
+    act(() => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="usage_stats.api_key_settings_expand"]')!.click()
+    })
+    const rows = Array.from(document.querySelectorAll('[data-api-key-quota-windows] li')).map((row) => row.textContent)
+    expect(rows).toEqual([
+      'usage_stats.api_key_policy_window_daily$1.5000 / $2.000075%',
+      'usage_stats.api_key_policy_window_monthly$12.0000 / $10.0000120%',
+    ])
+  })
+})

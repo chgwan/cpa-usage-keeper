@@ -1,5 +1,7 @@
 package keypolicy
 
+import "sort"
+
 // Usage 是一个 key 在单个周期窗口内的用量快照；费用是唯一的限额维度。
 type Usage struct {
 	CostUSD float64
@@ -51,4 +53,20 @@ func (limits Limits) Tightest(usage UsageByWindow) *TightestLimit {
 		}
 	}
 	return tightest
+}
+
+// limitWindowOrder 固定逐窗口展示顺序：日 → 周 → 月。
+var limitWindowOrder = map[LimitWindow]int{LimitWindowDaily: 0, LimitWindowWeekly: 1, LimitWindowMonthly: 2}
+
+// WindowUsages 按日 → 周 → 月返回每条已配置限额的用量与比例；未配置的窗口不出现。
+func (limits Limits) WindowUsages(usage UsageByWindow) []TightestLimit {
+	result := make([]TightestLimit, 0, len(limits))
+	for _, limit := range limits {
+		used := usedValue(limit.Type, usage[limit.Window])
+		result = append(result, TightestLimit{Limit: limit, Used: used, Ratio: used / limit.Value})
+	}
+	sort.SliceStable(result, func(left, right int) bool {
+		return limitWindowOrder[result[left].Limit.Window] < limitWindowOrder[result[right].Limit.Window]
+	})
+	return result
 }

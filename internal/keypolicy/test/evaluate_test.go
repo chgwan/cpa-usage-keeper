@@ -135,3 +135,23 @@ func TestTightestLimitPicksHighestRatio(t *testing.T) {
 		t.Fatalf("expected weekly at ratio 1, got %+v", tightest)
 	}
 }
+
+func TestWindowUsagesListsOnlyConfiguredLimitsInWindowOrder(t *testing.T) {
+	limits := keypolicy.Limits{
+		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowMonthly, Value: 20},
+		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowDaily, Value: 1},
+	}
+	got := limits.WindowUsages(sampleUsage())
+	if len(got) != 2 || got[0].Limit.Window != keypolicy.LimitWindowDaily || got[1].Limit.Window != keypolicy.LimitWindowMonthly {
+		t.Fatalf("expected daily then monthly only, got %+v", got)
+	}
+	usage := sampleUsage()
+	for _, item := range got {
+		if item.Used != usage[item.Limit.Window].CostUSD || item.Ratio != item.Used/item.Limit.Value {
+			t.Fatalf("unexpected window usage %+v", item)
+		}
+	}
+	if empty := (keypolicy.Limits{}).WindowUsages(usage); len(empty) != 0 {
+		t.Fatalf("expected no window usages without limits, got %+v", empty)
+	}
+}

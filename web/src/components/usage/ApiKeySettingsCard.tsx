@@ -115,6 +115,8 @@ export function sortApiKeySettingsItems(items: CpaApiKeySettingsItem[], sort: Ap
   });
 }
 
+const formatQuotaUsd = (value: number) => `$${value.toFixed(4)}`;
+
 export function getApiKeySettingsVisibleKey(item: CpaApiKeySettingsItem, showFullApiKeys: boolean) {
   return showFullApiKeys && item.apiKey ? item.apiKey : item.displayKey;
 }
@@ -516,6 +518,26 @@ export function ApiKeySettingsCard({
                       >
                         <div className={styles.apiKeyQuotaBarFill} style={{ width: `${quotaPercent}%` }} />
                       </div>
+                    )}
+                    {/* 展开视图逐条列出已配置的日 / 周 / 月限额；未配置的窗口不显示。 */}
+                    {expanded && item.policy?.limits && item.policy.limits.length > 0 && (
+                      <ul className={styles.apiKeyQuotaWindows} data-api-key-quota-windows>
+                        {item.policy.limits.map((limit) => {
+                          const breached = limit.ratio >= 1;
+                          return (
+                            <li
+                              key={`${limit.type}-${limit.window}`}
+                              className={`${styles.apiKeyQuotaWindow} ${breached ? styles.apiKeyQuotaWindowBreached : ''}`.trim()}
+                            >
+                              <span className={styles.apiKeyQuotaWindowLabel}>{t(`usage_stats.api_key_policy_window_${limit.window}`)}</span>
+                              <span className={styles.apiKeyQuotaWindowValue}>
+                                {`${formatQuotaUsd(limit.used)} / ${formatQuotaUsd(limit.value)}`}
+                              </span>
+                              <span className={styles.apiKeyQuotaWindowPercent}>{`${Math.round(limit.ratio * 100)}%`}</span>
+                            </li>
+                          );
+                        })}
+                      </ul>
                     )}
                   </div>
                   <div className={styles.apiKeySettingsForm}>

@@ -297,9 +297,10 @@ type cpaAPIKeyTightestLimitResponse struct {
 }
 
 type cpaAPIKeyPolicySummaryResponse struct {
-	Enabled          bool                            `json:"enabled"`
-	EnforcementState string                          `json:"enforcementState"`
-	Tightest         *cpaAPIKeyTightestLimitResponse `json:"tightest"`
+	Enabled          bool                             `json:"enabled"`
+	EnforcementState string                           `json:"enforcementState"`
+	Tightest         *cpaAPIKeyTightestLimitResponse  `json:"tightest"`
+	Limits           []cpaAPIKeyTightestLimitResponse `json:"limits"`
 }
 
 type cpaAPIKeyPolicyResponse struct {
@@ -472,9 +473,14 @@ func toCPAAPIKeyTightestLimitResponse(tightest *keypolicy.TightestLimit) *cpaAPI
 }
 
 func toCPAAPIKeyPolicySummaryResponse(summary service.CPAAPIKeyPolicySummary) *cpaAPIKeyPolicySummaryResponse {
+	limits := make([]cpaAPIKeyTightestLimitResponse, 0, len(summary.Limits))
+	for index := range summary.Limits {
+		limits = append(limits, *toCPAAPIKeyTightestLimitResponse(&summary.Limits[index]))
+	}
 	return &cpaAPIKeyPolicySummaryResponse{
 		Enabled: summary.Enabled, EnforcementState: summary.EnforcementState,
 		Tightest: toCPAAPIKeyTightestLimitResponse(summary.Tightest),
+		Limits:   limits,
 	}
 }
 
