@@ -1949,9 +1949,9 @@
 }
 
 .apiKeySettingsItem {
-  // key 展示列收窄，把更多宽度留给别名输入与操作按钮同一行。
+  // 别名输入与操作按钮按内容占宽靠右，剩余宽度留给 key 与限额展示列。
   display: grid;
-  grid-template-columns: minmax(110px, 0.55fr) minmax(0, 1.45fr);
+  grid-template-columns: minmax(160px, 1fr) auto;
   align-items: start;
   gap: 14px;
   padding: 14px;
@@ -2049,8 +2049,9 @@
   display: flex;
   flex-direction: column;
   gap: 5px;
-  // 输入框弹性伸展，与右侧按钮共享一行。
-  flex: 1 1 220px;
+  // 别名通常很短：桌面端固定较窄宽度，不再吃满整行。
+  flex: 0 1 200px;
+  width: 200px;
   min-width: 0;
 
   :global(.form-group) {
@@ -2820,6 +2821,7 @@
   }
 
   .apiKeyAliasField {
+    flex: 1 1 auto;
     width: 100%;
   }
 
