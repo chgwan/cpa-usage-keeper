@@ -278,6 +278,34 @@ type saveCPAAPIKeyPolicyRequest struct {
 	Enabled bool              `json:"enabled"`
 }
 
+// resetCPAAPIKeyQuotasRequest：allKeys 为 true 时全局清零，否则 apiKeyIds 必填。
+// 显式 allKeys 防止前端漏传 id 时误伤所有 key。
+type resetCPAAPIKeyQuotasRequest struct {
+	AllKeys   bool     `json:"allKeys"`
+	APIKeyIDs []string `json:"apiKeyIds"`
+	Windows   []string `json:"windows"`
+}
+
+// updateCPAAPIKeyPoliciesRequest：limits 只列要改的窗口，值为 null 表示移除；enabled 省略则保持原值。
+type updateCPAAPIKeyPoliciesRequest struct {
+	APIKeyIDs []string            `json:"apiKeyIds"`
+	Limits    map[string]*float64 `json:"limits"`
+	Enabled   *bool               `json:"enabled"`
+}
+
+// parseCPAAPIKeyIDList 解析请求体中的字符串 id 列表（id 可能超出 JS 安全整数范围）。
+func parseCPAAPIKeyIDList(raw []string) ([]int64, bool) {
+	ids := make([]int64, 0, len(raw))
+	for _, item := range raw {
+		id, err := strconv.ParseInt(strings.TrimSpace(item), 10, 64)
+		if err != nil || id <= 0 {
+			return nil, false
+		}
+		ids = append(ids, id)
+	}
+	return ids, true
+}
+
 type cpaAPIKeyPolicyUsageWindowResponse struct {
 	CostUSD float64 `json:"costUsd"`
 }
@@ -497,6 +525,62 @@ func toCPAAPIKeyPolicyResponse(view service.CPAAPIKeyPolicyView) cpaAPIKeyPolicy
 }
 
 func registerCPAAPIKeyPolicyRoutes(router gin.IRoutes, provider service.CPAAPIKeyManagementProvider) {
+	router.POST("/usage/api-keys/quota-resets", func(c *gin.Context) {
+		if provider == nil {
+			c.JSON(http.StatusNotImplemented, gin.H{"error": "api key management provider is not configured"})
+			return
+		}
+		var request resetCPAAPIKeyQuotasRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+		ids, ok := parseCPAAPIKeyIDList(request.APIKeyIDs)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid api key id"})
+			return
+		}
+		if request.AllKeys == (len(ids) > 0) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "select all keys or at least one api key"})
+			return
+		}
+		windows := make([]keypolicy.LimitWindow, 0, len(request.Windows))
+		for _, window := range request.Windows {
+			windows = append(windows, keypolicy.LimitWindow(strings.TrimSpace(window)))
+		}
+		if err := provider.ResetCPAAPIKeyQuotas(c.Request.Context(), ids, windows); err != nil {
+			writeManagementError(c, "reset api key quotas failed", err)
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
+
+	router.PATCH("/usage/api-keys/policies", func(c *gin.Context) {
+		if provider == nil {
+			c.JSON(http.StatusNotImplemented, gin.H{"error": "api key management provider is not configured"})
+			return
+		}
+		var request updateCPAAPIKeyPoliciesRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+		ids, ok := parseCPAAPIKeyIDList(request.APIKeyIDs)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid api key id"})
+			return
+		}
+		changes := service.CPAAPIKeyPolicyChanges{Limits: make(map[keypolicy.LimitWindow]*float64, len(request.Limits)), Enabled: request.Enabled}
+		for window, value := range request.Limits {
+			changes.Limits[keypolicy.LimitWindow(strings.TrimSpace(window))] = value
+		}
+		if err := provider.UpdateCPAAPIKeyPolicies(c.Request.Context(), ids, changes); err != nil {
+			writeManagementError(c, "update api key policies failed", err)
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
+
 	router.GET("/usage/api-keys/:id/policy", func(c *gin.Context) {
 		if provider == nil {
 			c.JSON(http.StatusNotImplemented, gin.H{"error": "api key management provider is not configured"})

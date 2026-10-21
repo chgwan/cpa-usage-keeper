@@ -29,5 +29,7 @@ func All() []any {
 		// API Key 限额策略与执行审计随全新数据库直接创建。
 		&CPAAPIKeyPolicy{},
 		&APIKeyEnforcementLog{},
+		// 限额临时清零点随核心模型注册。
+		&APIKeyQuotaReset{},
 	}
 }

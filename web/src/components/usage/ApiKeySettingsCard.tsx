@@ -9,6 +9,7 @@ import { IconCheck, IconCopy, IconEye, IconEyeOff, IconMaximize2, IconMinimize2 
 import { useScrollBoundaryContainment } from '@/hooks/useScrollBoundaryContainment';
 import { resolveQuotaProgress } from '@/lib/quotaProgress';
 import type { CreatedApiKey, CpaApiKeySettingsItem } from '@/lib/types';
+import { ApiKeyQuotaResetModal, ApiKeyQuotaSettingsModal, type QuotaPolicyUpdateRequest, type QuotaResetRequest } from './ApiKeyQuotaDialogs';
 import styles from '@/pages/UsagePage.module.scss';
 
 type ClipboardWriter = Pick<Clipboard, 'writeText'>;
@@ -194,7 +195,10 @@ export interface ApiKeySettingsCardProps {
   onDeleteKey?: (id: string) => Promise<boolean>;
   onDisableKey?: (id: string) => Promise<boolean>;
   onRestoreKey?: (id: string) => Promise<boolean>;
-  onOpenPolicy?: (id: string) => void;
+  /** 批量限额设置：必须选 key 与周期，返回是否成功。 */
+  onSavePolicies?: (request: QuotaPolicyUpdateRequest) => Promise<boolean>;
+  /** 限额临时清零：默认全部 key + 每周，返回是否成功。 */
+  onResetQuotas?: (request: QuotaResetRequest) => Promise<boolean>;
 }
 
 export function ApiKeySettingsCard({
@@ -208,7 +212,8 @@ export function ApiKeySettingsCard({
   onDeleteKey,
   onDisableKey,
   onRestoreKey,
-  onOpenPolicy,
+  onSavePolicies,
+  onResetQuotas,
 }: ApiKeySettingsCardProps) {
   const { t } = useTranslation();
   const [showFullApiKeys, setShowFullApiKeys] = useState(false);
@@ -339,7 +344,8 @@ export function ApiKeySettingsCard({
   }, [onDisableKey, onRestoreKey, runRowAction]);
 
   const confirmPending = confirmAction !== null && pendingId === confirmAction.id;
-  const innerModalOpen = createOpen || reveal.phase === 'revealed' || confirmAction !== null;
+  const [quotaDialog, setQuotaDialog] = useState<'settings' | 'reset' | null>(null);
+  const innerModalOpen = createOpen || reveal.phase === 'revealed' || confirmAction !== null || quotaDialog !== null;
 
   useEffect(() => {
     if (!expanded) {
@@ -399,6 +405,32 @@ export function ApiKeySettingsCard({
               onClick={() => setCreateOpen(true)}
             >
               {t('usage_stats.api_key_settings_create')}
+            </Button>
+          )}
+          {onSavePolicies && (
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              appearance="action"
+              onClick={() => setQuotaDialog('settings')}
+              disabled={apiKeys.length === 0}
+              data-api-key-quota-settings-open
+            >
+              {t('usage_stats.api_key_quota_settings_button')}
+            </Button>
+          )}
+          {onResetQuotas && (
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              appearance="action"
+              onClick={() => setQuotaDialog('reset')}
+              disabled={apiKeys.length === 0}
+              data-api-key-quota-reset-open
+            >
+              {t('usage_stats.api_key_quota_reset_button')}
             </Button>
           )}
           <Button
@@ -597,17 +629,6 @@ export function ApiKeySettingsCard({
                           {t('usage_stats.api_key_settings_delete')}
                         </Button>
                       )}
-                      {onOpenPolicy && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          appearance="action"
-                          onClick={() => onOpenPolicy(item.id)}
-                          disabled={rowBusy}
-                        >
-                          {t('usage_stats.api_key_settings_quota')}
-                        </Button>
-                      )}
                     </div>
                   </div>
                 </div>
@@ -616,6 +637,13 @@ export function ApiKeySettingsCard({
           </div>
         )}
       </div>
+
+      {quotaDialog === 'settings' && onSavePolicies && (
+        <ApiKeyQuotaSettingsModal apiKeys={sortedApiKeys} onClose={() => setQuotaDialog(null)} onSubmit={onSavePolicies} />
+      )}
+      {quotaDialog === 'reset' && onResetQuotas && (
+        <ApiKeyQuotaResetModal apiKeys={sortedApiKeys} onClose={() => setQuotaDialog(null)} onSubmit={onResetQuotas} />
+      )}
 
       <Modal
         open={createOpen}

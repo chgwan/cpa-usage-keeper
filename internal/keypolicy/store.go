@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"time"
 
+	"cpa-usage-keeper/internal/entities"
 	"cpa-usage-keeper/internal/helper"
 	"cpa-usage-keeper/internal/pricing"
+	"cpa-usage-keeper/internal/repository"
 	"cpa-usage-keeper/internal/timeutil"
 
 	"gorm.io/gorm"
@@ -84,7 +86,49 @@ func (s *Store) priceRow(resolver pricing.Resolver, row usageModelRow) float64 {
 	return resolver.Calculate(subject).Cost.TotalCostUSD
 }
 
+// windowResets 是单个窗口当前周期内的清零点：全局一条加若干 per-key。
+type windowResets struct {
+	global time.Time
+	perKey map[int64]time.Time
+}
+
+// loadResets 读取三个窗口当前周期的清零点；过期周期的旧行不参与统计。
+func (s *Store) loadResets(windows []Window) (map[LimitWindow]windowResets, error) {
+	windowKeys := make(map[string]string, len(windows))
+	for _, w := range windows {
+		windowKeys[string(w.Kind)] = WindowKey(w)
+	}
+	rows, err := repository.ListAPIKeyQuotaResets(s.db, windowKeys)
+	if err != nil {
+		return nil, fmt.Errorf("load api key quota resets: %w", err)
+	}
+	result := make(map[LimitWindow]windowResets, len(windows))
+	for _, row := range rows {
+		resets := result[LimitWindow(row.Window)]
+		if row.CPAAPIKeyID == entities.APIKeyQuotaResetGlobalID {
+			resets.global = row.ResetAt
+		} else {
+			if resets.perKey == nil {
+				resets.perKey = map[int64]time.Time{}
+			}
+			resets.perKey[row.CPAAPIKeyID] = row.ResetAt
+		}
+		result[LimitWindow(row.Window)] = resets
+	}
+	return result, nil
+}
+
+// laterOf 返回较晚的时间；零值视为不存在。
+func laterOf(base, candidate time.Time) time.Time {
+	if candidate.After(base) {
+		return candidate
+	}
+	return base
+}
+
 // PerKeyUsage 返回每个 key 在三个窗口内的费用，供 runner 一次评估全部策略。
+// 清零点只把窗口起点后移：每个 key 只统计 max(窗口起点, 全局重置, 自身重置) 之后的用量，
+// usage_events 本身不被修改，排行等其他统计不受影响。
 func (s *Store) PerKeyUsage(ctx context.Context, daily, weekly, monthly Window) (map[int64]UsageByWindow, error) {
 	result := make(map[int64]UsageByWindow)
 	var resolver pricing.Resolver
@@ -92,20 +136,54 @@ func (s *Store) PerKeyUsage(ctx context.Context, daily, weekly, monthly Window) 
 		// 一次评估固定一个快照，避免中途换价。
 		resolver = s.catalog.NewResolver()
 	}
-	for _, w := range []Window{daily, weekly, monthly} {
-		rows, err := s.queryWindowRows(ctx, w)
-		if err != nil {
-			return nil, err
-		}
+	windows := []Window{daily, weekly, monthly}
+	resets, err := s.loadResets(windows)
+	if err != nil {
+		return nil, err
+	}
+	accumulate := func(kind LimitWindow, rows []usageModelRow, include func(int64) bool) {
 		for _, row := range rows {
+			if !include(row.APIKeyID) {
+				continue
+			}
 			usage := result[row.APIKeyID]
 			if usage == nil {
 				usage = UsageByWindow{}
 				result[row.APIKeyID] = usage
 			}
-			windowUsage := usage[w.Kind]
+			windowUsage := usage[kind]
 			windowUsage.CostUSD += s.priceRow(resolver, row)
-			usage[w.Kind] = windowUsage
+			usage[kind] = windowUsage
+		}
+	}
+	for _, w := range windows {
+		windowReset := resets[w.Kind]
+		defaultStart := laterOf(w.Start, windowReset.global)
+		// 只有晚于默认起点的 per-key 清零点才需要单独起点；按起点分组复用查询。
+		overrides := make(map[int64]time.Time)
+		starts := make(map[int64]time.Time)
+		for keyID, resetAt := range windowReset.perKey {
+			if resetAt.After(defaultStart) {
+				overrides[keyID] = resetAt
+				starts[resetAt.UnixNano()] = resetAt
+			}
+		}
+		rows, err := s.queryWindowRows(ctx, Window{Kind: w.Kind, Start: defaultStart, End: w.End})
+		if err != nil {
+			return nil, err
+		}
+		accumulate(w.Kind, rows, func(keyID int64) bool {
+			_, overridden := overrides[keyID]
+			return !overridden
+		})
+		for _, start := range starts {
+			rows, err := s.queryWindowRows(ctx, Window{Kind: w.Kind, Start: start, End: w.End})
+			if err != nil {
+				return nil, err
+			}
+			accumulate(w.Kind, rows, func(keyID int64) bool {
+				return overrides[keyID].Equal(start)
+			})
 		}
 	}
 	return result, nil

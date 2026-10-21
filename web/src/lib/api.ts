@@ -1,4 +1,4 @@
-import { type AnalysisLatencyDiagnostics, type AnalysisResponse, type ApiKeyEnforcementLogsResponse, type ApiKeyPolicyLimit, type ApiKeyPolicyResponse, type AuthFilesManagementResponse, type AuthManagedSessionsResponse, type AuthSessionResponse, type CodexQuotaHistoryResponse, type CreatedApiKey, type KeyOverviewQuota, type CpaApiKeyDisplayItem, type CpaApiKeyOptionsResponse, type CpaApiKeySettingsResponse, type CpaApiKeysResponse, type ErrorEventsResponse, type OverviewRealtimeBlock, type OverviewRealtimeWindow, type PricingEntry, type PricingResponse, type PricingRulesResponse, type PricingSyncPreviewResponse, type PricingSyncSource, type QuotaAutoRefreshSettings, type ReplacePricingRulesRequest, type StatusResponse, type UpdateCheckResponse, type UsageActivityRequest, type UsageActivityResponse, type UsageEventModelFilterOptionsResponse, type UsageEventRequestLogResponse, type UsageEventSourceFilterOptionsResponse, type UsageRangeRequest, type UsedModelsResponse, type UsageIdentitiesPageResponse, type UsageIdentitiesResponse, type UsageEventsResponse, type UsageIdentity, type UsageIdentityAuthType, type UsageOverviewComparisons, type UsageOverviewResponse, type UsageQuotaCacheResponse, type UsageQuotaInspectionStatusResponse, type UsageQuotaRefreshResponse, type UsageQuotaRefreshTaskResponse, type UsageQuotaResetCreditsResponse, type UsageQuotaResetResponse, type VersionResponse } from './types'
+import { type AnalysisLatencyDiagnostics, type AnalysisResponse, type ApiKeyEnforcementLogsResponse, type ApiKeyLimitWindow, type ApiKeyPolicyLimit, type ApiKeyPolicyResponse, type AuthFilesManagementResponse, type AuthManagedSessionsResponse, type AuthSessionResponse, type CodexQuotaHistoryResponse, type CreatedApiKey, type KeyOverviewQuota, type CpaApiKeyDisplayItem, type CpaApiKeyOptionsResponse, type CpaApiKeySettingsResponse, type CpaApiKeysResponse, type ErrorEventsResponse, type OverviewRealtimeBlock, type OverviewRealtimeWindow, type PricingEntry, type PricingResponse, type PricingRulesResponse, type PricingSyncPreviewResponse, type PricingSyncSource, type QuotaAutoRefreshSettings, type ReplacePricingRulesRequest, type StatusResponse, type UpdateCheckResponse, type UsageActivityRequest, type UsageActivityResponse, type UsageEventModelFilterOptionsResponse, type UsageEventRequestLogResponse, type UsageEventSourceFilterOptionsResponse, type UsageRangeRequest, type UsedModelsResponse, type UsageIdentitiesPageResponse, type UsageIdentitiesResponse, type UsageEventsResponse, type UsageIdentity, type UsageIdentityAuthType, type UsageOverviewComparisons, type UsageOverviewResponse, type UsageQuotaCacheResponse, type UsageQuotaInspectionStatusResponse, type UsageQuotaRefreshResponse, type UsageQuotaRefreshTaskResponse, type UsageQuotaResetCreditsResponse, type UsageQuotaResetResponse, type VersionResponse } from './types'
 import { isCPAMCEmbed } from '@/embed/cpamcEmbed'
 import { resolveUsageRequestRange } from '@/utils/usage/rangeQuery'
 
@@ -1044,6 +1044,38 @@ export async function saveCpaApiKeyPolicy(id: string, limits: ApiKeyPolicyLimit[
   })
   if (!response.ok) {
     await parseApiError(response, `Failed to save CPA API key policy: ${response.status}`)
+  }
+}
+
+// 限额临时清零：allKeys 为 true 时全局清零，否则 apiKeyIds 必填；只写清零点，不删除 usage。
+export async function resetCpaApiKeyQuotas(request: { allKeys: boolean; apiKeyIds: string[]; windows: ApiKeyLimitWindow[] }): Promise<void> {
+  const response = await apiFetch(apiPath('/usage/api-keys/quota-resets'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to reset CPA API key quotas: ${response.status}`)
+  }
+}
+
+// 批量限额：limits 只列要改的窗口，null 表示移除该窗口限额；enabled 省略则保持各 key 原值。
+export async function updateCpaApiKeyPolicies(request: {
+  apiKeyIds: string[]
+  limits: Partial<Record<ApiKeyLimitWindow, number | null>>
+  enabled?: boolean
+}): Promise<void> {
+  const response = await apiFetch(apiPath('/usage/api-keys/policies'), {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to update CPA API key policies: ${response.status}`)
   }
 }
 

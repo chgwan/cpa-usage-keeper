@@ -109,6 +109,8 @@ const (
 	migrationAddUsageEventTraceMetadata = "20261008_usage_event_trace_metadata"
 	// migrationRecoverExecutionUsageEvents 以短事务回填事件标识并重新排队旧入口误拒绝的执行消息。
 	migrationRecoverExecutionUsageEvents = "20261018_recover_execution_usage_events"
+	// migrationCreateAPIKeyQuotaResets 创建限额临时清零点表，纯增量。
+	migrationCreateAPIKeyQuotaResets = "20261021_create_api_key_quota_resets"
 )
 
 type schemaMigration struct {
@@ -264,6 +266,7 @@ func orderedMigrations() []databaseMigration {
 		{version: migrationLimitLatencySamplePoints, run: limitLatencySamplePointsMigration, destructive: true},
 		{version: migrationAddUsageEventTraceMetadata, run: addUsageEventTraceMetadataMigration},
 		{version: migrationRecoverExecutionUsageEvents, run: recoverExecutionUsageEventsMigration, disableTransaction: true},
+		{version: migrationCreateAPIKeyQuotaResets, run: createAPIKeyQuotaResetsMigration},
 	}
 }
 

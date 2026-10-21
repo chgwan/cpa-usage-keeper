@@ -213,8 +213,7 @@ describe('ApiKeySettingsCard row actions', () => {
     const onRegenerateKey = vi.fn(() => new Promise<CreatedApiKey | null>((resolve) => {
       resolveRegenerate = resolve
     }))
-    const onOpenPolicy = vi.fn()
-    await renderCard({ onRegenerateKey, onOpenPolicy })
+    await renderCard({ onRegenerateKey })
 
     await act(async () => {
       findRowButton('Regenerate')?.click()
@@ -228,7 +227,7 @@ describe('ApiKeySettingsCard row actions', () => {
     })
     expect(onRegenerateKey).toHaveBeenCalledWith(apiKey.id)
     // pendingId 忙态期间行内动作全部禁用。
-    expect(findRowButton('Quota')?.disabled).toBe(true)
+    expect(findRowButton('Regenerate')?.disabled).toBe(true)
     expect(findRowButton('Save')?.disabled).toBe(true)
 
     await act(async () => {
@@ -241,15 +240,64 @@ describe('ApiKeySettingsCard row actions', () => {
     expect(findModalButton("I've saved it")).toBeDefined()
   })
 
-  it('routes quota straight from the row to onOpenPolicy', async () => {
-    const onOpenPolicy = vi.fn()
-    await renderCard({ onOpenPolicy })
+  const secondKey: CpaApiKeySettingsItem = { ...apiKey, id: '42', apiKey: 'sk-beta', keyAlias: 'Beta', displayKey: 'sk-***beta', label: 'Beta' }
+  const check = (selector: string) => document.querySelector<HTMLInputElement>(selector)!
+
+  it('opens the quota reset dialog defaulting to all keys and the weekly period', async () => {
+    const onResetQuotas = vi.fn(() => Promise.resolve(true))
+    await renderCard({ apiKeys: [apiKey, secondKey], onResetQuotas })
+    expect(findRowButton('Quota')).toBeUndefined()
 
     await act(async () => {
-      findRowButton('Quota')?.click()
+      container.querySelector<HTMLButtonElement>('[data-api-key-quota-reset-open]')!.click()
       await Promise.resolve()
     })
-    expect(onOpenPolicy).toHaveBeenCalledWith(apiKey.id)
+    expect(check(`[data-api-key-quota-key="${apiKey.id}"]`).checked).toBe(true)
+    expect(check('[data-api-key-quota-key="42"]').checked).toBe(true)
+    expect(check('[data-api-key-quota-period="weekly"]').checked).toBe(true)
+    expect(check('[data-api-key-quota-period="daily"]').checked).toBe(false)
+
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-api-key-quota-reset-submit]')!.click()
+      await Promise.resolve()
+    })
+    expect(onResetQuotas).toHaveBeenLastCalledWith({ allKeys: true, apiKeyIds: [], windows: ['weekly'] })
+  })
+
+  it('requires keys in the quota settings dialog and submits only the chosen periods', async () => {
+    const onSavePolicies = vi.fn(() => Promise.resolve(true))
+    await renderCard({ apiKeys: [apiKey, secondKey], onSavePolicies })
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-api-key-quota-settings-open]')!.click()
+      await Promise.resolve()
+    })
+    // 无任何默认选择：直接保存只提示必须选 key。
+    expect(check(`[data-api-key-quota-key="${apiKey.id}"]`).checked).toBe(false)
+    expect(check('[data-api-key-quota-period="weekly"]').checked).toBe(false)
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-api-key-quota-settings-submit]')!.click()
+      await Promise.resolve()
+    })
+    expect(onSavePolicies).not.toHaveBeenCalled()
+    expect(modalText()).toContain('usage_stats.api_key_quota_select_keys_required')
+
+    await act(async () => {
+      check('[data-api-key-quota-key="42"]').click()
+    })
+    await act(async () => {
+      check('[data-api-key-quota-period="daily"]').click()
+    })
+    const input = check('[data-api-key-quota-value="daily"]')
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, '2.5')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-api-key-quota-settings-submit]')!.click()
+      await Promise.resolve()
+    })
+    expect(onSavePolicies).toHaveBeenLastCalledWith({ apiKeyIds: ['42'], limits: { daily: 2.5 } })
   })
 
   it('blocks regenerate for a disabled key, offers restore, and deletes via the danger confirm', async () => {

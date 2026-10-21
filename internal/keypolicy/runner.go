@@ -65,6 +65,9 @@ func (r *Runner) NotifyUsageEventsCommitted([]entities.UsageEvent) { r.wakeNow()
 // NotifyUsageIdentitiesChanged 同样只做非阻塞唤醒。
 func (r *Runner) NotifyUsageIdentitiesChanged() { r.wakeNow() }
 
+// WakeNow 供管理服务在限额配置或清零点变化后立即触发重估（例如让超限禁用的 key 马上恢复）。
+func (r *Runner) WakeNow() { r.wakeNow() }
+
 // wakeNow 用非阻塞发送保证重复唤醒合并为一次；channel 已满时直接放弃。
 func (r *Runner) wakeNow() {
 	select {

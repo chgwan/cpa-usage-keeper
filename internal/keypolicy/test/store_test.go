@@ -132,3 +132,68 @@ func TestPerKeyUsageUnknownModelCostsZero(t *testing.T) {
 		t.Fatalf("expected zero cost for unpriced model, got %v", usage[key.ID][keypolicy.LimitWindowDaily].CostUSD)
 	}
 }
+
+func TestPerKeyUsageCountsOnlyUsageAfterLatestQuotaReset(t *testing.T) {
+	db := newKeypolicyTestDB(t)
+	keyA := entities.CPAAPIKey{APIKey: "sk-reset-a", DisplayKey: "sk-reset-a"}
+	keyB := entities.CPAAPIKey{APIKey: "sk-reset-b", DisplayKey: "sk-reset-b"}
+	for _, key := range []*entities.CPAAPIKey{&keyA, &keyB} {
+		if err := db.Create(key).Error; err != nil {
+			t.Fatalf("seed key: %v", err)
+		}
+	}
+	anchor := time.Date(2026, 9, 16, 15, 0, 0, 0, time.Local)
+	daily, weekly, monthly := keypolicy.DailyWindow(anchor), keypolicy.WeeklyWindow(anchor), keypolicy.MonthlyWindow(anchor)
+	insert := func(apiKey string, ts time.Time, tokens int64) {
+		event := entities.UsageEvent{APIGroupKey: apiKey, Model: "gpt-5", InputTokens: tokens, TotalTokens: tokens, Timestamp: ts}
+		if err := db.Create(&event).Error; err != nil {
+			t.Fatalf("seed event: %v", err)
+		}
+	}
+	for _, apiKey := range []string{keyA.APIKey, keyB.APIKey} {
+		insert(apiKey, time.Date(2026, 9, 15, 12, 0, 0, 0, time.Local), 50) // 周 + 月
+		insert(apiKey, time.Date(2026, 9, 16, 10, 0, 0, 0, time.Local), 100)
+		insert(apiKey, time.Date(2026, 9, 16, 14, 0, 0, 0, time.Local), 10)
+	}
+	reset := func(keyID int64, window keypolicy.Window, at time.Time) entities.APIKeyQuotaReset {
+		return entities.APIKeyQuotaReset{CPAAPIKeyID: keyID, Window: string(window.Kind), WindowKey: keypolicy.WindowKey(window), ResetAt: at, CreatedAt: at, UpdatedAt: at}
+	}
+	if err := repository.UpsertAPIKeyQuotaResets(db, []entities.APIKeyQuotaReset{
+		// 全局周清零：两把 key 的周用量都只剩 14:00 之后的 10 tokens。
+		reset(entities.APIKeyQuotaResetGlobalID, weekly, time.Date(2026, 9, 16, 12, 0, 0, 0, time.Local)),
+		// B 的 per-key 周清零早于全局清零，较晚的全局清零生效。
+		reset(keyB.ID, weekly, time.Date(2026, 9, 16, 9, 0, 0, 0, time.Local)),
+		// 只有 A 的日用量被单独清零。
+		reset(keyA.ID, daily, time.Date(2026, 9, 16, 13, 0, 0, 0, time.Local)),
+	}); err != nil {
+		t.Fatalf("seed resets: %v", err)
+	}
+	// 上一周期的清零点（不同 WindowKey）不能影响 B 的月用量或日用量。
+	if err := db.Create(&entities.APIKeyQuotaReset{CPAAPIKeyID: keyB.ID, Window: string(keypolicy.LimitWindowMonthly), WindowKey: "2026-08", ResetAt: anchor, CreatedAt: anchor, UpdatedAt: anchor}).Error; err != nil {
+		t.Fatalf("seed stale reset: %v", err)
+	}
+
+	catalog := pricing.NewCatalog(newSnapshotForTest(t, map[string]entities.ModelPriceSetting{
+		"gpt-5": {Model: "gpt-5", PromptPricePer1M: 1_000_000},
+	}))
+	usage, err := keypolicy.NewStore(db, catalog).PerKeyUsage(context.Background(), daily, weekly, monthly)
+	if err != nil {
+		t.Fatalf("per key usage: %v", err)
+	}
+	// @1/token：成本即 token 数。
+	want := map[int64]map[keypolicy.LimitWindow]float64{
+		keyA.ID: {keypolicy.LimitWindowDaily: 10, keypolicy.LimitWindowWeekly: 10, keypolicy.LimitWindowMonthly: 160},
+		keyB.ID: {keypolicy.LimitWindowDaily: 110, keypolicy.LimitWindowWeekly: 10, keypolicy.LimitWindowMonthly: 160},
+	}
+	for keyID, windows := range want {
+		for window, cost := range windows {
+			if got := usage[keyID][window].CostUSD; got != cost {
+				t.Fatalf("key %d %s: got %v want %v", keyID, window, got, cost)
+			}
+		}
+	}
+	var events int64
+	if err := db.Model(&entities.UsageEvent{}).Count(&events).Error; err != nil || events != 6 {
+		t.Fatalf("quota reset must not touch usage events: count=%d err=%v", events, err)
+	}
+}

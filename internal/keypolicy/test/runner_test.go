@@ -507,3 +507,45 @@ func TestRunnerEvaluateOnceIsSingleFlight(t *testing.T) {
 		t.Fatalf("second evaluate: %v", err)
 	}
 }
+
+func TestRunnerRestoresQuotaDisabledKeyAfterQuotaReset(t *testing.T) {
+	db := newKeypolicyTestDB(t)
+	fake := &fakeCPAAPIKeys{keys: []string{"sk-reset", "sk-other"}}
+	client := newCPAClient(t, startFakeCPA(t, fake))
+	keyID := seedLimitedKey(t, db, "sk-reset", 100, 150)
+	other := entities.CPAAPIKey{APIKey: "sk-other", DisplayKey: "sk-other"}
+	if err := db.Create(&other).Error; err != nil {
+		t.Fatalf("seed other key: %v", err)
+	}
+	runner := keypolicy.NewRunner(db, client, newRunnerCatalog(t), time.Minute, logrus.New(), nil)
+	if err := runner.EvaluateOnce(context.Background()); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if len(fake.keys) != 1 {
+		t.Fatalf("expected breached key removed from CPA, got %v", fake.keys)
+	}
+
+	// 清零点落在当日正午事件之后：日窗口只剩 0 用量，usage_events 原样保留。
+	now := time.Now()
+	resetAt := time.Date(now.Year(), now.Month(), now.Day(), 12, 1, 0, 0, now.Location())
+	if err := repository.UpsertAPIKeyQuotaResets(db, []entities.APIKeyQuotaReset{{
+		CPAAPIKeyID: keyID, Window: string(keypolicy.LimitWindowDaily), WindowKey: keypolicy.WindowKey(keypolicy.DailyWindow(now)),
+		ResetAt: resetAt, CreatedAt: now, UpdatedAt: now,
+	}}); err != nil {
+		t.Fatalf("seed reset: %v", err)
+	}
+	if err := runner.EvaluateOnce(context.Background()); err != nil {
+		t.Fatalf("evaluate after reset: %v", err)
+	}
+	if len(fake.keys) != 2 {
+		t.Fatalf("expected key restored to CPA after quota reset, got %v", fake.keys)
+	}
+	policy, err := repository.FindCPAAPIKeyPolicy(db, keyID)
+	if err != nil || policy.EnforcementState != string(keypolicy.StateActive) {
+		t.Fatalf("expected active state after reset, got %+v err %v", policy, err)
+	}
+	var events int64
+	if err := db.Model(&entities.UsageEvent{}).Where("api_group_key = ?", "sk-reset").Count(&events).Error; err != nil || events != 1 {
+		t.Fatalf("quota reset must keep usage events: count=%d err=%v", events, err)
+	}
+}

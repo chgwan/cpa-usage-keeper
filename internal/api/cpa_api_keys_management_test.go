@@ -28,6 +28,12 @@ type stubManagementProvider struct {
 	limitsIn     keypolicy.Limits
 	summaries    map[int64]service.CPAAPIKeyPolicySummary
 	summariesErr error
+	err          error
+
+	resetIDs      []int64
+	resetWindows  []keypolicy.LimitWindow
+	updateIDs     []int64
+	updateChanges service.CPAAPIKeyPolicyChanges
 }
 
 func (s *stubManagementProvider) CreateCPAAPIKey(_ context.Context, alias, _ string) (entities.CPAAPIKey, string, error) {
@@ -67,6 +73,16 @@ func (s *stubManagementProvider) SaveCPAAPIKeyPolicy(_ context.Context, _ int64,
 
 func (s *stubManagementProvider) ListCPAAPIKeyEnforcementLogs(_ context.Context, _ int64, _ int) ([]entities.APIKeyEnforcementLog, error) {
 	return []entities.APIKeyEnforcementLog{{ID: 1, CPAAPIKeyID: 9, Action: "disabled", Reason: "limit_breached"}}, nil
+}
+
+func (s *stubManagementProvider) ResetCPAAPIKeyQuotas(_ context.Context, ids []int64, windows []keypolicy.LimitWindow) error {
+	s.resetIDs, s.resetWindows = ids, windows
+	return s.err
+}
+
+func (s *stubManagementProvider) UpdateCPAAPIKeyPolicies(_ context.Context, ids []int64, changes service.CPAAPIKeyPolicyChanges) error {
+	s.updateIDs, s.updateChanges = ids, changes
+	return s.err
 }
 
 func (s *stubManagementProvider) ListCPAAPIKeyPolicySummaries(_ context.Context) (map[int64]service.CPAAPIKeyPolicySummary, error) {
@@ -273,5 +289,51 @@ func TestCPAAPIKeyListRouteOmitsPolicyWhenSummaryFails(t *testing.T) {
 		if strings.Contains(response.Body.String(), `"policy"`) {
 			t.Fatalf("%s: expected policy field to be omitted, got %s", path, response.Body.String())
 		}
+	}
+}
+
+func TestQuotaResetRouteRequiresExplicitScope(t *testing.T) {
+	cases := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantIDs    []int64
+	}{
+		{name: "all keys", body: `{"allKeys":true,"windows":["weekly"]}`, wantStatus: http.StatusNoContent},
+		{name: "selected keys", body: `{"apiKeyIds":["9007199254740993","7"],"windows":["daily","monthly"]}`, wantStatus: http.StatusNoContent, wantIDs: []int64{9007199254740993, 7}},
+		{name: "neither", body: `{"windows":["weekly"]}`, wantStatus: http.StatusBadRequest},
+		{name: "both", body: `{"allKeys":true,"apiKeyIds":["7"],"windows":["weekly"]}`, wantStatus: http.StatusBadRequest},
+		{name: "bad id", body: `{"apiKeyIds":["abc"],"windows":["weekly"]}`, wantStatus: http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &stubManagementProvider{}
+			response := httptest.NewRecorder()
+			newManagementTestRouter(provider).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/usage/api-keys/quota-resets", strings.NewReader(tc.body)))
+			if response.Code != tc.wantStatus {
+				t.Fatalf("expected %d, got %d: %s", tc.wantStatus, response.Code, response.Body.String())
+			}
+			if tc.wantStatus == http.StatusNoContent && fmt.Sprint(provider.resetIDs) != fmt.Sprint(tc.wantIDs) && !(len(tc.wantIDs) == 0 && len(provider.resetIDs) == 0) {
+				t.Fatalf("expected ids %v, got %v", tc.wantIDs, provider.resetIDs)
+			}
+		})
+	}
+}
+
+func TestBulkPolicyRouteKeepsNullAsRemoval(t *testing.T) {
+	provider := &stubManagementProvider{}
+	response := httptest.NewRecorder()
+	body := `{"apiKeyIds":["3","4"],"limits":{"daily":5,"monthly":null}}`
+	newManagementTestRouter(provider).ServeHTTP(response, httptest.NewRequest(http.MethodPatch, "/api/v1/usage/api-keys/policies", strings.NewReader(body)))
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", response.Code, response.Body.String())
+	}
+	daily, hasDaily := provider.updateChanges.Limits[keypolicy.LimitWindowDaily]
+	monthly, hasMonthly := provider.updateChanges.Limits[keypolicy.LimitWindowMonthly]
+	if fmt.Sprint(provider.updateIDs) != "[3 4]" || !hasDaily || daily == nil || *daily != 5 || !hasMonthly || monthly != nil || provider.updateChanges.Enabled != nil {
+		t.Fatalf("unexpected bulk policy call: ids=%v changes=%+v", provider.updateIDs, provider.updateChanges)
+	}
+	if _, hasWeekly := provider.updateChanges.Limits[keypolicy.LimitWindowWeekly]; hasWeekly {
+		t.Fatalf("weekly was not requested and must stay untouched")
 	}
 }

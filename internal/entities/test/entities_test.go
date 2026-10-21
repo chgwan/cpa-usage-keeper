@@ -40,6 +40,7 @@ func TestAllIncludesCoreModels(t *testing.T) {
 		// API Key 限额策略与执行审计随核心模型注册，全新数据库直接得到新表。
 		&CPAAPIKeyPolicy{},
 		&APIKeyEnforcementLog{},
+		&APIKeyQuotaReset{},
 	}
 	if len(items) != len(expected) {
 		t.Fatalf("expected %d registered models, got %d", len(expected), len(items))

@@ -2,7 +2,7 @@ import { CredentialEditModal } from '@/components/usage/credentials/CredentialEd
 import { UsageComparisonCharts } from '@/components/usage/UsageComparisonCharts';
 import { useState, useMemo, useCallback, useEffect, useRef, type MouseEvent as ReactMouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ApiError, appPath, createCpaApiKey, createUsageEventRequestLogDownloadURL, deleteCpaApiKey, disableCpaApiKey, exportUsageEvents, fetchAnalysis, fetchAnalysisLatency, fetchAuthSessions, fetchCpaApiKeyOptions, fetchCpaApiKeySettings, fetchStatus, fetchUpdateCheck, fetchUsageEventModelFilterOptions, fetchUsageEventRequestLog, fetchUsageEventSourceFilterOptions, fetchUsageEvents, fetchUsageIdentity, fetchVersion, isUsageRangeBoundsConflict, logout, regenerateCpaApiKey, restoreCpaApiKey, revokeAuthSession, updateAuthSessionAlias, updateCpaApiKeyAlias, type UsageEventsExportFormat } from '@/lib/api';
+import { ApiError, appPath, createCpaApiKey, createUsageEventRequestLogDownloadURL, deleteCpaApiKey, disableCpaApiKey, exportUsageEvents, fetchAnalysis, fetchAnalysisLatency, fetchAuthSessions, fetchCpaApiKeyOptions, fetchCpaApiKeySettings, fetchStatus, fetchUpdateCheck, fetchUsageEventModelFilterOptions, fetchUsageEventRequestLog, fetchUsageEventSourceFilterOptions, fetchUsageEvents, fetchUsageIdentity, fetchVersion, isUsageRangeBoundsConflict, logout, regenerateCpaApiKey, resetCpaApiKeyQuotas, restoreCpaApiKey, revokeAuthSession, updateAuthSessionAlias, updateCpaApiKeyAlias, updateCpaApiKeyPolicies, type UsageEventsExportFormat } from '@/lib/api';
 import type { AnalysisLatencyDiagnostics, AnalysisResponse, AuthManagedSessionItem, CpaApiKeyOption, CpaApiKeySettingsItem, CreatedApiKey, OverviewRealtimeWindow, StatusResponse, UsageCustomRange, UsageEvent, UsageEventRequestLogResponse, UsageSourceFilterOption, UsageTimeRange, VersionResponse } from '@/lib/types';
 import { DEFAULT_USAGE_TAB, getUsageTabPath, handleUsageTabKeyActivation, resolveInitialUsageTab, shouldHandleUsageNavigation, USAGE_TAB_OPTIONS, type UsageTab } from '@/lib/usageNavigation';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
@@ -42,7 +42,7 @@ import {
   type CredentialDetailSelection,
 } from '@/components/usage';
 import { TOTPSettingsCard } from '@/components/usage/TOTPSettingsCard';
-import { ApiKeyPolicyModal } from '@/components/usage/ApiKeyPolicyModal';
+import type { QuotaPolicyUpdateRequest, QuotaResetRequest } from '@/components/usage/ApiKeyQuotaDialogs';
 import {
   RequestEventsDetailsCard,
   REQUEST_EVENT_COLUMN_IDS,
@@ -899,8 +899,6 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const [apiKeySettingsError, setApiKeySettingsError] = useState('');
   const [apiKeySettingsSavingId, setApiKeySettingsSavingId] = useState<string | null>(null);
   const apiKeySettingsRequestControllerRef = useRef<AbortController | null>(null);
-  const [policyModalKeyId, setPolicyModalKeyId] = useState<string | null>(null);
-  const [policyModalFallbackLabel, setPolicyModalFallbackLabel] = useState('');
   const [authSessions, setAuthSessions] = useState<AuthManagedSessionItem[]>([]);
   const [authSessionsLoading, setAuthSessionsLoading] = useState(false);
   const [authSessionsError, setAuthSessionsError] = useState('');
@@ -1249,23 +1247,24 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     }) ?? false
   ), [runApiKeyLifecycle]);
 
-  // 配额策略弹窗的存活只跟随 policyModalKeyId：列表刷新失败（会清空 apiKeySettings）或条目暂时
-  // 消失时不能卸掉正在编辑的弹窗，也不允许它在下一次列表加载成功时自行复活。label 打开时从列表
-  // 捕获一次兜底，之后列表里解析到新值优先用新值。
-  const openApiKeyPolicyModal = useCallback((id: string) => {
-    const item = apiKeySettings.find((entry) => entry.id === id);
-    setPolicyModalFallbackLabel(item?.keyAlias?.trim() || item?.label || item?.displayKey || '');
-    setPolicyModalKeyId(id);
-  }, [apiKeySettings]);
-  const policyModalItem = useMemo(
-    () => (policyModalKeyId === null ? null : apiKeySettings.find((item) => item.id === policyModalKeyId) ?? null),
-    [apiKeySettings, policyModalKeyId],
-  );
-  const policyModalLabel = policyModalItem?.keyAlias?.trim()
-    || policyModalItem?.label
-    || policyModalItem?.displayKey
-    || policyModalFallbackLabel
-    || t('usage_stats.api_key_policy_title');
+  // 批量限额与限额清零共用生命周期错误处理；成功后刷新列表并提示。
+  const handleSaveApiKeyPolicies = useCallback(async (request: QuotaPolicyUpdateRequest) => {
+    const saved = await runApiKeyLifecycle('Failed to update CPA API key policies', async () => {
+      await updateCpaApiKeyPolicies(request);
+      return true;
+    }) ?? false;
+    if (saved) showTopNotice('success', t('usage_stats.api_key_quota_settings_success'));
+    return saved;
+  }, [runApiKeyLifecycle, showTopNotice, t]);
+
+  const handleResetApiKeyQuotas = useCallback(async (request: QuotaResetRequest) => {
+    const reset = await runApiKeyLifecycle('Failed to reset CPA API key quotas', async () => {
+      await resetCpaApiKeyQuotas(request);
+      return true;
+    }) ?? false;
+    if (reset) showTopNotice('success', t('usage_stats.api_key_quota_reset_success'));
+    return reset;
+  }, [runApiKeyLifecycle, showTopNotice, t]);
 
   const handleRevokeAuthSession = useCallback(async (session: AuthManagedSessionItem) => {
     setAuthSessionRevokingId(session.id);
@@ -2520,7 +2519,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                   onDeleteKey={handleDeleteApiKey}
                   onDisableKey={handleDisableApiKey}
                   onRestoreKey={handleRestoreApiKey}
-                  onOpenPolicy={openApiKeyPolicyModal}
+                  onSavePolicies={handleSaveApiKeyPolicies}
+                  onResetQuotas={handleResetApiKeyQuotas}
                 />
                 <PriceSettingsCard
                   modelNames={modelNames}
@@ -2566,17 +2566,6 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
         requestLogDownloading={requestLogDownloading}
         onClose={handleCredentialDetailClose}
       />
-      {policyModalKeyId !== null && (
-        <ApiKeyPolicyModal
-          apiKeyId={policyModalKeyId}
-          apiKeyLabel={policyModalLabel}
-          onClose={() => setPolicyModalKeyId(null)}
-          onSaved={() => {
-            void loadApiKeySettings();
-          }}
-          onNotice={showTopNotice}
-        />
-      )}
       <Modal
         open={logoutConfirmOpen}
         title={t('usage_stats.logout_confirm_title')}

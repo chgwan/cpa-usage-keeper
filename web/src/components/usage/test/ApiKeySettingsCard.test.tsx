@@ -92,23 +92,28 @@ describe('ApiKeySettingsCard', () => {
       onDeleteKey: () => Promise.resolve(false),
       onDisableKey: () => Promise.resolve(false),
       onRestoreKey: () => Promise.resolve(false),
-      onOpenPolicy: () => undefined,
+      onSavePolicies: () => Promise.resolve(true),
+      onResetQuotas: () => Promise.resolve(true),
     });
 
-    // 行内直接平铺 保存/重新生成/禁用/删除/配额 五个动作；两行 key → 各出现两次。
+    // 行内直接平铺 保存/重新生成/禁用/删除 四个动作；两行 key → 各出现两次。
+    // 限额设置与清零已移到卡片头部，各出现一次。
     expect(countOccurrences(html, '>Edit<')).toBe(0);
     expect(countOccurrences(html, '>Save<')).toBe(2);
     expect(countOccurrences(html, '>Regenerate<')).toBe(2);
     expect(countOccurrences(html, '>Disable<')).toBe(2);
     expect(countOccurrences(html, '>Delete<')).toBe(2);
-    expect(countOccurrences(html, '>Quota<')).toBe(2);
+    expect(countOccurrences(html, '>Quota<')).toBe(0);
+    expect(countOccurrences(html, '>Quota settings<')).toBe(1);
+    expect(countOccurrences(html, '>Reset quota<')).toBe(1);
     // 未提供对应生命周期 handler 时不渲染相应按钮。
     const bare = renderCard();
     expect(bare).not.toContain('>Edit<');
     expect(bare).not.toContain('>Regenerate<');
     expect(bare).not.toContain('>Disable<');
     expect(bare).not.toContain('>Delete<');
-    expect(bare).not.toContain('>Quota<');
+    expect(bare).not.toContain('>Quota settings<');
+    expect(bare).not.toContain('>Reset quota<');
     expect(bare).toContain('>Save<');
   });
 

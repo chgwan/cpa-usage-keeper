@@ -330,7 +330,7 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 	})
 	cpaAPIKeyService := service.NewCPAAPIKeyService(db)
 	// 生命周期与限额策略服务复用同一个 DB、CPA client 和价格目录，并与限额 runner 共享 key 变更互斥锁。
-	cpaAPIKeyManagementService := service.NewCPAAPIKeyManagementService(db, cpaClient, pricingCatalog, keyMutationMutex)
+	cpaAPIKeyManagementService := service.NewCPAAPIKeyManagementServiceWithWaker(db, cpaClient, pricingCatalog, keyMutationMutex, keyPolicyRunner.WakeNow)
 	// 单条凭证开关成功后立即与 CPA 对齐；runner 自带合并窗口和 nil 保护。
 	credentialMutationLocks := &service.CredentialMutationLocks{}
 	authFilesManagementService := service.NewAuthFilesManagementService(cpaClient, credentialMutationLocks)

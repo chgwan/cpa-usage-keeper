@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -408,5 +409,100 @@ func TestDeleteCPAAPIKeyAfterDisableMarksRowDeleted(t *testing.T) {
 	}
 	if len(fake.keys) != 1 || fake.keys[0] == fullKey {
 		t.Fatalf("expected only bystander key left in CPA, got %v", fake.keys)
+	}
+}
+
+func TestResetCPAAPIKeyQuotasWritesScopedResetsLogsAndWakesRunner(t *testing.T) {
+	db := openManagementTestDB(t)
+	keys := []entities.CPAAPIKey{{APIKey: "sk-q1", DisplayKey: "sk-q1"}, {APIKey: "sk-q2", DisplayKey: "sk-q2"}}
+	for index := range keys {
+		if err := db.Create(&keys[index]).Error; err != nil {
+			t.Fatalf("seed key: %v", err)
+		}
+	}
+	wakes := 0
+	provider := service.NewCPAAPIKeyManagementServiceWithWaker(db, nil, nil, nil, func() { wakes++ })
+
+	if err := provider.ResetCPAAPIKeyQuotas(context.Background(), nil, []keypolicy.LimitWindow{keypolicy.LimitWindowWeekly}); err != nil {
+		t.Fatalf("global reset: %v", err)
+	}
+	if err := provider.ResetCPAAPIKeyQuotas(context.Background(), []int64{keys[1].ID}, []keypolicy.LimitWindow{keypolicy.LimitWindowMonthly, keypolicy.LimitWindowDaily, keypolicy.LimitWindowDaily}); err != nil {
+		t.Fatalf("per-key reset: %v", err)
+	}
+	var resets []entities.APIKeyQuotaReset
+	if err := db.Order("cpa_api_key_id, window").Find(&resets).Error; err != nil {
+		t.Fatalf("load resets: %v", err)
+	}
+	got := make([]string, 0, len(resets))
+	for _, row := range resets {
+		got = append(got, fmt.Sprintf("%d:%s", row.CPAAPIKeyID, row.Window))
+	}
+	if want := fmt.Sprintf("[0:weekly %d:daily %d:monthly]", keys[1].ID, keys[1].ID); fmt.Sprint(got) != want {
+		t.Fatalf("expected resets %s, got %v", want, got)
+	}
+	var logs []entities.APIKeyEnforcementLog
+	if err := db.Where("action = ?", "quota_reset").Order("id").Find(&logs).Error; err != nil {
+		t.Fatalf("load logs: %v", err)
+	}
+	if len(logs) != 3 || logs[0].Detail != "weekly (all keys)" || logs[2].CPAAPIKeyID != keys[1].ID || logs[2].Detail != "daily,monthly" {
+		t.Fatalf("unexpected reset audit logs: %+v", logs)
+	}
+	if wakes != 2 {
+		t.Fatalf("expected runner woken after each reset, got %d", wakes)
+	}
+	if err := provider.ResetCPAAPIKeyQuotas(context.Background(), nil, nil); !errors.Is(err, service.ErrInvalidInput) {
+		t.Fatalf("expected empty windows rejected, got %v", err)
+	}
+	if err := provider.ResetCPAAPIKeyQuotas(context.Background(), []int64{999}, []keypolicy.LimitWindow{keypolicy.LimitWindowDaily}); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("expected unknown key rejected, got %v", err)
+	}
+}
+
+func TestUpdateCPAAPIKeyPoliciesMergesOnlyRequestedWindows(t *testing.T) {
+	db := openManagementTestDB(t)
+	keys := []entities.CPAAPIKey{{APIKey: "sk-p1", DisplayKey: "sk-p1"}, {APIKey: "sk-p2", DisplayKey: "sk-p2"}}
+	for index := range keys {
+		if err := db.Create(&keys[index]).Error; err != nil {
+			t.Fatalf("seed key: %v", err)
+		}
+	}
+	provider := service.NewCPAAPIKeyManagementService(db, nil, nil, nil)
+	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), keys[0].ID, keypolicy.Limits{
+		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowWeekly, Value: 20},
+		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowMonthly, Value: 80},
+	}, false); err != nil {
+		t.Fatalf("seed policy: %v", err)
+	}
+	daily := 3.5
+	if err := provider.UpdateCPAAPIKeyPolicies(context.Background(), []int64{keys[0].ID, keys[1].ID}, service.CPAAPIKeyPolicyChanges{
+		Limits: map[keypolicy.LimitWindow]*float64{keypolicy.LimitWindowDaily: &daily, keypolicy.LimitWindowMonthly: nil},
+	}); err != nil {
+		t.Fatalf("bulk update: %v", err)
+	}
+	first, err := provider.GetCPAAPIKeyPolicy(context.Background(), keys[0].ID)
+	if err != nil {
+		t.Fatalf("load first policy: %v", err)
+	}
+	if fmt.Sprint(first.Limits) != "[{cost daily 3.5} {cost weekly 20}]" || first.Policy.Enabled {
+		t.Fatalf("expected daily added, weekly kept, monthly removed, enabled kept off; got %v enabled=%v", first.Limits, first.Policy.Enabled)
+	}
+	second, err := provider.GetCPAAPIKeyPolicy(context.Background(), keys[1].ID)
+	if err != nil {
+		t.Fatalf("load second policy: %v", err)
+	}
+	if fmt.Sprint(second.Limits) != "[{cost daily 3.5}]" || !second.Policy.Enabled {
+		t.Fatalf("expected new policy with daily only, got %v enabled=%v", second.Limits, second.Policy.Enabled)
+	}
+
+	bad := -1.0
+	if err := provider.UpdateCPAAPIKeyPolicies(context.Background(), []int64{keys[0].ID}, service.CPAAPIKeyPolicyChanges{
+		Limits: map[keypolicy.LimitWindow]*float64{keypolicy.LimitWindowDaily: &bad},
+	}); !errors.Is(err, service.ErrInvalidInput) {
+		t.Fatalf("expected non-positive limit rejected, got %v", err)
+	}
+	if err := provider.UpdateCPAAPIKeyPolicies(context.Background(), nil, service.CPAAPIKeyPolicyChanges{
+		Limits: map[keypolicy.LimitWindow]*float64{keypolicy.LimitWindowDaily: &daily},
+	}); !errors.Is(err, service.ErrInvalidInput) {
+		t.Fatalf("expected empty key selection rejected, got %v", err)
 	}
 }

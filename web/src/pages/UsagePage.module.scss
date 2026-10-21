@@ -2208,6 +2208,113 @@
   }
 }
 
+// 限额设置 / 清零弹窗：key 多选列表、周期复选与执行开关。
+.apiKeyQuotaFieldset {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.apiKeyQuotaLegend {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.apiKeyQuotaCount {
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.apiKeyQuotaPickerToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.apiKeyQuotaFilter:global(.input) {
+  width: 180px;
+  height: 30px;
+  min-height: 30px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.apiKeyQuotaPicker {
+  display: grid;
+  gap: 2px;
+  max-height: 220px;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
+  border-radius: 12px;
+  list-style: none;
+  overscroll-behavior: contain;
+}
+
+.apiKeyQuotaCheck {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 6px;
+  border-radius: 8px;
+  font-size: 12px;
+  cursor: pointer;
+
+  &:hover {
+    background: color-mix(in srgb, var(--primary-color) 6%, transparent);
+  }
+
+  input {
+    flex: 0 0 auto;
+    margin: 0;
+  }
+}
+
+.apiKeyQuotaKeyName {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.apiKeyQuotaKeyMeta {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.apiKeyQuotaPeriods {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.apiKeyQuotaPeriodChip {
+  padding: 5px 12px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
+  border-radius: 999px;
+}
+
+.apiKeyQuotaEnforcement {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .apiKeyPolicyStack {
   display: flex;
   flex-direction: column;
