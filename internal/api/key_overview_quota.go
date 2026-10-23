@@ -26,10 +26,14 @@ type keyOverviewQuotaResponse struct {
 }
 
 func toKeyOverviewQuotaResponse(view service.CPAAPIKeyPolicyView) keyOverviewQuotaResponse {
-	limitFor := func(window keypolicy.LimitWindow) *keypolicy.Limit {
-		for i := range view.Limits {
-			if view.Limits[i].Window == window {
-				return &view.Limits[i]
+	// 用叠加临时调整后的生效限额（而不是 view.Limits 的正常限额），否则一个被临时调整
+	// 砍到 0 的 key 会在这里仍然显示成正常限额，和实际的 enforcement（已 disabled_by_quota）矛盾。
+	// WindowUsages 已经按 limitRatio 的 value<=0→1 口径算好 ratio，这里不重复实现。
+	windowUsages := view.Effective.WindowUsages(view.Usage)
+	usageFor := func(window keypolicy.LimitWindow) *keypolicy.TightestLimit {
+		for i := range windowUsages {
+			if windowUsages[i].Limit.Window == window {
+				return &windowUsages[i]
 			}
 		}
 		return nil
@@ -37,9 +41,8 @@ func toKeyOverviewQuotaResponse(view service.CPAAPIKeyPolicyView) keyOverviewQuo
 	windows := make([]keyOverviewQuotaWindowResponse, 0, 3)
 	for _, window := range []keypolicy.LimitWindow{keypolicy.LimitWindowDaily, keypolicy.LimitWindowWeekly, keypolicy.LimitWindowMonthly} {
 		item := keyOverviewQuotaWindowResponse{Window: string(window), CostUSD: view.Usage[window].CostUSD}
-		if limit := limitFor(window); limit != nil {
-			value := limit.Value
-			ratio := item.CostUSD / value
+		if usage := usageFor(window); usage != nil {
+			value, ratio := usage.Limit.Value, usage.Ratio
 			item.Limit, item.Ratio = &value, &ratio
 		}
 		windows = append(windows, item)

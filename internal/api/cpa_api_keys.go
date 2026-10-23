@@ -141,7 +141,7 @@ func fetchCPAAPIKeyPolicySummaries(ctx context.Context, managementProvider servi
 }
 
 // attachCPAAPIKeyPolicySummaries 是两个列表端点共用的行构建器：基础行转换后统一附加策略徽标。
-// summaries 为 nil 时省略 policy；没有摘要行的 key（未启用策略）输出默认徽标。
+// summaries 为 nil 时省略 policy；没有摘要行的 key（没有策略行，而不是策略被关闭）输出默认徽标。
 func attachCPAAPIKeyPolicySummaries[T any](rows []entities.CPAAPIKey, summaries map[int64]service.CPAAPIKeyPolicySummary, toRow func(entities.CPAAPIKey, *cpaAPIKeyPolicySummaryResponse) T) []T {
 	response := make([]T, 0, len(rows))
 	for _, row := range rows {
@@ -149,8 +149,8 @@ func attachCPAAPIKeyPolicySummaries[T any](rows []entities.CPAAPIKey, summaries 
 		if summaries != nil {
 			summary, ok := summaries[row.ID]
 			if !ok {
-				// 没有启用策略行的 key 输出默认徽标。
-				summary = service.CPAAPIKeyPolicySummary{Enabled: false, EnforcementState: string(keypolicy.StateActive)}
+				// 没有策略行的 key 也在常开之列，只是没有限额；默认徽标同样是 enabled=true。
+				summary = service.CPAAPIKeyPolicySummary{EnforcementState: string(keypolicy.StateActive)}
 			}
 			policy = toCPAAPIKeyPolicySummaryResponse(summary)
 		}
@@ -273,9 +273,10 @@ type createdCPAAPIKeyResponse struct {
 	KeyAlias string `json:"keyAlias"`
 }
 
+// saveCPAAPIKeyPolicyRequest：limits 外不再接受 enabled；限额开关已固定常开，
+// 旧前端若仍发送 enabled 字段，标准 JSON 解码会直接忽略未知字段，不会报错。
 type saveCPAAPIKeyPolicyRequest struct {
-	Limits  []keypolicy.Limit `json:"limits"`
-	Enabled bool              `json:"enabled"`
+	Limits []keypolicy.Limit `json:"limits"`
 }
 
 // resetCPAAPIKeyQuotasRequest：allKeys 为 true 时全局清零，否则 apiKeyIds 必填。
@@ -286,11 +287,59 @@ type resetCPAAPIKeyQuotasRequest struct {
 	Windows   []string `json:"windows"`
 }
 
-// updateCPAAPIKeyPoliciesRequest：limits 只列要改的窗口，值为 null 表示移除；enabled 省略则保持原值。
+// updateCPAAPIKeyPoliciesRequest：limits 只列要改的窗口，值为 null 表示移除。
+// 不再接受 enabled：限额开关已固定常开，旧前端发来的 enabled 字段被静默忽略。
 type updateCPAAPIKeyPoliciesRequest struct {
 	APIKeyIDs []string            `json:"apiKeyIds"`
 	Limits    map[string]*float64 `json:"limits"`
-	Enabled   *bool               `json:"enabled"`
+}
+
+// setCPAAPIKeyQuotaAdjustmentsRequest：deltaUsd 是带符号的调整额（美元），只对已有
+// 正常限额的窗口生效；没有限额的窗口会被跳过并体现在响应的 skipped 列表里。
+type setCPAAPIKeyQuotaAdjustmentsRequest struct {
+	APIKeyIDs []string `json:"apiKeyIds"`
+	Windows   []string `json:"windows"`
+	DeltaUSD  float64  `json:"deltaUsd"`
+}
+
+// clearCPAAPIKeyQuotaAdjustmentsRequest 提前清除所选 key × 窗口当前生效的临时调整。
+type clearCPAAPIKeyQuotaAdjustmentsRequest struct {
+	APIKeyIDs []string `json:"apiKeyIds"`
+	Windows   []string `json:"windows"`
+}
+
+type cpaAPIKeyQuotaAdjustmentTargetResponse struct {
+	APIKeyID string `json:"apiKeyId"`
+	Window   string `json:"window"`
+}
+
+type cpaAPIKeyQuotaAdjustmentSkippedResponse struct {
+	APIKeyID string `json:"apiKeyId"`
+	Window   string `json:"window"`
+	Reason   string `json:"reason"`
+}
+
+type cpaAPIKeyQuotaAdjustmentResultResponse struct {
+	Applied []cpaAPIKeyQuotaAdjustmentTargetResponse  `json:"applied"`
+	Skipped []cpaAPIKeyQuotaAdjustmentSkippedResponse `json:"skipped"`
+}
+
+// toCPAAPIKeyQuotaAdjustmentResultResponse 把服务层结果转成字符串 id 的响应；
+// skipped 的 reason 固定是 "no_limit"：该 key 在这个窗口本来就没有正常限额。
+func toCPAAPIKeyQuotaAdjustmentResultResponse(result service.QuotaAdjustmentResult) cpaAPIKeyQuotaAdjustmentResultResponse {
+	applied := make([]cpaAPIKeyQuotaAdjustmentTargetResponse, 0, len(result.Applied))
+	for _, target := range result.Applied {
+		applied = append(applied, cpaAPIKeyQuotaAdjustmentTargetResponse{
+			APIKeyID: strconv.FormatInt(target.APIKeyID, 10), Window: string(target.Window),
+		})
+	}
+	skipped := make([]cpaAPIKeyQuotaAdjustmentSkippedResponse, 0, len(result.Skipped))
+	for _, target := range result.Skipped {
+		skipped = append(skipped, cpaAPIKeyQuotaAdjustmentSkippedResponse{
+			APIKeyID: strconv.FormatInt(target.APIKeyID, 10), Window: string(target.Window), Reason: "no_limit",
+		})
+	}
+	return cpaAPIKeyQuotaAdjustmentResultResponse{Applied: applied, Skipped: skipped}
 }
 
 // parseCPAAPIKeyIDList 解析请求体中的字符串 id 列表（id 可能超出 JS 安全整数范围）。
@@ -322,6 +371,10 @@ type cpaAPIKeyTightestLimitResponse struct {
 	Value  float64 `json:"value"`
 	Used   float64 `json:"used"`
 	Ratio  float64 `json:"ratio"`
+	// BaseValue 是正常存储的限额；没有临时调整时等于 Value。
+	BaseValue float64 `json:"baseValue"`
+	// AdjustmentUSD 是当前生效的临时调整额；没有调整时整体省略，前端据此判断是否展示 "temp" 标记。
+	AdjustmentUSD *float64 `json:"adjustmentUsd,omitempty"`
 }
 
 type cpaAPIKeyPolicySummaryResponse struct {
@@ -497,6 +550,7 @@ func toCPAAPIKeyTightestLimitResponse(tightest *keypolicy.TightestLimit) *cpaAPI
 	return &cpaAPIKeyTightestLimitResponse{
 		Type: string(tightest.Limit.Type), Window: string(tightest.Limit.Window),
 		Value: tightest.Limit.Value, Used: tightest.Used, Ratio: tightest.Ratio,
+		BaseValue: tightest.Base, AdjustmentUSD: tightest.Adjustment,
 	}
 }
 
@@ -506,7 +560,8 @@ func toCPAAPIKeyPolicySummaryResponse(summary service.CPAAPIKeyPolicySummary) *c
 		limits = append(limits, *toCPAAPIKeyTightestLimitResponse(&summary.Limits[index]))
 	}
 	return &cpaAPIKeyPolicySummaryResponse{
-		Enabled: summary.Enabled, EnforcementState: summary.EnforcementState,
+		// enabled 固定 true：限额开关已常开，响应字段只为兼容缓存的旧前端而保留。
+		Enabled: true, EnforcementState: summary.EnforcementState,
 		Tightest: toCPAAPIKeyTightestLimitResponse(summary.Tightest),
 		Limits:   limits,
 	}
@@ -518,7 +573,8 @@ func toCPAAPIKeyPolicyResponse(view service.CPAAPIKeyPolicyView) cpaAPIKeyPolicy
 		limits = keypolicy.Limits{}
 	}
 	return cpaAPIKeyPolicyResponse{
-		Enabled: view.Policy.Enabled, EnforcementState: view.Policy.EnforcementState,
+		// enabled 固定 true：限额开关已常开，响应字段只为兼容缓存的旧前端而保留。
+		Enabled: true, EnforcementState: view.Policy.EnforcementState,
 		AdminDisabled: view.Policy.AdminDisabled, Limits: limits,
 		Usage: toCPAAPIKeyPolicyUsageResponse(view.Usage), Tightest: toCPAAPIKeyTightestLimitResponse(view.Tightest),
 	}
@@ -555,6 +611,59 @@ func registerCPAAPIKeyPolicyRoutes(router gin.IRoutes, provider service.CPAAPIKe
 		c.Status(http.StatusNoContent)
 	})
 
+	router.POST("/usage/api-keys/quota-adjustments", func(c *gin.Context) {
+		if provider == nil {
+			c.JSON(http.StatusNotImplemented, gin.H{"error": "api key management provider is not configured"})
+			return
+		}
+		var request setCPAAPIKeyQuotaAdjustmentsRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+		ids, ok := parseCPAAPIKeyIDList(request.APIKeyIDs)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid api key id"})
+			return
+		}
+		windows := make([]keypolicy.LimitWindow, 0, len(request.Windows))
+		for _, window := range request.Windows {
+			windows = append(windows, keypolicy.LimitWindow(strings.TrimSpace(window)))
+		}
+		result, err := provider.SetCPAAPIKeyQuotaAdjustments(c.Request.Context(), ids, windows, request.DeltaUSD)
+		if err != nil {
+			writeManagementError(c, "set api key quota adjustments failed", err)
+			return
+		}
+		c.JSON(http.StatusOK, toCPAAPIKeyQuotaAdjustmentResultResponse(result))
+	})
+
+	router.DELETE("/usage/api-keys/quota-adjustments", func(c *gin.Context) {
+		if provider == nil {
+			c.JSON(http.StatusNotImplemented, gin.H{"error": "api key management provider is not configured"})
+			return
+		}
+		var request clearCPAAPIKeyQuotaAdjustmentsRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+		ids, ok := parseCPAAPIKeyIDList(request.APIKeyIDs)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid api key id"})
+			return
+		}
+		windows := make([]keypolicy.LimitWindow, 0, len(request.Windows))
+		for _, window := range request.Windows {
+			windows = append(windows, keypolicy.LimitWindow(strings.TrimSpace(window)))
+		}
+		if err := provider.ClearCPAAPIKeyQuotaAdjustments(c.Request.Context(), ids, windows); err != nil {
+			writeManagementError(c, "clear api key quota adjustments failed", err)
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
+
 	router.PATCH("/usage/api-keys/policies", func(c *gin.Context) {
 		if provider == nil {
 			c.JSON(http.StatusNotImplemented, gin.H{"error": "api key management provider is not configured"})
@@ -570,7 +679,7 @@ func registerCPAAPIKeyPolicyRoutes(router gin.IRoutes, provider service.CPAAPIKe
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid api key id"})
 			return
 		}
-		changes := service.CPAAPIKeyPolicyChanges{Limits: make(map[keypolicy.LimitWindow]*float64, len(request.Limits)), Enabled: request.Enabled}
+		changes := service.CPAAPIKeyPolicyChanges{Limits: make(map[keypolicy.LimitWindow]*float64, len(request.Limits))}
 		for window, value := range request.Limits {
 			changes.Limits[keypolicy.LimitWindow(strings.TrimSpace(window))] = value
 		}
@@ -612,7 +721,7 @@ func registerCPAAPIKeyPolicyRoutes(router gin.IRoutes, provider service.CPAAPIKe
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 			return
 		}
-		if err := provider.SaveCPAAPIKeyPolicy(c.Request.Context(), id, keypolicy.Limits(request.Limits), request.Enabled); err != nil {
+		if err := provider.SaveCPAAPIKeyPolicy(c.Request.Context(), id, keypolicy.Limits(request.Limits)); err != nil {
 			writeManagementError(c, "save api key policy failed", err)
 			return
 		}

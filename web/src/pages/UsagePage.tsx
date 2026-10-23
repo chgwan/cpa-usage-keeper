@@ -2,8 +2,8 @@ import { CredentialEditModal } from '@/components/usage/credentials/CredentialEd
 import { UsageComparisonCharts } from '@/components/usage/UsageComparisonCharts';
 import { useState, useMemo, useCallback, useEffect, useRef, type MouseEvent as ReactMouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ApiError, appPath, createCpaApiKey, createUsageEventRequestLogDownloadURL, deleteCpaApiKey, disableCpaApiKey, exportUsageEvents, fetchAnalysis, fetchAnalysisLatency, fetchAuthSessions, fetchCpaApiKeyOptions, fetchCpaApiKeySettings, fetchStatus, fetchUpdateCheck, fetchUsageEventModelFilterOptions, fetchUsageEventRequestLog, fetchUsageEventSourceFilterOptions, fetchUsageEvents, fetchUsageIdentity, fetchVersion, isUsageRangeBoundsConflict, logout, regenerateCpaApiKey, resetCpaApiKeyQuotas, restoreCpaApiKey, revokeAuthSession, updateAuthSessionAlias, updateCpaApiKeyAlias, updateCpaApiKeyPolicies, type UsageEventsExportFormat } from '@/lib/api';
-import type { AnalysisLatencyDiagnostics, AnalysisResponse, AuthManagedSessionItem, CpaApiKeyOption, CpaApiKeySettingsItem, CreatedApiKey, OverviewRealtimeWindow, StatusResponse, UsageCustomRange, UsageEvent, UsageEventRequestLogResponse, UsageSourceFilterOption, UsageTimeRange, VersionResponse } from '@/lib/types';
+import { ApiError, appPath, clearCpaApiKeyQuotaAdjustments, createCpaApiKey, createUsageEventRequestLogDownloadURL, deleteCpaApiKey, disableCpaApiKey, exportUsageEvents, fetchAnalysis, fetchAnalysisLatency, fetchAuthSessions, fetchCpaApiKeyOptions, fetchCpaApiKeySettings, fetchStatus, fetchUpdateCheck, fetchUsageEventModelFilterOptions, fetchUsageEventRequestLog, fetchUsageEventSourceFilterOptions, fetchUsageEvents, fetchUsageIdentity, fetchVersion, isUsageRangeBoundsConflict, logout, regenerateCpaApiKey, resetCpaApiKeyQuotas, restoreCpaApiKey, revokeAuthSession, setCpaApiKeyQuotaAdjustments, updateAuthSessionAlias, updateCpaApiKeyAlias, updateCpaApiKeyPolicies, type UsageEventsExportFormat } from '@/lib/api';
+import type { AnalysisLatencyDiagnostics, AnalysisResponse, ApiKeyLimitWindow, AuthManagedSessionItem, CpaApiKeyOption, CpaApiKeySettingsItem, CreatedApiKey, OverviewRealtimeWindow, StatusResponse, UsageCustomRange, UsageEvent, UsageEventRequestLogResponse, UsageSourceFilterOption, UsageTimeRange, VersionResponse } from '@/lib/types';
 import { DEFAULT_USAGE_TAB, getUsageTabPath, handleUsageTabKeyActivation, resolveInitialUsageTab, shouldHandleUsageNavigation, USAGE_TAB_OPTIONS, type UsageTab } from '@/lib/usageNavigation';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { LanguageSwitcher } from '@/components/ui/LanguageSwitcher';
@@ -42,7 +42,7 @@ import {
   type CredentialDetailSelection,
 } from '@/components/usage';
 import { TOTPSettingsCard } from '@/components/usage/TOTPSettingsCard';
-import type { QuotaPolicyUpdateRequest, QuotaResetRequest } from '@/components/usage/ApiKeyQuotaDialogs';
+import type { QuotaAdjustmentRequest, QuotaAdjustmentResult, QuotaPolicyUpdateRequest, QuotaResetRequest } from '@/components/usage/ApiKeyQuotaDialogs';
 import {
   RequestEventsDetailsCard,
   REQUEST_EVENT_COLUMN_IDS,
@@ -743,6 +743,12 @@ export const triggerBrowserURLDownload = (url: string) => {
   link.remove();
 };
 
+// 临时调整请求可能全部命中 no_limit 被跳过：此时 HTTP 调用本身成功，但没有任何一条真正生效，
+// 不能展示“已应用”的成功提示（弹窗自己会列出跳过明细）。
+export const shouldShowQuotaAdjustmentSuccessToast = (result: QuotaAdjustmentResult | null): boolean => (
+  (result?.applied.length ?? 0) > 0
+);
+
 export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const { t, i18n } = useTranslation();
   const isMobile = useMediaQuery('(max-width: 768px)');
@@ -1264,6 +1270,22 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     }) ?? false;
     if (reset) showTopNotice('success', t('usage_stats.api_key_quota_reset_success'));
     return reset;
+  }, [runApiKeyLifecycle, showTopNotice, t]);
+
+  // 本周期内的临时限额调整：只有真正生效了至少一条才提示成功，全部跳过时不误导。
+  const handleAdjustApiKeyQuotas = useCallback(async (request: QuotaAdjustmentRequest) => {
+    const result = await runApiKeyLifecycle('Failed to adjust CPA API key quotas', () => setCpaApiKeyQuotaAdjustments(request));
+    if (shouldShowQuotaAdjustmentSuccessToast(result)) showTopNotice('success', t('usage_stats.api_key_quota_adjustment_success'));
+    return result;
+  }, [runApiKeyLifecycle, showTopNotice, t]);
+
+  const handleClearApiKeyQuotaAdjustments = useCallback(async (request: { apiKeyIds: string[]; windows: ApiKeyLimitWindow[] }) => {
+    const cleared = await runApiKeyLifecycle('Failed to clear CPA API key quota adjustments', async () => {
+      await clearCpaApiKeyQuotaAdjustments(request);
+      return true;
+    }) ?? false;
+    if (cleared) showTopNotice('success', t('usage_stats.api_key_quota_adjustment_clear_success'));
+    return cleared;
   }, [runApiKeyLifecycle, showTopNotice, t]);
 
   const handleRevokeAuthSession = useCallback(async (session: AuthManagedSessionItem) => {
@@ -2521,6 +2543,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                   onRestoreKey={handleRestoreApiKey}
                   onSavePolicies={handleSaveApiKeyPolicies}
                   onResetQuotas={handleResetApiKeyQuotas}
+                  onAdjustQuotas={handleAdjustApiKeyQuotas}
+                  onClearQuotaAdjustments={handleClearApiKeyQuotaAdjustments}
                 />
                 <PriceSettingsCard
                   modelNames={modelNames}

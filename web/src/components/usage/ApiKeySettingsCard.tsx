@@ -8,8 +8,17 @@ import { Modal } from '@/components/ui/Modal';
 import { IconCheck, IconCopy, IconEye, IconEyeOff, IconMaximize2, IconMinimize2 } from '@/components/ui/icons';
 import { useScrollBoundaryContainment } from '@/hooks/useScrollBoundaryContainment';
 import { resolveQuotaProgress } from '@/lib/quotaProgress';
-import type { CreatedApiKey, CpaApiKeySettingsItem } from '@/lib/types';
-import { ApiKeyQuotaResetModal, ApiKeyQuotaSettingsModal, type QuotaPolicyUpdateRequest, type QuotaResetRequest } from './ApiKeyQuotaDialogs';
+import type { ApiKeyLimitWindow, CreatedApiKey, CpaApiKeySettingsItem } from '@/lib/types';
+import {
+  ApiKeyQuotaResetModal,
+  ApiKeyQuotaSettingsModal,
+  formatQuotaAdjustmentAmount,
+  type QuotaAdjustmentRequest,
+  type QuotaAdjustmentResult,
+  type QuotaPolicyUpdateRequest,
+  type QuotaResetRequest,
+} from './ApiKeyQuotaDialogs';
+import { ApiKeyManageDialog } from './ApiKeyManageDialog';
 import { ApiKeySortMenu } from './ApiKeySortMenu';
 import styles from '@/pages/UsagePage.module.scss';
 
@@ -143,6 +152,10 @@ export function sortApiKeySettingsItems(items: CpaApiKeySettingsItem[], sortKey:
 
 const formatQuotaUsd = (value: number) => `$${value.toFixed(4)}`;
 
+// 卡片层不提供临时调整 handler 时的兜底：保持弹窗 props 必填，行为上等同什么都没做。
+const noopAdjustQuotas = async (): Promise<QuotaAdjustmentResult | null> => null;
+const noopClearQuotaAdjustments = async (): Promise<boolean> => false;
+
 export function getApiKeySettingsVisibleKey(item: CpaApiKeySettingsItem, showFullApiKeys: boolean) {
   return showFullApiKeys && item.apiKey ? item.apiKey : item.displayKey;
 }
@@ -205,9 +218,44 @@ export function nextRevealState(_current: RevealState, created: CreatedApiKey | 
   return { phase: 'revealed', id: created.id, key: created.key };
 }
 
-type ConfirmAction =
-  | { kind: 'regenerate'; id: string }
-  | { kind: 'delete'; id: string };
+export interface ApiKeyRevealModalProps {
+  apiKey: string | null;
+  onClose: () => void;
+  onNotice?: (kind: 'success' | 'info' | 'error', message: string) => void;
+}
+
+// 一次性 key 展示弹窗：创建流程与管理面板里的“重新生成”流程共用同一个组件，避免分叉两套复制逻辑。
+export function ApiKeyRevealModal({ apiKey, onClose, onNotice }: ApiKeyRevealModalProps) {
+  const { t } = useTranslation();
+  const handleCopy = useCallback(async () => {
+    if (!apiKey) return;
+    try {
+      await copyApiKeyToClipboard(apiKey);
+      onNotice?.('success', t('usage_stats.api_key_settings_copy_success'));
+    } catch {
+      onNotice?.('error', t('usage_stats.api_key_settings_copy_failed'));
+    }
+  }, [apiKey, onNotice, t]);
+
+  return (
+    <Modal open={apiKey !== null} title={t('usage_stats.api_key_settings_reveal_title')} onClose={onClose}>
+      <div className={styles.apiKeyRevealStack}>
+        <p className={styles.apiKeyRevealWarning}>{t('usage_stats.api_key_settings_reveal_warning')}</p>
+        {apiKey !== null && (
+          <div className={styles.apiKeyRevealKeyRow}>
+            <code className={styles.apiKeyRevealKey}>{apiKey}</code>
+            <Button type="button" variant="secondary" size="sm" onClick={() => void handleCopy()}>
+              {t('usage_stats.api_key_settings_copy')}
+            </Button>
+          </div>
+        )}
+        <Button type="button" fullWidth onClick={onClose}>
+          {t('usage_stats.api_key_settings_reveal_done')}
+        </Button>
+      </div>
+    </Modal>
+  );
+}
 
 export interface ApiKeySettingsCardProps {
   apiKeys: CpaApiKeySettingsItem[];
@@ -224,6 +272,10 @@ export interface ApiKeySettingsCardProps {
   onSavePolicies?: (request: QuotaPolicyUpdateRequest) => Promise<boolean>;
   /** 限额临时清零：默认全部 key + 每周，返回是否成功。 */
   onResetQuotas?: (request: QuotaResetRequest) => Promise<boolean>;
+  /** 本周期内的临时限额调整：返回应用/跳过的明细。 */
+  onAdjustQuotas?: (request: QuotaAdjustmentRequest) => Promise<QuotaAdjustmentResult | null>;
+  /** 清除所选 key/周期当前生效的临时调整。 */
+  onClearQuotaAdjustments?: (request: { apiKeyIds: string[]; windows: ApiKeyLimitWindow[] }) => Promise<boolean>;
 }
 
 export function ApiKeySettingsCard({
@@ -239,6 +291,8 @@ export function ApiKeySettingsCard({
   onRestoreKey,
   onSavePolicies,
   onResetQuotas,
+  onAdjustQuotas,
+  onClearQuotaAdjustments,
 }: ApiKeySettingsCardProps) {
   const { t } = useTranslation();
   const [showFullApiKeys, setShowFullApiKeys] = useState(false);
@@ -257,9 +311,12 @@ export function ApiKeySettingsCard({
   const [draftAliases, setDraftAliases] = useState<Record<string, string>>(initialAliases);
 
   const [reveal, setReveal] = useState<RevealState>({ phase: 'idle' });
-  const [pendingId, setPendingId] = useState<string | null>(null);
-  // 行内重新生成 / 删除需要二次确认；同一时刻最多一个动作待确认。
-  const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null);
+  // 单 key 管理面板：记录当前打开的 key id，null 表示未打开。
+  const [manageDialogId, setManageDialogId] = useState<string | null>(null);
+  const manageDialogItem = useMemo(
+    () => (manageDialogId ? sortedApiKeys.find((entry) => entry.id === manageDialogId) ?? null : null),
+    [manageDialogId, sortedApiKeys],
+  );
   const [createOpen, setCreateOpen] = useState(false);
   const [createPending, setCreatePending] = useState(false);
   const [createAlias, setCreateAlias] = useState('');
@@ -290,37 +347,6 @@ export function ApiKeySettingsCard({
     }
   }, [onNotice, t]);
 
-  const handleCopyRevealKey = useCallback(async () => {
-    if (reveal.phase !== 'revealed') {
-      return;
-    }
-    try {
-      await copyApiKeyToClipboard(reveal.key);
-      onNotice?.('success', t('usage_stats.api_key_settings_copy_success'));
-    } catch {
-      onNotice?.('error', t('usage_stats.api_key_settings_copy_failed'));
-    }
-  }, [onNotice, reveal, t]);
-
-  const closeConfirm = useCallback(() => {
-    setConfirmAction(null);
-  }, []);
-
-  // 行级动作统一走 pendingId 忙态；处理器返回 false/null 时只提示，不抛错。
-  const runRowAction = useCallback(async <T,>(id: string, action: () => Promise<T>): Promise<T | null> => {
-    setPendingId(id);
-    try {
-      const result = await action();
-      if (!result) {
-        onNotice?.('error', t('usage_stats.api_key_settings_action_failed'));
-      }
-      return result;
-    } finally {
-      setPendingId(null);
-      closeConfirm();
-    }
-  }, [closeConfirm, onNotice, t]);
-
   const handleCreateKey = useCallback(async () => {
     if (!onCreateKey) {
       return;
@@ -341,36 +367,12 @@ export function ApiKeySettingsCard({
     }
   }, [createAlias, createCustomKey, onCreateKey, onNotice, t]);
 
-  const handleRegenerateKey = useCallback(async (id: string) => {
-    if (!onRegenerateKey) {
-      return;
-    }
-    const created = await runRowAction(id, () => onRegenerateKey(id));
-    if (created) {
-      // 重新生成成功后立刻进入一次性 reveal 弹窗。
-      setReveal((current) => nextRevealState(current, created));
-    }
-  }, [onRegenerateKey, runRowAction]);
-
-  const handleDeleteKey = useCallback(async (id: string) => {
-    if (!onDeleteKey) {
-      return;
-    }
-    await runRowAction(id, () => onDeleteKey(id));
-  }, [onDeleteKey, runRowAction]);
-
-  // 行内启停切换：仍走 pendingId 忙态，结果只提示不抛错。
-  const handleToggleEnforcement = useCallback(async (id: string, restore: boolean) => {
-    const action = restore ? onRestoreKey : onDisableKey;
-    if (!action) {
-      return;
-    }
-    await runRowAction(id, () => action(id));
-  }, [onDisableKey, onRestoreKey, runRowAction]);
-
-  const confirmPending = confirmAction !== null && pendingId === confirmAction.id;
   const [quotaDialog, setQuotaDialog] = useState<'settings' | 'reset' | null>(null);
-  const innerModalOpen = createOpen || reveal.phase === 'revealed' || confirmAction !== null || quotaDialog !== null;
+  // 单 key 管理面板打开时也算内层弹窗，卡片展开态下 Esc 只关管理面板，不连带收起卡片。
+  // 用 manageDialogItem（而不是 manageDialogId）判断：列表刷新失败把 apiKeys 清空后，
+  // id 还留着但对应的 item 已经找不到了，这时必须让 Esc 照常收起卡片，不能被一个
+  // 已经指向空气的 id 卡住。
+  const innerModalOpen = createOpen || reveal.phase === 'revealed' || quotaDialog !== null || manageDialogItem !== null;
 
   useEffect(() => {
     if (!expanded) {
@@ -500,12 +502,9 @@ export function ApiKeySettingsCard({
             {sortedApiKeys.map((item) => {
               const draftAlias = draftAliases[item.id] ?? '';
               const disabled = savingId === item.id;
-              const rowBusy = disabled || pendingId === item.id;
               const apiKey = getApiKeySettingsVisibleKey(item, showFullApiKeys);
               const copyLabel = copiedId === item.id ? t('usage_stats.api_key_settings_copied') : t('usage_stats.api_key_settings_copy');
               const enforcementState = item.policy?.enforcementState;
-              // 非 active（含 policy 摘要不可用）时：按钮切到“恢复”，且禁止重新生成。
-              const inactive = enforcementState !== 'active';
               const stateBadge = enforcementState === 'disabled_by_quota'
                 ? t('usage_stats.api_key_settings_disabled_by_quota')
                 : enforcementState === 'disabled_manual'
@@ -519,7 +518,16 @@ export function ApiKeySettingsCard({
                   <div className={styles.apiKeySettingsSummary}>
                     <span className={styles.apiKeyFieldLabel}>{t('usage_stats.api_key_settings_display_key')}</span>
                     <div className={styles.apiKeySettingsNameRow}>
-                      <span className={styles.apiKeySettingsName} title={apiKey}>{apiKey}</span>
+                      <button
+                        type="button"
+                        className={styles.apiKeySettingsManageOpen}
+                        onClick={() => setManageDialogId(item.id)}
+                        aria-haspopup="dialog"
+                        aria-label={t('usage_stats.api_key_settings_manage_aria', { key: apiKey })}
+                        data-api-key-manage-open={item.id}
+                      >
+                        <span className={styles.apiKeySettingsName} title={apiKey}>{apiKey}</span>
+                      </button>
                       <button
                         type="button"
                         className={`${styles.apiKeySettingsCopyIconButton} ${copiedId === item.id ? styles.apiKeySettingsCopyIconButtonCopied : ''}`.trim()}
@@ -556,6 +564,9 @@ export function ApiKeySettingsCard({
                       <ul className={styles.apiKeyQuotaWindows} data-api-key-quota-windows>
                         {item.policy.limits.map((limit) => {
                           const breached = limit.ratio >= 1;
+                          // adjustmentUsd 缺失表示该周期没有生效的临时调整，不渲染徽章。
+                          const hasAdjustment = limit.adjustmentUsd !== undefined;
+                          const baseValue = limit.baseValue ?? limit.value;
                           return (
                             <li
                               key={`${limit.type}-${limit.window}`}
@@ -564,6 +575,15 @@ export function ApiKeySettingsCard({
                               <span className={styles.apiKeyQuotaWindowLabel}>{t(`usage_stats.api_key_policy_window_${limit.window}`)}</span>
                               <span className={styles.apiKeyQuotaWindowValue}>
                                 {`${formatQuotaUsd(limit.used)} / ${formatQuotaUsd(limit.value)}`}
+                                {hasAdjustment && (
+                                  <span
+                                    className={styles.apiKeyQuotaWindowAdjustment}
+                                    title={t('usage_stats.api_key_quota_adjustment_title', { value: formatQuotaUsd(baseValue) })}
+                                  >
+                                    {' · '}
+                                    {t('usage_stats.api_key_quota_adjustment_badge', { amount: formatQuotaAdjustmentAmount(limit.adjustmentUsd as number) })}
+                                  </span>
+                                )}
                               </span>
                               <span className={styles.apiKeyQuotaWindowPercent}>{`${Math.round(limit.ratio * 100)}%`}</span>
                             </li>
@@ -591,44 +611,10 @@ export function ApiKeySettingsCard({
                         appearance="action"
                         className={styles.apiKeySettingsSaveButton}
                         onClick={() => onSaveAlias(item.id, draftAlias)}
-                        disabled={rowBusy}
+                        disabled={disabled}
                       >
                         {disabled ? t('usage_stats.api_key_settings_saving') : t('common.save')}
                       </Button>
-                      {onRegenerateKey && (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          appearance="action"
-                          onClick={() => setConfirmAction({ kind: 'regenerate', id: item.id })}
-                          disabled={rowBusy || inactive}
-                          title={inactive ? t('usage_stats.api_key_settings_regenerate_blocked') : t('usage_stats.api_key_settings_regenerate')}
-                        >
-                          {t('usage_stats.api_key_settings_regenerate')}
-                        </Button>
-                      )}
-                      {(onDisableKey || onRestoreKey) && (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          appearance="action"
-                          onClick={() => void handleToggleEnforcement(item.id, inactive)}
-                          disabled={rowBusy}
-                        >
-                          {inactive ? t('usage_stats.api_key_settings_restore') : t('usage_stats.api_key_settings_disable')}
-                        </Button>
-                      )}
-                      {onDeleteKey && (
-                        <Button
-                          variant="danger"
-                          size="sm"
-                          appearance="action"
-                          onClick={() => setConfirmAction({ kind: 'delete', id: item.id })}
-                          disabled={rowBusy}
-                        >
-                          {t('usage_stats.api_key_settings_delete')}
-                        </Button>
-                      )}
                     </div>
                   </div>
                 </div>
@@ -639,10 +625,35 @@ export function ApiKeySettingsCard({
       </div>
 
       {quotaDialog === 'settings' && onSavePolicies && (
-        <ApiKeyQuotaSettingsModal apiKeys={sortedApiKeys} onClose={() => setQuotaDialog(null)} onSubmit={onSavePolicies} />
+        <ApiKeyQuotaSettingsModal
+          apiKeys={sortedApiKeys}
+          onClose={() => setQuotaDialog(null)}
+          onSubmit={onSavePolicies}
+          onAdjust={onAdjustQuotas ?? noopAdjustQuotas}
+          onClearAdjustments={onClearQuotaAdjustments ?? noopClearQuotaAdjustments}
+        />
       )}
       {quotaDialog === 'reset' && onResetQuotas && (
         <ApiKeyQuotaResetModal apiKeys={sortedApiKeys} onClose={() => setQuotaDialog(null)} onSubmit={onResetQuotas} />
+      )}
+
+      {manageDialogItem && (
+        <ApiKeyManageDialog
+          item={manageDialogItem}
+          onClose={() => setManageDialogId(null)}
+          onNotice={onNotice}
+          onRegenerateKey={onRegenerateKey}
+          // 重新生成的一次性 key 交给卡片级 reveal 状态展示：面板可能因为父级刷新 apiKeys=[] 而被整体卸载，
+          // reveal 状态放在卡片层才能在面板消失后依然显示这个 key。
+          onRegenerated={(created) => setReveal((current) => nextRevealState(current, created))}
+          onDeleteKey={onDeleteKey}
+          onDisableKey={onDisableKey}
+          onRestoreKey={onRestoreKey}
+          onSavePolicies={onSavePolicies}
+          onResetQuotas={onResetQuotas}
+          onAdjustQuotas={onAdjustQuotas}
+          onClearQuotaAdjustments={onClearQuotaAdjustments}
+        />
       )}
 
       <Modal
@@ -681,70 +692,11 @@ export function ApiKeySettingsCard({
         </div>
       </Modal>
 
-      <Modal
-        open={reveal.phase === 'revealed'}
-        title={t('usage_stats.api_key_settings_reveal_title')}
+      <ApiKeyRevealModal
+        apiKey={reveal.phase === 'revealed' ? reveal.key : null}
         onClose={() => setReveal({ phase: 'idle' })}
-      >
-        <div className={styles.apiKeyRevealStack}>
-          <p className={styles.apiKeyRevealWarning}>{t('usage_stats.api_key_settings_reveal_warning')}</p>
-          {reveal.phase === 'revealed' && (
-            <div className={styles.apiKeyRevealKeyRow}>
-              <code className={styles.apiKeyRevealKey}>{reveal.key}</code>
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                onClick={() => void handleCopyRevealKey()}
-              >
-                {t('usage_stats.api_key_settings_copy')}
-              </Button>
-            </div>
-          )}
-          <Button type="button" fullWidth onClick={() => setReveal({ phase: 'idle' })}>
-            {t('usage_stats.api_key_settings_reveal_done')}
-          </Button>
-        </div>
-      </Modal>
-
-      <Modal
-        open={confirmAction !== null}
-        title={confirmAction?.kind === 'delete'
-          ? t('usage_stats.api_key_settings_delete')
-          : t('usage_stats.api_key_settings_regenerate')}
-        onClose={closeConfirm}
-        closeDisabled={confirmPending}
-      >
-        <div className={styles.apiKeyConfirmStack}>
-          <p>{confirmAction?.kind === 'delete'
-            ? t('usage_stats.api_key_settings_delete_confirm')
-            : t('usage_stats.api_key_settings_regenerate_confirm')}</p>
-          {confirmAction?.kind === 'delete' && (
-            <Button
-              type="button"
-              fullWidth
-              variant="danger"
-              loading={confirmPending}
-              onClick={() => void handleDeleteKey(confirmAction.id)}
-            >
-              {t('usage_stats.api_key_settings_delete')}
-            </Button>
-          )}
-          {confirmAction?.kind === 'regenerate' && (
-            <Button
-              type="button"
-              fullWidth
-              loading={confirmPending}
-              onClick={() => void handleRegenerateKey(confirmAction.id)}
-            >
-              {t('usage_stats.api_key_settings_regenerate')}
-            </Button>
-          )}
-          <Button type="button" fullWidth variant="ghost" onClick={closeConfirm} disabled={confirmPending}>
-            {t('common.cancel')}
-          </Button>
-        </div>
-      </Modal>
+        onNotice={onNotice}
+      />
     </Card>
   );
 

@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
-import { Select } from '@/components/ui/Select';
 import { fetchCpaApiKeyEnforcementLogs } from '@/lib/api';
 import type { ApiKeyEnforcementLogEntry, ApiKeyLimitWindow, CpaApiKeySettingsItem } from '@/lib/types';
 import styles from '@/pages/UsagePage.module.scss';
@@ -11,8 +10,8 @@ import styles from '@/pages/UsagePage.module.scss';
 export const QUOTA_WINDOWS: readonly ApiKeyLimitWindow[] = ['daily', 'weekly', 'monthly'];
 // 后端 enforcement-logs 的 limit 上限是 200；单 key 审阅 50 条足够。
 const ENFORCEMENT_LOG_FETCH_LIMIT = 50;
-
-export type QuotaEnforcementChoice = 'keep' | 'on' | 'off';
+// 临时调整徽章用真正的减号（U+2212），而不是连字符。
+const MINUS_SIGN = '−';
 
 export interface QuotaResetRequest {
   allKeys: boolean;
@@ -23,7 +22,23 @@ export interface QuotaResetRequest {
 export interface QuotaPolicyUpdateRequest {
   apiKeyIds: string[];
   limits: Partial<Record<ApiKeyLimitWindow, number | null>>;
-  enabled?: boolean;
+}
+
+export interface QuotaAdjustmentRequest {
+  apiKeyIds: string[];
+  windows: ApiKeyLimitWindow[];
+  deltaUsd: number;
+}
+
+export interface QuotaAdjustmentResult {
+  applied: { apiKeyId: string; window: ApiKeyLimitWindow }[];
+  skipped: { apiKeyId: string; window: ApiKeyLimitWindow; reason: 'no_limit' }[];
+}
+
+// 徽章格式：正数带 +，负数用真正的减号；金额统一两位小数。
+export function formatQuotaAdjustmentAmount(value: number): string {
+  const sign = value < 0 ? MINUS_SIGN : '+';
+  return `${sign}$${Math.abs(value).toFixed(2)}`;
 }
 
 const orderedWindows = (windows: Iterable<ApiKeyLimitWindow>) => {
@@ -50,16 +65,26 @@ export function buildQuotaResetRequest(
   };
 }
 
-// 只提交所选窗口：空输入表示移除该窗口限额，未选窗口保持各 key 原值。
+// 单 key 面板里的重置请求：永远只针对这一个 key，不走批量弹窗“全选即 allKeys”的判断——
+// 否则系统里恰好只有这一个 key 时，单 key 重置会被误判成全局 allKeys，连未来新建的 key 也会被影响。
+export function buildSingleKeyQuotaResetRequest(
+  apiKeyId: string,
+  windows: Iterable<ApiKeyLimitWindow>,
+): { request: QuotaResetRequest | null; error: 'periods' | null } {
+  const selectedWindows = orderedWindows(windows);
+  if (selectedWindows.length === 0) return { request: null, error: 'periods' };
+  return { request: { allKeys: false, apiKeyIds: [apiKeyId], windows: selectedWindows }, error: null };
+}
+
+// 只提交所选窗口：空输入表示移除该窗口限额，未选窗口保持各 key 原值；必须至少选一个周期。
 export function buildQuotaPolicyUpdateRequest(
   selectedIds: readonly string[],
   windows: Iterable<ApiKeyLimitWindow>,
   values: Partial<Record<ApiKeyLimitWindow, string>>,
-  enforcement: QuotaEnforcementChoice,
 ): { request: QuotaPolicyUpdateRequest | null; error: 'keys' | 'periods' | 'value' | null } {
   if (selectedIds.length === 0) return { request: null, error: 'keys' };
   const selectedWindows = orderedWindows(windows);
-  if (selectedWindows.length === 0 && enforcement === 'keep') return { request: null, error: 'periods' };
+  if (selectedWindows.length === 0) return { request: null, error: 'periods' };
   const limits: Partial<Record<ApiKeyLimitWindow, number | null>> = {};
   for (const window of selectedWindows) {
     const raw = (values[window] ?? '').trim();
@@ -71,9 +96,28 @@ export function buildQuotaPolicyUpdateRequest(
     if (!Number.isFinite(value) || value <= 0) return { request: null, error: 'value' };
     limits[window] = value;
   }
-  const request: QuotaPolicyUpdateRequest = { apiKeyIds: [...selectedIds], limits };
-  if (enforcement !== 'keep') request.enabled = enforcement === 'on';
-  return { request, error: null };
+  return { request: { apiKeyIds: [...selectedIds], limits }, error: null };
+}
+
+// 临时调整金额：支持 +500 / -200 / 500（无符号视为正数），拒绝空值、非数字与 0。
+// QUOTA_ADJUSTMENT_MAX_ABS_DELTA_USD 和后端 quotaAdjustmentMaxAbsDeltaUSD 保持一致：
+// 这里提前拦住超出上限的输入，避免往返一次请求才告诉用户超限。
+const QUOTA_ADJUSTMENT_MAX_ABS_DELTA_USD = 1e9;
+
+export function buildQuotaAdjustmentRequest(
+  selectedIds: readonly string[],
+  windows: Iterable<ApiKeyLimitWindow>,
+  rawDelta: string,
+): { request: QuotaAdjustmentRequest | null; error: 'keys' | 'periods' | 'value' | null } {
+  if (selectedIds.length === 0) return { request: null, error: 'keys' };
+  const selectedWindows = orderedWindows(windows);
+  if (selectedWindows.length === 0) return { request: null, error: 'periods' };
+  const trimmed = rawDelta.trim();
+  if (!trimmed) return { request: null, error: 'value' };
+  const deltaUsd = Number(trimmed);
+  if (!Number.isFinite(deltaUsd) || deltaUsd === 0) return { request: null, error: 'value' };
+  if (Math.abs(deltaUsd) > QUOTA_ADJUSTMENT_MAX_ABS_DELTA_USD) return { request: null, error: 'value' };
+  return { request: { apiKeyIds: [...selectedIds], windows: selectedWindows, deltaUsd }, error: null };
 }
 
 interface ApiKeyPickerProps {
@@ -155,7 +199,8 @@ interface PeriodPickerProps {
   disabled?: boolean;
 }
 
-function PeriodPicker({ selected, onToggle, disabled = false }: PeriodPickerProps) {
+// 导出：单 key 管理面板的「重置配额」区块复用同一个周期选择器，而不是另起一份。
+export function PeriodPicker({ selected, onToggle, disabled = false }: PeriodPickerProps) {
   const { t } = useTranslation();
   return (
     <fieldset className={styles.apiKeyQuotaFieldset} disabled={disabled}>
@@ -296,29 +341,98 @@ function SingleKeyEnforcementLogs({ apiKeyId }: { apiKeyId: string }) {
   );
 }
 
+export type QuotaDialogMode = 'normal' | 'temporary';
+
 export interface ApiKeyQuotaSettingsModalProps {
   apiKeys: CpaApiKeySettingsItem[];
   onClose: () => void;
   onSubmit: (request: QuotaPolicyUpdateRequest) => Promise<boolean>;
+  onAdjust: (request: QuotaAdjustmentRequest) => Promise<QuotaAdjustmentResult | null>;
+  onClearAdjustments: (request: { apiKeyIds: string[]; windows: ApiKeyLimitWindow[] }) => Promise<boolean>;
+  /** Task 6 的单 key 面板用它固定选中一个 key。 */
+  initialSelectedIds?: string[];
+  /** 为真时隐藏 key 多选器，配合 initialSelectedIds 固定为单 key 表单。 */
+  hideKeyPicker?: boolean;
+  /** 供可视化排查工具直接打开临时调整模式。 */
+  initialMode?: QuotaDialogMode;
 }
 
-// 无任何默认：必须先选 key，再选要修改的周期；只选一个 key 时预填其当前限额。
-export function ApiKeyQuotaSettingsModal({ apiKeys, onClose, onSubmit }: ApiKeyQuotaSettingsModalProps) {
-  const { t } = useTranslation();
-  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(() => new Set());
+interface UseApiKeyQuotaFormOptions {
+  apiKeys: CpaApiKeySettingsItem[];
+  onSubmit: (request: QuotaPolicyUpdateRequest) => Promise<boolean>;
+  onAdjust: (request: QuotaAdjustmentRequest) => Promise<QuotaAdjustmentResult | null>;
+  onClearAdjustments: (request: { apiKeyIds: string[]; windows: ApiKeyLimitWindow[] }) => Promise<boolean>;
+  initialSelectedIds?: string[];
+  initialMode?: QuotaDialogMode;
+  /** 提交/应用调整/清除调整成功后的收尾：弹窗版借它关闭整个 Modal；内嵌到单 key 面板时不传，表单原地保留。 */
+  onDone?: () => void;
+}
+
+interface ApiKeyQuotaFormState {
+  mode: QuotaDialogMode;
+  onModeChange: (next: QuotaDialogMode) => void;
+  selectedKeys: Set<string>;
+  onKeysChange: (next: Set<string>) => void;
+  windows: Set<ApiKeyLimitWindow>;
+  onToggleWindow: (window: ApiKeyLimitWindow) => void;
+  values: Partial<Record<ApiKeyLimitWindow, string>>;
+  onValueChange: (window: ApiKeyLimitWindow, value: string) => void;
+  adjustmentAmount: string;
+  onAdjustmentAmountChange: (value: string) => void;
+  adjustmentResult: QuotaAdjustmentResult | null;
+  error: 'keys' | 'periods' | 'value' | null;
+  pending: boolean;
+  selectedIds: string[];
+  singleKey: CpaApiKeySettingsItem | null;
+  currentLimit: (window: ApiKeyLimitWindow) => number | undefined;
+  currentAdjustment: (window: ApiKeyLimitWindow) => number | undefined;
+  labelForId: (id: string) => string;
+  handleSubmit: () => Promise<void>;
+  handleApplyAdjustment: () => Promise<void>;
+  handleClearAdjustments: () => Promise<void>;
+}
+
+// 抽成 hook 是为了让弹窗版（ApiKeyQuotaSettingsModal）与单 key 面板内嵌版（ApiKeyQuotaSection）
+// 共用同一套状态与校验逻辑：外层容器不同（Modal+悬浮按钮 vs. 内嵌区块），逻辑不应该分叉成两份。
+// 无任何默认：必须先选 key，再选要修改的周期；只选一个 key 时预填其常规限额（不含临时调整）。
+function useApiKeyQuotaForm({
+  apiKeys,
+  onSubmit,
+  onAdjust,
+  onClearAdjustments,
+  initialSelectedIds,
+  initialMode = 'normal',
+  onDone,
+}: UseApiKeyQuotaFormOptions): ApiKeyQuotaFormState {
+  const [mode, setMode] = useState<QuotaDialogMode>(initialMode);
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(() => new Set(initialSelectedIds ?? []));
   const [windows, setWindows] = useState<Set<ApiKeyLimitWindow>>(() => new Set());
   const [values, setValues] = useState<Partial<Record<ApiKeyLimitWindow, string>>>({});
-  const [enforcement, setEnforcement] = useState<QuotaEnforcementChoice>('keep');
+  const [adjustmentAmount, setAdjustmentAmount] = useState('');
+  const [adjustmentResult, setAdjustmentResult] = useState<QuotaAdjustmentResult | null>(null);
   const [error, setError] = useState<'keys' | 'periods' | 'value' | null>(null);
   const [pending, setPending] = useState(false);
 
   const selectedIds = useMemo(() => apiKeys.filter((item) => selectedKeys.has(item.id)).map((item) => item.id), [apiKeys, selectedKeys]);
   const singleKey = selectedIds.length === 1 ? apiKeys.find((item) => item.id === selectedIds[0]) ?? null : null;
-  const currentLimit = useCallback((window: ApiKeyLimitWindow) => (
-    singleKey?.policy?.limits?.find((limit) => limit.window === window)?.value
-  ), [singleKey]);
+  // 预填必须用常规限额（baseValue），而不是叠加临时调整后的生效值，否则保存会把调整焊死进常规限额。
+  const currentLimit = useCallback((window: ApiKeyLimitWindow) => {
+    const limit = singleKey?.policy?.limits?.find((entry) => entry.window === window);
+    return limit ? limit.baseValue ?? limit.value : undefined;
+  }, [singleKey]);
 
-  const handleToggleWindow = useCallback((window: ApiKeyLimitWindow) => {
+  // 单 key + 临时模式下用来展示"这个周期已经有调整了吗"：adjustmentUsd 缺失就是没有生效的调整。
+  const currentAdjustment = useCallback((window: ApiKeyLimitWindow) => {
+    const limit = singleKey?.policy?.limits?.find((entry) => entry.window === window);
+    return limit?.adjustmentUsd;
+  }, [singleKey]);
+
+  const labelForId = useCallback((id: string) => {
+    const found = apiKeys.find((item) => item.id === id);
+    return found ? keyLabel(found) : id;
+  }, [apiKeys]);
+
+  const onToggleWindow = useCallback((window: ApiKeyLimitWindow) => {
     setError(null);
     const next = toggleWindow(windows, window);
     // 单 key 编辑时勾选周期即预填当前值，避免误把已有限额清空。
@@ -329,103 +443,325 @@ export function ApiKeyQuotaSettingsModal({ apiKeys, onClose, onSubmit }: ApiKeyQ
     setWindows(next);
   }, [currentLimit, windows]);
 
+  const onModeChange = useCallback((next: QuotaDialogMode) => {
+    setMode(next);
+    setError(null);
+    setAdjustmentResult(null);
+  }, []);
+
+  const onKeysChange = useCallback((next: Set<string>) => {
+    setSelectedKeys(next);
+    setError(null);
+    // 选择变化后清空草稿值，下次勾选周期时按新选择重新预填。
+    setValues({});
+    setWindows(new Set());
+    setAdjustmentResult(null);
+  }, []);
+
+  const onValueChange = useCallback((window: ApiKeyLimitWindow, value: string) => {
+    setError(null);
+    setValues((draft) => ({ ...draft, [window]: value }));
+  }, []);
+
+  const onAdjustmentAmountChange = useCallback((value: string) => {
+    setError(null);
+    setAdjustmentAmount(value);
+  }, []);
+
   const handleSubmit = useCallback(async () => {
-    const built = buildQuotaPolicyUpdateRequest(selectedIds, windows, values, enforcement);
+    const built = buildQuotaPolicyUpdateRequest(selectedIds, windows, values);
     setError(built.error);
     if (!built.request) return;
     setPending(true);
     try {
-      if (await onSubmit(built.request)) onClose();
+      if (await onSubmit(built.request)) onDone?.();
     } finally {
       setPending(false);
     }
-  }, [enforcement, onClose, onSubmit, selectedIds, values, windows]);
+  }, [onDone, onSubmit, selectedIds, values, windows]);
 
-  const enforcementOptions = useMemo(() => (['keep', 'on', 'off'] as const).map((value) => ({
-    value,
-    label: t(`usage_stats.api_key_quota_enforcement_${value}`),
-  })), [t]);
+  const handleApplyAdjustment = useCallback(async () => {
+    const built = buildQuotaAdjustmentRequest(selectedIds, windows, adjustmentAmount);
+    setError(built.error);
+    if (!built.request) return;
+    setPending(true);
+    try {
+      const result = await onAdjust(built.request);
+      if (!result) return;
+      setAdjustmentResult(result);
+      // 全部应用成功才收尾；有跳过项时留在原地让用户看清楚哪些 key/周期没有常规限额。
+      if (result.skipped.length === 0) onDone?.();
+    } finally {
+      setPending(false);
+    }
+  }, [adjustmentAmount, onAdjust, onDone, selectedIds, windows]);
+
+  const handleClearAdjustments = useCallback(async () => {
+    if (selectedIds.length === 0) {
+      setError('keys');
+      return;
+    }
+    const selectedWindows = orderedWindows(windows);
+    if (selectedWindows.length === 0) {
+      setError('periods');
+      return;
+    }
+    setPending(true);
+    try {
+      if (await onClearAdjustments({ apiKeyIds: selectedIds, windows: selectedWindows })) onDone?.();
+    } finally {
+      setPending(false);
+    }
+  }, [onClearAdjustments, onDone, selectedIds, windows]);
+
+  return {
+    mode,
+    onModeChange,
+    selectedKeys,
+    onKeysChange,
+    windows,
+    onToggleWindow,
+    values,
+    onValueChange,
+    adjustmentAmount,
+    onAdjustmentAmountChange,
+    adjustmentResult,
+    error,
+    pending,
+    selectedIds,
+    singleKey,
+    currentLimit,
+    currentAdjustment,
+    labelForId,
+    handleSubmit,
+    handleApplyAdjustment,
+    handleClearAdjustments,
+  };
+}
+
+interface ApiKeyQuotaFormFieldsProps {
+  apiKeys: CpaApiKeySettingsItem[];
+  hideKeyPicker?: boolean;
+  form: ApiKeyQuotaFormState;
+}
+
+// 常规/临时调整表单的共享内容：弹窗版与单 key 面板内嵌版渲染同一份 JSX，避免分叉维护两套。
+function ApiKeyQuotaFormFields({ apiKeys, hideKeyPicker = false, form }: ApiKeyQuotaFormFieldsProps) {
+  const { t } = useTranslation();
+  const {
+    mode, onModeChange, selectedKeys, onKeysChange, windows, onToggleWindow, values, onValueChange,
+    adjustmentAmount, onAdjustmentAmountChange, adjustmentResult, error, pending, selectedIds, singleKey,
+    currentLimit, currentAdjustment, labelForId,
+  } = form;
+
+  return (
+    <div className={styles.apiKeyPolicyStack}>
+      <div className={styles.apiKeyQuotaModeSwitch} role="group" aria-label={t('usage_stats.api_key_quota_mode_switch_label')}>
+        {(['normal', 'temporary'] as const).map((option) => (
+          <button
+            key={option}
+            type="button"
+            className={`${styles.apiKeyQuotaModeOption} ${mode === option ? styles.apiKeyQuotaModeOptionActive : ''}`.trim()}
+            aria-pressed={mode === option}
+            disabled={pending}
+            onClick={() => onModeChange(option)}
+            data-api-key-quota-mode={option}
+          >
+            {t(`usage_stats.api_key_quota_mode_${option}`)}
+          </button>
+        ))}
+      </div>
+      <p className={styles.apiKeyPolicyUsageHint}>
+        {/* 隐藏了 key 选择器（单 key 面板）时提示语不能再提"选择 API Key"，这里切一份单 key 文案。 */}
+        {t(hideKeyPicker
+          ? (mode === 'normal' ? 'usage_stats.api_key_quota_settings_hint_single_key' : 'usage_stats.api_key_quota_adjustment_hint_single_key')
+          : (mode === 'normal' ? 'usage_stats.api_key_quota_settings_hint' : 'usage_stats.api_key_quota_adjustment_hint'))}
+      </p>
+      {!hideKeyPicker && (
+        <ApiKeyPicker apiKeys={apiKeys} selected={selectedKeys} onChange={onKeysChange} disabled={pending} />
+      )}
+      <PeriodPicker selected={windows} onToggle={onToggleWindow} disabled={pending || selectedIds.length === 0} />
+      {mode === 'normal' && windows.size > 0 && (
+        <div className={styles.apiKeyPolicyGrid}>
+          {QUOTA_WINDOWS.filter((window) => windows.has(window)).map((window) => {
+            const existing = currentLimit(window);
+            return (
+              <div key={window} className={styles.apiKeyPolicyField}>
+                <Input
+                  type="number"
+                  inputMode="decimal"
+                  step="any"
+                  min={0}
+                  label={`${t('usage_stats.api_key_policy_limit_cost')} · ${t(`usage_stats.api_key_policy_window_${window}`)}`}
+                  placeholder={t('usage_stats.api_key_quota_no_limit_placeholder')}
+                  value={values[window] ?? ''}
+                  className={`${styles.usagePillControl} ${styles.apiKeyPolicyInput}`.trim()}
+                  disabled={pending}
+                  onChange={(event) => onValueChange(window, event.target.value)}
+                  data-api-key-quota-value={window}
+                />
+                {singleKey?.policy && (
+                  <div className={styles.apiKeyPolicyUsageHint}>
+                    {existing !== undefined
+                      ? t('usage_stats.api_key_quota_current_limit', { value: existing.toFixed(4) })
+                      : t('usage_stats.api_key_policy_no_limits')}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {mode === 'temporary' && (
+        <div className={styles.apiKeyPolicyField}>
+          <Input
+            inputMode="decimal"
+            label={t('usage_stats.api_key_quota_adjustment_amount_label')}
+            placeholder="+500"
+            value={adjustmentAmount}
+            className={`${styles.usagePillControl} ${styles.apiKeyPolicyInput}`.trim()}
+            disabled={pending}
+            onChange={(event) => onAdjustmentAmountChange(event.target.value)}
+            data-api-key-quota-adjustment-amount
+          />
+        </div>
+      )}
+      {mode === 'temporary' && hideKeyPicker && singleKey && windows.size > 0 && (
+        <div className={styles.apiKeyPolicyGrid}>
+          {/* 单 key 面板里没有别的地方能看到"这个周期是不是已经调整过了"，这里按已选周期逐条列出。 */}
+          {QUOTA_WINDOWS.filter((window) => windows.has(window)).map((window) => {
+            const adjustment = currentAdjustment(window);
+            return (
+              <p key={window} className={styles.apiKeyPolicyUsageHint} data-api-key-quota-current-adjustment={window}>
+                {adjustment !== undefined
+                  ? t('usage_stats.api_key_quota_adjustment_current', {
+                      window: t(`usage_stats.api_key_policy_window_${window}`),
+                      value: formatQuotaAdjustmentAmount(adjustment),
+                    })
+                  : t('usage_stats.api_key_quota_adjustment_none')}
+              </p>
+            );
+          })}
+        </div>
+      )}
+      {mode === 'temporary' && adjustmentResult && adjustmentResult.skipped.length > 0 && (
+        <div className={styles.apiKeyQuotaAdjustmentSkipped}>
+          <p className={styles.apiKeyPolicyError}>{t('usage_stats.api_key_quota_adjustment_skipped_title')}</p>
+          <ul className={styles.apiKeyQuotaAdjustmentSkippedList}>
+            {adjustmentResult.skipped.map((entry) => (
+              <li key={`${entry.apiKeyId}-${entry.window}`} className={styles.apiKeyQuotaAdjustmentSkippedItem}>
+                {t('usage_stats.api_key_quota_adjustment_skipped_item', {
+                  key: labelForId(entry.apiKeyId),
+                  window: t(`usage_stats.api_key_policy_window_${entry.window}`),
+                })}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {error === 'keys' && <p className={styles.apiKeyPolicyError}>{t('usage_stats.api_key_quota_select_keys_required')}</p>}
+      {error === 'periods' && <p className={styles.apiKeyPolicyError}>{t('usage_stats.api_key_quota_select_periods_required')}</p>}
+      {error === 'value' && (
+        <p className={styles.apiKeyPolicyError}>
+          {t(mode === 'normal' ? 'usage_stats.api_key_policy_invalid_value' : 'usage_stats.api_key_quota_adjustment_invalid_value')}
+        </p>
+      )}
+      {mode === 'normal' && (
+        <>
+          <p className={styles.apiKeyPolicyUsageHint}>{t('usage_stats.api_key_policy_window_hint')}</p>
+          <p className={styles.apiKeyPolicyUsageHint}>{t('usage_stats.api_key_policy_cost_requires_pricing')}</p>
+        </>
+      )}
+      {singleKey && <SingleKeyEnforcementLogs apiKeyId={singleKey.id} />}
+    </div>
+  );
+}
+
+// 无任何默认：必须先选 key，再选要修改的周期；只选一个 key 时预填其常规限额（不含临时调整）。
+export function ApiKeyQuotaSettingsModal({
+  apiKeys,
+  onClose,
+  onSubmit,
+  onAdjust,
+  onClearAdjustments,
+  initialSelectedIds,
+  hideKeyPicker = false,
+  initialMode = 'normal',
+}: ApiKeyQuotaSettingsModalProps) {
+  const { t } = useTranslation();
+  const form = useApiKeyQuotaForm({ apiKeys, onSubmit, onAdjust, onClearAdjustments, initialSelectedIds, initialMode, onDone: onClose });
 
   return (
     <Modal
       open
       title={t('usage_stats.api_key_quota_settings_title')}
       onClose={onClose}
-      closeDisabled={pending}
-      footer={
+      closeDisabled={form.pending}
+      footer={form.mode === 'normal' ? (
         <>
-          <Button type="button" variant="secondary" onClick={onClose} disabled={pending}>{t('common.cancel')}</Button>
-          <Button type="button" loading={pending} onClick={() => void handleSubmit()} data-api-key-quota-settings-submit>{t('common.save')}</Button>
+          <Button type="button" variant="secondary" onClick={onClose} disabled={form.pending}>{t('common.cancel')}</Button>
+          <Button type="button" loading={form.pending} onClick={() => void form.handleSubmit()} data-api-key-quota-settings-submit>{t('common.save')}</Button>
         </>
-      }
+      ) : (
+        <>
+          <Button type="button" variant="secondary" onClick={onClose} disabled={form.pending}>{t('common.cancel')}</Button>
+          <Button type="button" variant="secondary" loading={form.pending} onClick={() => void form.handleClearAdjustments()} data-api-key-quota-adjustment-clear>
+            {t('usage_stats.api_key_quota_adjustment_clear')}
+          </Button>
+          <Button type="button" loading={form.pending} onClick={() => void form.handleApplyAdjustment()} data-api-key-quota-adjustment-apply>
+            {t('usage_stats.api_key_quota_adjustment_apply')}
+          </Button>
+        </>
+      )}
     >
-      <div className={styles.apiKeyPolicyStack}>
-        <p className={styles.apiKeyPolicyUsageHint}>{t('usage_stats.api_key_quota_settings_hint')}</p>
-        <ApiKeyPicker
-          apiKeys={apiKeys}
-          selected={selectedKeys}
-          onChange={(next) => {
-            setSelectedKeys(next);
-            setError(null);
-            // 选择变化后清空草稿值，下次勾选周期时按新选择重新预填。
-            setValues({});
-            setWindows(new Set());
-          }}
-          disabled={pending}
-        />
-        <PeriodPicker selected={windows} onToggle={handleToggleWindow} disabled={pending || selectedIds.length === 0} />
-        {windows.size > 0 && (
-          <div className={styles.apiKeyPolicyGrid}>
-            {QUOTA_WINDOWS.filter((window) => windows.has(window)).map((window) => {
-              const existing = currentLimit(window);
-              return (
-                <div key={window} className={styles.apiKeyPolicyField}>
-                  <Input
-                    type="number"
-                    inputMode="decimal"
-                    step="any"
-                    min={0}
-                    label={`${t('usage_stats.api_key_policy_limit_cost')} · ${t(`usage_stats.api_key_policy_window_${window}`)}`}
-                    placeholder={t('usage_stats.api_key_quota_no_limit_placeholder')}
-                    value={values[window] ?? ''}
-                    className={`${styles.usagePillControl} ${styles.apiKeyPolicyInput}`.trim()}
-                    disabled={pending}
-                    onChange={(event) => {
-                      setError(null);
-                      setValues((draft) => ({ ...draft, [window]: event.target.value }));
-                    }}
-                    data-api-key-quota-value={window}
-                  />
-                  {singleKey?.policy && (
-                    <div className={styles.apiKeyPolicyUsageHint}>
-                      {existing !== undefined
-                        ? t('usage_stats.api_key_quota_current_limit', { value: existing.toFixed(4) })
-                        : t('usage_stats.api_key_policy_no_limits')}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-        <label className={styles.apiKeyQuotaEnforcement}>
-          <span className={styles.apiKeyQuotaLegend}>{t('usage_stats.api_key_quota_enforcement_label')}</span>
-          <Select
-            value={enforcement}
-            options={enforcementOptions}
-            onChange={(value) => { setEnforcement(value as QuotaEnforcementChoice); setError(null); }}
-            ariaLabel={t('usage_stats.api_key_quota_enforcement_label')}
-            fullWidth={false}
-            disabled={pending || selectedIds.length === 0}
-          />
-        </label>
-        {error === 'keys' && <p className={styles.apiKeyPolicyError}>{t('usage_stats.api_key_quota_select_keys_required')}</p>}
-        {error === 'periods' && <p className={styles.apiKeyPolicyError}>{t('usage_stats.api_key_quota_select_periods_required')}</p>}
-        {error === 'value' && <p className={styles.apiKeyPolicyError}>{t('usage_stats.api_key_policy_invalid_value')}</p>}
-        <p className={styles.apiKeyPolicyUsageHint}>{t('usage_stats.api_key_policy_window_hint')}</p>
-        <p className={styles.apiKeyPolicyUsageHint}>{t('usage_stats.api_key_policy_cost_requires_pricing')}</p>
-        {singleKey && <SingleKeyEnforcementLogs apiKeyId={singleKey.id} />}
-      </div>
+      <ApiKeyQuotaFormFields apiKeys={apiKeys} hideKeyPicker={hideKeyPicker} form={form} />
     </Modal>
+  );
+}
+
+export interface ApiKeyQuotaSectionProps {
+  /** 固定管理的单个 key：面板不提供多选器，永远只针对它。 */
+  item: CpaApiKeySettingsItem;
+  onSubmit: (request: QuotaPolicyUpdateRequest) => Promise<boolean>;
+  onAdjust: (request: QuotaAdjustmentRequest) => Promise<QuotaAdjustmentResult | null>;
+  onClearAdjustments: (request: { apiKeyIds: string[]; windows: ApiKeyLimitWindow[] }) => Promise<boolean>;
+  initialMode?: QuotaDialogMode;
+}
+
+// 单 key 管理面板内嵌的配额表单：复用与弹窗版完全相同的状态 hook 与字段 JSX，
+// 只是不再包一层 Modal（per-key 面板本身已经是一个 Modal，避免 Modal 套 Modal），
+// 操作按钮改成内嵌在内容区而不是弹窗底部的 footer。
+export function ApiKeyQuotaSection({ item, onSubmit, onAdjust, onClearAdjustments, initialMode }: ApiKeyQuotaSectionProps) {
+  const { t } = useTranslation();
+  const apiKeys = useMemo(() => [item], [item]);
+  const form = useApiKeyQuotaForm({
+    apiKeys,
+    onSubmit,
+    onAdjust,
+    onClearAdjustments,
+    initialSelectedIds: apiKeys.map((entry) => entry.id),
+    initialMode,
+  });
+
+  return (
+    <div className={styles.apiKeyQuotaSectionStack}>
+      <ApiKeyQuotaFormFields apiKeys={apiKeys} hideKeyPicker form={form} />
+      <div className={styles.apiKeyManageActions}>
+        {form.mode === 'normal' ? (
+          <Button type="button" loading={form.pending} onClick={() => void form.handleSubmit()} data-api-key-quota-settings-submit>
+            {t('common.save')}
+          </Button>
+        ) : (
+          <>
+            <Button type="button" variant="secondary" loading={form.pending} onClick={() => void form.handleClearAdjustments()} data-api-key-quota-adjustment-clear>
+              {t('usage_stats.api_key_quota_adjustment_clear')}
+            </Button>
+            <Button type="button" loading={form.pending} onClick={() => void form.handleApplyAdjustment()} data-api-key-quota-adjustment-apply>
+              {t('usage_stats.api_key_quota_adjustment_apply')}
+            </Button>
+          </>
+        )}
+      </div>
+    </div>
   );
 }

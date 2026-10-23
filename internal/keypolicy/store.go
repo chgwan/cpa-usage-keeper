@@ -189,6 +189,30 @@ func (s *Store) PerKeyUsage(ctx context.Context, daily, weekly, monthly Window) 
 	return result, nil
 }
 
+// ActiveAdjustments 一次性加载三个窗口当前周期生效的调整额，按 key 分组返回；
+// 没有调整的 key 不出现在返回的 map 里（nil Adjustments 对 ApplyAdjustments 是安全的）。
+func (s *Store) ActiveAdjustments(daily, weekly, monthly Window) (map[int64]Adjustments, error) {
+	windows := []Window{daily, weekly, monthly}
+	windowKeys := make(map[string]string, len(windows))
+	for _, w := range windows {
+		windowKeys[string(w.Kind)] = WindowKey(w)
+	}
+	rows, err := repository.ListActiveAPIKeyQuotaAdjustments(s.db, windowKeys)
+	if err != nil {
+		return nil, fmt.Errorf("load active api key quota adjustments: %w", err)
+	}
+	result := make(map[int64]Adjustments, len(rows))
+	for _, row := range rows {
+		adjustments := result[row.CPAAPIKeyID]
+		if adjustments == nil {
+			adjustments = Adjustments{}
+			result[row.CPAAPIKeyID] = adjustments
+		}
+		adjustments[LimitWindow(row.Window)] = row.DeltaUSD
+	}
+	return result, nil
+}
+
 // SingleKeyUsage 只评估单个 key，供策略查询接口使用。
 func (s *Store) SingleKeyUsage(ctx context.Context, cpaAPIKeyID int64, daily, weekly, monthly Window) (UsageByWindow, error) {
 	all, err := s.PerKeyUsage(ctx, daily, weekly, monthly)

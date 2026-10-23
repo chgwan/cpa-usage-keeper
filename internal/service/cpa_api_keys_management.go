@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -31,6 +32,10 @@ var ErrKeyDisabled = errors.New("api key is disabled")
 // ErrInvalidInput 标记请求参数校验失败（自定义 key 非法、key 重复、限额非法），路由层映射为 400。
 var ErrInvalidInput = errors.New("invalid input")
 
+// quotaAdjustmentMaxAbsDeltaUSD 是临时调整额 delta 的绝对值上限：防止 limit+delta 溢出到
+// +Inf 把响应 JSON 编码搞坏，前端 buildQuotaAdjustmentRequest 用同一个值做镜像校验。
+const quotaAdjustmentMaxAbsDeltaUSD = 1e9
+
 // CPAAPIKeyManagementProvider 是 api-key 生命周期与限额策略的服务接口。
 type CPAAPIKeyManagementProvider interface {
 	// CreateCPAAPIKey 新建 key 并返回完整值；完整值只在此处返回一次。
@@ -45,8 +50,8 @@ type CPAAPIKeyManagementProvider interface {
 	RestoreCPAAPIKey(ctx context.Context, id int64) error
 	// GetCPAAPIKeyPolicy 返回策略与当前窗口用量。
 	GetCPAAPIKeyPolicy(ctx context.Context, id int64) (CPAAPIKeyPolicyView, error)
-	// SaveCPAAPIKeyPolicy 校验并保存限额与开关。
-	SaveCPAAPIKeyPolicy(ctx context.Context, id int64, limits keypolicy.Limits, enabled bool) error
+	// SaveCPAAPIKeyPolicy 校验并保存限额；限额开关固定常开，不再接受调用方传入。
+	SaveCPAAPIKeyPolicy(ctx context.Context, id int64, limits keypolicy.Limits) error
 	// ListCPAAPIKeyEnforcementLogs 返回审计记录，新事件在前。
 	ListCPAAPIKeyEnforcementLogs(ctx context.Context, id int64, limit int) ([]entities.APIKeyEnforcementLog, error)
 	// ListCPAAPIKeyPolicySummaries 一次返回所有启用策略 key 的徽标摘要，供列表路由富化。
@@ -55,26 +60,46 @@ type CPAAPIKeyManagementProvider interface {
 	ResetCPAAPIKeyQuotas(ctx context.Context, ids []int64, windows []keypolicy.LimitWindow) error
 	// UpdateCPAAPIKeyPolicies 批量修改所选 key 的指定窗口限额，未选窗口保持原值。
 	UpdateCPAAPIKeyPolicies(ctx context.Context, ids []int64, changes CPAAPIKeyPolicyChanges) error
+	// SetCPAAPIKeyQuotaAdjustments 为选中的 key × 窗口设置本周期临时调整额；只对已有正常限额的窗口生效。
+	SetCPAAPIKeyQuotaAdjustments(ctx context.Context, ids []int64, windows []keypolicy.LimitWindow, deltaUSD float64) (QuotaAdjustmentResult, error)
+	// ClearCPAAPIKeyQuotaAdjustments 提前清除所选 key × 窗口当前生效的临时调整。
+	ClearCPAAPIKeyQuotaAdjustments(ctx context.Context, ids []int64, windows []keypolicy.LimitWindow) error
 }
 
-// CPAAPIKeyPolicyChanges 是批量限额修改：Limits 只列出要改的窗口，值为 nil 表示移除该窗口限额；
-// Enabled 为 nil 表示保持各 key 原有开关。
+// QuotaAdjustmentTarget 标识一个 key × 窗口的调整目标。
+type QuotaAdjustmentTarget struct {
+	APIKeyID int64
+	Window   keypolicy.LimitWindow
+}
+
+// QuotaAdjustmentResult 是批量设置临时调整的结果：Skipped 的原因固定是 "no_limit"
+//（该 key 在这个窗口本来就没有正常限额，调整无意义）。
+type QuotaAdjustmentResult struct {
+	Applied []QuotaAdjustmentTarget
+	Skipped []QuotaAdjustmentTarget
+}
+
+// CPAAPIKeyPolicyChanges 是批量限额修改：Limits 只列出要改的窗口，值为 nil 表示移除该窗口限额。
+// 限额开关已固定常开，不再有 Enabled 字段可改。
 type CPAAPIKeyPolicyChanges struct {
-	Limits  map[keypolicy.LimitWindow]*float64
-	Enabled *bool
+	Limits map[keypolicy.LimitWindow]*float64
 }
 
 // CPAAPIKeyPolicyView 是策略接口的聚合返回值。
 type CPAAPIKeyPolicyView struct {
-	Policy   entities.CPAAPIKeyPolicy
-	Limits   keypolicy.Limits
-	Usage    keypolicy.UsageByWindow
-	Tightest *keypolicy.TightestLimit
+	Policy entities.CPAAPIKeyPolicy
+	Limits keypolicy.Limits
+	// Effective 是叠加临时调整后的生效限额，供只读查看方（viewer /key-overview/quota）
+	// 展示与实际执行一致的 limit/ratio；admin 的 GET/PUT 编辑仍然用 Limits（正常限额）。
+	Effective keypolicy.EffectiveLimits
+	Usage     keypolicy.UsageByWindow
+	Tightest  *keypolicy.TightestLimit
 }
 
 // CPAAPIKeyPolicySummary 是列表徽标需要的最小策略摘要。
+// 限额开关已常开且响应固定写 true（见 toCPAAPIKeyPolicySummaryResponse），这里不再保留
+// Enabled 字段：它从未被任何调用方读取，只会悄悄和响应脱节。
 type CPAAPIKeyPolicySummary struct {
-	Enabled          bool
 	EnforcementState string
 	Tightest         *keypolicy.TightestLimit
 	// Limits 是逐窗口（日 → 周 → 月）的已配置限额用量，供展开视图逐行展示。
@@ -181,6 +206,7 @@ func (s *cpaAPIKeyManagementService) ensurePolicyRow(cpaAPIKeyID int64) (entitie
 		return entities.CPAAPIKeyPolicy{}, err
 	}
 	created := entities.CPAAPIKeyPolicy{
+		// Enabled 固定 true：限额开关已不可关闭，新建的空策略行同样常开。
 		CPAAPIKeyID: cpaAPIKeyID, Limits: "[]", Enabled: true,
 		EnforcementState: string(keypolicy.StateActive),
 	}
@@ -383,16 +409,23 @@ func (s *cpaAPIKeyManagementService) GetCPAAPIKeyPolicy(ctx context.Context, id 
 		return CPAAPIKeyPolicyView{}, err
 	}
 	now := s.now()
-	usage, err := s.store.SingleKeyUsage(ctx, id, keypolicy.DailyWindow(now), keypolicy.WeeklyWindow(now), keypolicy.MonthlyWindow(now))
+	daily, weekly, monthly := keypolicy.DailyWindow(now), keypolicy.WeeklyWindow(now), keypolicy.MonthlyWindow(now)
+	usage, err := s.store.SingleKeyUsage(ctx, id, daily, weekly, monthly)
 	if err != nil {
 		return CPAAPIKeyPolicyView{}, err
 	}
+	adjustments, err := s.store.ActiveAdjustments(daily, weekly, monthly)
+	if err != nil {
+		return CPAAPIKeyPolicyView{}, err
+	}
+	// Tightest/Effective 展示生效值（叠加临时调整）；Limits 仍是正常存储的限额，是这个视图可编辑的配置。
+	effective := keypolicy.ApplyAdjustments(limits, adjustments[id])
 	return CPAAPIKeyPolicyView{
-		Policy: policy, Limits: limits, Usage: usage, Tightest: limits.Tightest(usage),
+		Policy: policy, Limits: limits, Effective: effective, Usage: usage, Tightest: effective.Tightest(usage),
 	}, nil
 }
 
-func (s *cpaAPIKeyManagementService) SaveCPAAPIKeyPolicy(ctx context.Context, id int64, limits keypolicy.Limits, enabled bool) error {
+func (s *cpaAPIKeyManagementService) SaveCPAAPIKeyPolicy(ctx context.Context, id int64, limits keypolicy.Limits) error {
 	s.keyMutations.Lock()
 	defer s.keyMutations.Unlock()
 	if _, err := repository.FindActiveCPAAPIKeyByID(s.db, id); err != nil {
@@ -409,13 +442,31 @@ func (s *cpaAPIKeyManagementService) SaveCPAAPIKeyPolicy(ctx context.Context, id
 		}
 		encoded = string(raw)
 	}
-	if _, err := s.ensurePolicyRow(id); err != nil {
+	policy, err := s.ensurePolicyRow(id)
+	if err != nil {
 		return err
 	}
+	// 保存前的正常限额：和新值比较找出被移除的窗口，顺带清掉这些窗口残留的临时调整
+	// （见 removedLimitWindows 的注释，item 3）。
+	before, err := keypolicy.ParseLimits(policy.Limits)
+	if err != nil {
+		return err
+	}
+	removed := removedLimitWindows(before, limits)
 	// 定向更新配置列：整行 upsert 会把读取时的 enforcement_state/admin_disabled/
 	// last_evaluated_at 原样写回，覆盖 runner 在读与写之间落下的并发禁用（保存期间
 	// runner 不持有 keyMutations）。禁用态是否解除由 runner 的恢复流程独立裁决。
-	return repository.UpdateCPAAPIKeyPolicyConfig(s.db, id, encoded, enabled)
+	// enabled 不再接受调用方输入，UpdateCPAAPIKeyPolicyConfig 内部固定写 true。
+	// 限额更新和调整清理放在同一个事务里：要么都生效，要么都不生效。
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := repository.UpdateCPAAPIKeyPolicyConfig(tx, id, encoded); err != nil {
+			return err
+		}
+		if len(removed) == 0 {
+			return nil
+		}
+		return repository.DeleteAPIKeyQuotaAdjustments(tx, []int64{id}, limitWindowStrings(removed))
+	})
 }
 
 func (s *cpaAPIKeyManagementService) ListCPAAPIKeyEnforcementLogs(_ context.Context, id int64, limit int) ([]entities.APIKeyEnforcementLog, error) {
@@ -429,7 +480,13 @@ func (s *cpaAPIKeyManagementService) ListCPAAPIKeyPolicySummaries(ctx context.Co
 		return nil, err
 	}
 	now := s.now()
-	usage, err := s.store.PerKeyUsage(ctx, keypolicy.DailyWindow(now), keypolicy.WeeklyWindow(now), keypolicy.MonthlyWindow(now))
+	daily, weekly, monthly := keypolicy.DailyWindow(now), keypolicy.WeeklyWindow(now), keypolicy.MonthlyWindow(now)
+	usage, err := s.store.PerKeyUsage(ctx, daily, weekly, monthly)
+	if err != nil {
+		return nil, err
+	}
+	// 临时调整额一次性加载，所有 key 的徽标共用同一份当前周期快照。
+	adjustments, err := s.store.ActiveAdjustments(daily, weekly, monthly)
 	if err != nil {
 		return nil, err
 	}
@@ -438,14 +495,15 @@ func (s *cpaAPIKeyManagementService) ListCPAAPIKeyPolicySummaries(ctx context.Co
 		limits, err := keypolicy.ParseLimits(row.Limits)
 		if err != nil {
 			// 单个 key 的限额 JSON 损坏只丢掉最紧张限额徽标，状态照常返回。
-			summaries[row.CPAAPIKeyID] = CPAAPIKeyPolicySummary{Enabled: row.Enabled, EnforcementState: row.EnforcementState}
+			summaries[row.CPAAPIKeyID] = CPAAPIKeyPolicySummary{EnforcementState: row.EnforcementState}
 			continue
 		}
+		// 徽标展示生效值（叠加临时调整）：value 是生效限额，Base/Adjustment 随 TightestLimit 一并带出。
+		effective := keypolicy.ApplyAdjustments(limits, adjustments[row.CPAAPIKeyID])
 		summaries[row.CPAAPIKeyID] = CPAAPIKeyPolicySummary{
-			Enabled:          row.Enabled,
 			EnforcementState: row.EnforcementState,
-			Tightest:         limits.Tightest(usage[row.CPAAPIKeyID]),
-			Limits:           limits.WindowUsages(usage[row.CPAAPIKeyID]),
+			Tightest:         effective.Tightest(usage[row.CPAAPIKeyID]),
+			Limits:           effective.WindowUsages(usage[row.CPAAPIKeyID]),
 		}
 	}
 	return summaries, nil
@@ -498,12 +556,34 @@ func uniqueIDs(ids []int64) []int64 {
 	return result
 }
 
-func joinLimitWindows(windows []keypolicy.LimitWindow) string {
+// limitWindowStrings 把窗口枚举转成仓储层按字符串匹配需要的切片。
+func limitWindowStrings(windows []keypolicy.LimitWindow) []string {
 	names := make([]string, 0, len(windows))
 	for _, window := range windows {
 		names = append(names, string(window))
 	}
-	return strings.Join(names, ",")
+	return names
+}
+
+func joinLimitWindows(windows []keypolicy.LimitWindow) string {
+	return strings.Join(limitWindowStrings(windows), ",")
+}
+
+// removedLimitWindows 比较调整前后的限额集合，返回在 before 里配置了限额、但 after 里已经
+// 不存在的窗口。这些窗口残留的临时调整需要跟着一起清掉：否则同一周期内先删掉某窗口的限额、
+// 再把限额加回来，旧的 adjustment 行会原样复活（window_key 没变，还在当前周期内生效）。
+func removedLimitWindows(before, after keypolicy.Limits) []keypolicy.LimitWindow {
+	afterHas := make(map[keypolicy.LimitWindow]bool, len(after))
+	for _, limit := range after {
+		afterHas[limit.Window] = true
+	}
+	removed := make([]keypolicy.LimitWindow, 0, len(before))
+	for _, limit := range before {
+		if !afterHas[limit.Window] {
+			removed = append(removed, limit.Window)
+		}
+	}
+	return removed
 }
 
 func (s *cpaAPIKeyManagementService) wake() {
@@ -586,7 +666,8 @@ func (s *cpaAPIKeyManagementService) UpdateCPAAPIKeyPolicies(_ context.Context, 
 	if len(ids) == 0 {
 		return fmt.Errorf("%w: at least one api key is required", ErrInvalidInput)
 	}
-	if len(changes.Limits) == 0 && changes.Enabled == nil {
+	// enabled 开关已移除：没有 limits 变更就真的无事可做。
+	if len(changes.Limits) == 0 {
 		return fmt.Errorf("%w: nothing to update", ErrInvalidInput)
 	}
 	changedWindows := make([]keypolicy.LimitWindow, 0, len(changes.Limits))
@@ -607,7 +688,7 @@ func (s *cpaAPIKeyManagementService) UpdateCPAAPIKeyPolicies(_ context.Context, 
 	type pendingUpdate struct {
 		id      int64
 		limits  string
-		enabled bool
+		removed []keypolicy.LimitWindow
 	}
 	updates := make([]pendingUpdate, 0, len(ids))
 	for _, id := range ids {
@@ -621,6 +702,7 @@ func (s *cpaAPIKeyManagementService) UpdateCPAAPIKeyPolicies(_ context.Context, 
 		if err != nil {
 			return err
 		}
+		// policy 只还需要读 Limits 做合并；enabled 已固定常开，不再从这行读出或写回。
 		current, err := keypolicy.ParseLimits(policy.Limits)
 		if err != nil {
 			return err
@@ -650,21 +732,141 @@ func (s *cpaAPIKeyManagementService) UpdateCPAAPIKeyPolicies(_ context.Context, 
 			}
 			encoded = string(raw)
 		}
-		enabled := policy.Enabled
-		if changes.Enabled != nil {
-			enabled = *changes.Enabled
-		}
-		updates = append(updates, pendingUpdate{id: id, limits: encoded, enabled: enabled})
+		// 本次合并移除的窗口要跟着清掉残留的临时调整，否则同周期内删了限额再加回来，
+		// 旧 adjustment 会原样复活（item 3）。
+		removed := removedLimitWindows(current, merged)
+		updates = append(updates, pendingUpdate{id: id, limits: encoded, removed: removed})
 	}
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
 		for _, update := range updates {
-			if err := repository.UpdateCPAAPIKeyPolicyConfig(tx, update.id, update.limits, update.enabled); err != nil {
+			if err := repository.UpdateCPAAPIKeyPolicyConfig(tx, update.id, update.limits); err != nil {
+				return err
+			}
+			if len(update.removed) == 0 {
+				continue
+			}
+			if err := repository.DeleteAPIKeyQuotaAdjustments(tx, []int64{update.id}, limitWindowStrings(update.removed)); err != nil {
 				return err
 			}
 		}
 		return nil
 	}); err != nil {
 		return err
+	}
+	s.wake()
+	return nil
+}
+
+// SetCPAAPIKeyQuotaAdjustments 给选中 key × 窗口设置本周期的临时调整额：只对该 key
+// 已配置正常限额的窗口生效，没有限额的窗口会被跳过（调整不能无中生有造出一条限额）。
+// 再次为同一 key × 窗口设置会替换上一次的 delta，不会累加。
+func (s *cpaAPIKeyManagementService) SetCPAAPIKeyQuotaAdjustments(_ context.Context, ids []int64, windows []keypolicy.LimitWindow, deltaUSD float64) (QuotaAdjustmentResult, error) {
+	ids = uniqueIDs(ids)
+	if len(ids) == 0 {
+		return QuotaAdjustmentResult{}, fmt.Errorf("%w: at least one api key is required", ErrInvalidInput)
+	}
+	windows, err := normalizeLimitWindows(windows)
+	if err != nil {
+		return QuotaAdjustmentResult{}, err
+	}
+	// NaN/±Inf/0 在这里挡住：ApplyAdjustments 本身不做这层校验，交给调用入口统一拒绝。
+	if math.IsNaN(deltaUSD) || math.IsInf(deltaUSD, 0) || deltaUSD == 0 {
+		return QuotaAdjustmentResult{}, fmt.Errorf("%w: deltaUsd must be a finite, non-zero number", ErrInvalidInput)
+	}
+	// 再封一个量级上限：limit + delta 本身不会溢出到 Inf，但没有上限就挡不住离谱输入，
+	// 且前端用同样的 1e9 上限做校验，这里必须保持一致。
+	if math.Abs(deltaUSD) > quotaAdjustmentMaxAbsDeltaUSD {
+		return QuotaAdjustmentResult{}, fmt.Errorf("%w: deltaUsd must not exceed %.0f in magnitude", ErrInvalidInput, quotaAdjustmentMaxAbsDeltaUSD)
+	}
+
+	now := s.now()
+	currentKeys := make(map[string]string, len(limitWindowOrder))
+	for _, window := range limitWindowOrder {
+		currentKeys[string(window)] = keypolicy.WindowKey(currentLimitWindow(window, now))
+	}
+
+	var result QuotaAdjustmentResult
+	rows := make([]entities.APIKeyQuotaAdjustment, 0, len(ids)*len(windows))
+	appliedByKey := make(map[int64][]keypolicy.LimitWindow, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			return QuotaAdjustmentResult{}, ErrInvalidID
+		}
+		if _, err := repository.FindActiveCPAAPIKeyByID(s.db, id); err != nil {
+			return QuotaAdjustmentResult{}, err
+		}
+		policy, err := s.ensurePolicyRow(id)
+		if err != nil {
+			return QuotaAdjustmentResult{}, err
+		}
+		limits, err := keypolicy.ParseLimits(policy.Limits)
+		if err != nil {
+			return QuotaAdjustmentResult{}, err
+		}
+		configured := make(map[keypolicy.LimitWindow]bool, len(limits))
+		for _, limit := range limits {
+			configured[limit.Window] = true
+		}
+		for _, window := range windows {
+			target := QuotaAdjustmentTarget{APIKeyID: id, Window: window}
+			if !configured[window] {
+				result.Skipped = append(result.Skipped, target)
+				continue
+			}
+			result.Applied = append(result.Applied, target)
+			appliedByKey[id] = append(appliedByKey[id], window)
+			rows = append(rows, entities.APIKeyQuotaAdjustment{
+				CPAAPIKeyID: id, Window: string(window), WindowKey: currentKeys[string(window)],
+				DeltaUSD: deltaUSD, CreatedAt: now, UpdatedAt: now,
+			})
+		}
+	}
+
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		return repository.UpsertAPIKeyQuotaAdjustments(tx, rows)
+	}); err != nil {
+		return QuotaAdjustmentResult{}, fmt.Errorf("save api key quota adjustments: %w", err)
+	}
+	for _, id := range ids {
+		if applied := appliedByKey[id]; len(applied) > 0 {
+			detail := fmt.Sprintf("%s %+.2f", joinLimitWindows(applied), deltaUSD)
+			s.writeEnforcementLog(id, "quota_adjusted", "admin_action", detail)
+		}
+	}
+	// 调整可能让超限的 key 立即转回未超限（或反过来超限），立即唤醒 runner 重新评估。
+	s.wake()
+	return result, nil
+}
+
+// ClearCPAAPIKeyQuotaAdjustments 提前清除所选 key × 窗口当前生效的临时调整，
+// 清除后的下一轮评估会按正常限额重新判定。
+func (s *cpaAPIKeyManagementService) ClearCPAAPIKeyQuotaAdjustments(_ context.Context, ids []int64, windows []keypolicy.LimitWindow) error {
+	ids = uniqueIDs(ids)
+	if len(ids) == 0 {
+		return fmt.Errorf("%w: at least one api key is required", ErrInvalidInput)
+	}
+	windows, err := normalizeLimitWindows(windows)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if id <= 0 {
+			return ErrInvalidID
+		}
+		if _, err := repository.FindActiveCPAAPIKeyByID(s.db, id); err != nil {
+			return err
+		}
+	}
+	windowNames := make([]string, 0, len(windows))
+	for _, window := range windows {
+		windowNames = append(windowNames, string(window))
+	}
+	if err := repository.DeleteAPIKeyQuotaAdjustments(s.db, ids, windowNames); err != nil {
+		return fmt.Errorf("clear api key quota adjustments: %w", err)
+	}
+	detail := joinLimitWindows(windows)
+	for _, id := range ids {
+		s.writeEnforcementLog(id, "quota_adjustment_cleared", "admin_action", detail)
 	}
 	s.wake()
 	return nil

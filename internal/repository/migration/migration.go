@@ -111,6 +111,11 @@ const (
 	migrationRecoverExecutionUsageEvents = "20261018_recover_execution_usage_events"
 	// migrationCreateAPIKeyQuotaResets 创建限额临时清零点表，纯增量。
 	migrationCreateAPIKeyQuotaResets = "20261021_create_api_key_quota_resets"
+	// migrationCreateAPIKeyQuotaAdjustments 创建限额临时调整额表，纯增量。
+	migrationCreateAPIKeyQuotaAdjustments = "20261023_create_api_key_quota_adjustments"
+	// migrationForceAPIKeyPolicyEnforcement 限额执行从此始终开启；enabled 列保留但不再允许为 false，
+	// 避免一次破坏性 schema 变更。
+	migrationForceAPIKeyPolicyEnforcement = "20261023_force_api_key_policy_enforcement"
 )
 
 type schemaMigration struct {
@@ -267,6 +272,8 @@ func orderedMigrations() []databaseMigration {
 		{version: migrationAddUsageEventTraceMetadata, run: addUsageEventTraceMetadataMigration},
 		{version: migrationRecoverExecutionUsageEvents, run: recoverExecutionUsageEventsMigration, disableTransaction: true},
 		{version: migrationCreateAPIKeyQuotaResets, run: createAPIKeyQuotaResetsMigration},
+		{version: migrationCreateAPIKeyQuotaAdjustments, run: createAPIKeyQuotaAdjustmentsMigration},
+		{version: migrationForceAPIKeyPolicyEnforcement, run: forceAPIKeyPolicyEnforcementMigration},
 	}
 }
 

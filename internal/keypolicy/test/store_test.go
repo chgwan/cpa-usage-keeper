@@ -197,3 +197,33 @@ func TestPerKeyUsageCountsOnlyUsageAfterLatestQuotaReset(t *testing.T) {
 		t.Fatalf("quota reset must not touch usage events: count=%d err=%v", events, err)
 	}
 }
+
+// TestActiveAdjustmentsReturnsOnlyCurrentWindowKey 验证 ActiveAdjustments 按 key 分组返回当前周期生效的调整额，
+// window_key 不等于当前周期（上一周留下的旧行）的调整被当作已失效，不出现在结果里。
+func TestActiveAdjustmentsReturnsOnlyCurrentWindowKey(t *testing.T) {
+	db := newKeypolicyTestDB(t)
+	anchor := time.Date(2026, 10, 23, 12, 0, 0, 0, time.Local)
+	daily, weekly, monthly := keypolicy.DailyWindow(anchor), keypolicy.WeeklyWindow(anchor), keypolicy.MonthlyWindow(anchor)
+	lastWeek := anchor.AddDate(0, 0, -7)
+	if err := repository.UpsertAPIKeyQuotaAdjustments(db, []entities.APIKeyQuotaAdjustment{
+		{CPAAPIKeyID: 7, Window: "weekly", WindowKey: keypolicy.WindowKey(weekly), DeltaUSD: 500},
+		{CPAAPIKeyID: 9, Window: "weekly", WindowKey: keypolicy.WindowKey(keypolicy.WeeklyWindow(lastWeek)), DeltaUSD: -200},
+	}); err != nil {
+		t.Fatalf("seed adjustments: %v", err)
+	}
+	store := keypolicy.NewStore(db, nil)
+	got, err := store.ActiveAdjustments(daily, weekly, monthly)
+	if err != nil {
+		t.Fatalf("active adjustments: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected exactly one key with active adjustments, got %+v", got)
+	}
+	adjustments, ok := got[7]
+	if !ok || len(adjustments) != 1 || adjustments[keypolicy.LimitWindowWeekly] != 500 {
+		t.Fatalf("expected key 7's weekly adjustment of 500, got %+v", got)
+	}
+	if _, stale := got[9]; stale {
+		t.Fatalf("expected last week's stale adjustment to be absent, got %+v", got[9])
+	}
+}

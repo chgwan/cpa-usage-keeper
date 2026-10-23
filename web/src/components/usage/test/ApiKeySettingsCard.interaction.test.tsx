@@ -3,7 +3,7 @@
 import { act, type ComponentProps } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { CreatedApiKey, CpaApiKeySettingsItem } from '@/lib/types'
+import type { CpaApiKeySettingsItem } from '@/lib/types'
 import { ApiKeySettingsCard } from '../ApiKeySettingsCard'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -42,6 +42,8 @@ const translations: Record<string, string> = {
   'usage_stats.api_key_settings_sort_status': 'Status',
   'usage_stats.api_key_settings_sort_quota_ratio': 'Quota used %',
   'usage_stats.api_key_settings_sort_quota_spend': 'Quota spend',
+  'usage_stats.api_key_settings_manage_aria': 'Manage {{key}}',
+  'usage_stats.api_key_manage_actions_title': 'Key actions',
 }
 
 vi.mock('react-i18next', () => ({
@@ -216,36 +218,75 @@ describe('ApiKeySettingsCard row actions', () => {
     })
   }
 
-  it('regenerates through the inline confirm, blocks actions while busy, and reveals the new key once', async () => {
-    let resolveRegenerate: (created: CreatedApiKey | null) => void = () => undefined
-    const onRegenerateKey = vi.fn(() => new Promise<CreatedApiKey | null>((resolve) => {
-      resolveRegenerate = resolve
-    }))
-    await renderCard({ onRegenerateKey })
+  it('removes Regenerate/Disable/Delete from the row and opens a wired-through manage dialog instead', async () => {
+    const onRegenerateKey = vi.fn(async () => null)
+    const onDeleteKey = vi.fn(async () => false)
+    const onDisableKey = vi.fn(async () => false)
+    await renderCard({ onRegenerateKey, onDeleteKey, onDisableKey })
+
+    // 生命周期动作不再平铺在行内。
+    expect(findRowButton('Regenerate')).toBeUndefined()
+    expect(findRowButton('Disable')).toBeUndefined()
+    expect(findRowButton('Delete')).toBeUndefined()
+
+    const openButton = container.querySelector<HTMLButtonElement>(`[data-api-key-manage-open="${apiKey.id}"]`)
+    expect(openButton).not.toBeNull()
+    expect(openButton!.getAttribute('aria-haspopup')).toBe('dialog')
 
     await act(async () => {
-      findRowButton('Regenerate')?.click()
+      openButton!.click()
       await Promise.resolve()
     })
-    expect(modalText()).toContain('The old key stops working immediately.')
+    // 弹窗标题用别名；里面重新出现了之前行内的三个生命周期动作，并且是同一套 handler。
+    expect(modalText()).toContain('Primary')
+    expect(findModalButton('Regenerate')).toBeDefined()
+    expect(findModalButton('Disable')).toBeDefined()
+    expect(findModalButton('Delete')).toBeDefined()
 
     await act(async () => {
-      findModalButton('Regenerate')?.click()
+      findModalButton('Disable')?.click()
+      await Promise.resolve()
+    })
+    expect(onDisableKey).toHaveBeenCalledWith(apiKey.id)
+  })
+
+  it('keeps a regenerated key visible in the card-level reveal modal even after the manage dialog unmounts', async () => {
+    // 用标题精确定位弹窗，避免行内/面板/确认层里同文案按钮互相干扰（面板和确认层标题不同：别名 vs 操作名）。
+    const dialogOf = (titleText: string) =>
+      Array.from(document.body.querySelectorAll<HTMLElement>('.modal[role="dialog"][aria-modal="true"]'))
+        .find((modal) => modal.querySelector('.modal-title')?.textContent === titleText)
+    const buttonIn = (modal: HTMLElement | undefined, label: string) =>
+      modal
+        ? Array.from(modal.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === label)
+        : undefined
+
+    const created = { id: apiKey.id, key: 'sk-new-key-999', keyAlias: apiKey.keyAlias }
+    const onRegenerateKey = vi.fn(async () => created)
+    await renderCard({ apiKeys: [apiKey], onRegenerateKey })
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(`[data-api-key-manage-open="${apiKey.id}"]`)!.click()
+      await Promise.resolve()
+    })
+    const manage = dialogOf('Primary')!
+    await act(async () => {
+      buttonIn(manage, 'Regenerate')!.click()
+    })
+    const confirm = dialogOf('Regenerate')!
+    await act(async () => {
+      buttonIn(confirm, 'Regenerate')!.click()
       await Promise.resolve()
     })
     expect(onRegenerateKey).toHaveBeenCalledWith(apiKey.id)
-    // pendingId 忙态期间行内动作全部禁用。
-    expect(findRowButton('Regenerate')?.disabled).toBe(true)
-    expect(findRowButton('Save')?.disabled).toBe(true)
+    expect(dialogOf('API key created')!.textContent).toContain('sk-new-key-999')
 
-    await act(async () => {
-      resolveRegenerate({ id: apiKey.id, key: 'sk-once-new', keyAlias: 'Primary' })
-      await Promise.resolve()
-    })
-    expect(document.body.textContent).toContain('sk-once-new')
-    expect(document.body.textContent).toContain('API key created')
-    // 确认弹窗已进入关闭流程，一次性 reveal 弹窗成为当前可操作层。
-    expect(findModalButton("I've saved it")).toBeDefined()
+    // 模拟 UsagePage 刷新失败后把 apiKeys 清空（setApiKeySettings([])）：manage 面板因找不到对应项整体卸载，
+    // 但 reveal 状态在卡片层，必须独立于面板继续展示这个一次性 key，不能随面板一起消失。
+    await renderCard({ apiKeys: [] })
+    expect(dialogOf('Primary')).toBeUndefined()
+    const reveal = dialogOf('API key created')
+    expect(reveal).toBeDefined()
+    expect(reveal!.textContent).toContain('sk-new-key-999')
   })
 
   const secondKey: CpaApiKeySettingsItem = { ...apiKey, id: '42', apiKey: 'sk-beta', keyAlias: 'Beta', displayKey: 'sk-***beta', label: 'Beta' }
@@ -308,7 +349,139 @@ describe('ApiKeySettingsCard row actions', () => {
     expect(onSavePolicies).toHaveBeenLastCalledWith({ apiKeyIds: ['42'], limits: { daily: 2.5 } })
   })
 
-  it('blocks regenerate for a disabled key, offers restore, and deletes via the danger confirm', async () => {
+  it('has no enforcement control left in the quota settings dialog', async () => {
+    const onSavePolicies = vi.fn(() => Promise.resolve(true))
+    await renderCard({ apiKeys: [apiKey, secondKey], onSavePolicies })
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-api-key-quota-settings-open]')!.click()
+      await Promise.resolve()
+    })
+    expect(document.querySelector('[aria-label="usage_stats.api_key_quota_enforcement_label"]')).toBeNull()
+    expect(modalText()).not.toContain('api_key_quota_enforcement')
+  })
+
+  it('prefills single-key normal mode from the normal (base) limit, not the effective adjusted value', async () => {
+    const adjustedKey: CpaApiKeySettingsItem = {
+      ...apiKey,
+      policy: {
+        enabled: true,
+        enforcementState: 'active',
+        tightest: null,
+        limits: [{ type: 'cost', window: 'weekly', value: 2600, used: 40, ratio: 0.0154, baseValue: 2100, adjustmentUsd: 500 }],
+      },
+    }
+    const onSavePolicies = vi.fn(() => Promise.resolve(true))
+    await renderCard({ apiKeys: [adjustedKey], onSavePolicies })
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-api-key-quota-settings-open]')!.click()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      check(`[data-api-key-quota-key="${adjustedKey.id}"]`).click()
+    })
+    await act(async () => {
+      check('[data-api-key-quota-period="weekly"]').click()
+    })
+    // 预填必须用常规限额 2100，而不是生效值 2600，否则保存会把临时调整焊死进常规限额。
+    expect(check('[data-api-key-quota-value="weekly"]').value).toBe('2100')
+  })
+
+  it('switches to temporary mode, applies a signed adjustment, and keeps the dialog open to list skipped keys', async () => {
+    const onAdjustQuotas = vi.fn(() => Promise.resolve({
+      applied: [],
+      skipped: [{ apiKeyId: apiKey.id, window: 'weekly' as const, reason: 'no_limit' as const }],
+    }))
+    await renderCard({ onSavePolicies: () => Promise.resolve(true), onAdjustQuotas })
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-api-key-quota-settings-open]')!.click()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-api-key-quota-mode="temporary"]')!.click()
+    })
+    await act(async () => {
+      check(`[data-api-key-quota-key="${apiKey.id}"]`).click()
+    })
+    await act(async () => {
+      check('[data-api-key-quota-period="weekly"]').click()
+    })
+    const amountInput = check('[data-api-key-quota-adjustment-amount]')
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(amountInput, '+500')
+      amountInput.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-api-key-quota-adjustment-apply]')!.click()
+      await Promise.resolve()
+    })
+    expect(onAdjustQuotas).toHaveBeenCalledWith({ apiKeyIds: [apiKey.id], windows: ['weekly'], deltaUsd: 500 })
+    // 有 skipped 时弹窗保持打开，列出被跳过的 key/周期。
+    expect(document.querySelector('.modal')).not.toBeNull()
+    expect(modalText()).toContain('usage_stats.api_key_quota_adjustment_skipped_title')
+  })
+
+  it('closes the dialog after a temporary adjustment with nothing skipped', async () => {
+    const onAdjustQuotas = vi.fn(() => Promise.resolve({
+      applied: [{ apiKeyId: apiKey.id, window: 'weekly' as const }],
+      skipped: [],
+    }))
+    await renderCard({ onSavePolicies: () => Promise.resolve(true), onAdjustQuotas })
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-api-key-quota-settings-open]')!.click()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-api-key-quota-mode="temporary"]')!.click()
+    })
+    await act(async () => {
+      check(`[data-api-key-quota-key="${apiKey.id}"]`).click()
+    })
+    await act(async () => {
+      check('[data-api-key-quota-period="weekly"]').click()
+    })
+    const amountInput = check('[data-api-key-quota-adjustment-amount]')
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(amountInput, '-200')
+      amountInput.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-api-key-quota-adjustment-apply]')!.click()
+      await Promise.resolve()
+    })
+    expect(onAdjustQuotas).toHaveBeenCalledWith({ apiKeyIds: [apiKey.id], windows: ['weekly'], deltaUsd: -200 })
+    expect(document.querySelector('.modal')).toBeNull()
+  })
+
+  it('clears temporary adjustments for the chosen keys and periods', async () => {
+    const onClearQuotaAdjustments = vi.fn(() => Promise.resolve(true))
+    await renderCard({ onSavePolicies: () => Promise.resolve(true), onClearQuotaAdjustments })
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-api-key-quota-settings-open]')!.click()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-api-key-quota-mode="temporary"]')!.click()
+    })
+    await act(async () => {
+      check(`[data-api-key-quota-key="${apiKey.id}"]`).click()
+    })
+    await act(async () => {
+      check('[data-api-key-quota-period="weekly"]').click()
+    })
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-api-key-quota-adjustment-clear]')!.click()
+      await Promise.resolve()
+    })
+    expect(onClearQuotaAdjustments).toHaveBeenCalledWith({ apiKeyIds: [apiKey.id], windows: ['weekly'] })
+    expect(document.querySelector('.modal')).toBeNull()
+  })
+
+  it('shows the disabled badge inline, and the manage dialog offers restore instead of regenerate', async () => {
     const disabledKey: CpaApiKeySettingsItem = {
       ...apiKey,
       id: '9007199254740994',
@@ -333,29 +506,26 @@ describe('ApiKeySettingsCard row actions', () => {
     })
 
     expect(container.textContent).toContain('Manually disabled')
-    // 非 active：重新生成禁用并给出提示，启停按钮切到“恢复”。
-    expect(findRowButton('Regenerate')?.disabled).toBe(true)
-    expect(findRowButton('Regenerate')?.title).toBe('Restore the key before regenerating it.')
-    expect(findRowButton('Disable')).toBeUndefined()
+    // 行内不再有任何生命周期按钮，只有管理面板打开按钮。
+    expect(findRowButton('Regenerate')).toBeUndefined()
+    expect(findRowButton('Restore')).toBeUndefined()
+    expect(findRowButton('Delete')).toBeUndefined()
 
     await act(async () => {
-      findRowButton('Restore')?.click()
+      container.querySelector<HTMLButtonElement>(`[data-api-key-manage-open="${disabledKey.id}"]`)!.click()
+      await Promise.resolve()
+    })
+    // 非 active：面板里重新生成禁用并给出提示，启停按钮切到“恢复”。
+    expect(findModalButton('Regenerate')?.disabled).toBe(true)
+    expect(findModalButton('Regenerate')?.title).toBe('Restore the key before regenerating it.')
+    expect(findModalButton('Disable')).toBeUndefined()
+
+    await act(async () => {
+      findModalButton('Restore')?.click()
       await Promise.resolve()
     })
     expect(onRestoreKey).toHaveBeenCalledWith(disabledKey.id)
     expect(onDisableKey).not.toHaveBeenCalled()
-
-    await act(async () => {
-      findRowButton('Delete')?.click()
-      await Promise.resolve()
-    })
-    expect(modalText()).toContain('Delete this API key from CPA?')
-
-    await act(async () => {
-      findModalButton('Delete')?.click()
-      await Promise.resolve()
-    })
-    expect(onDeleteKey).toHaveBeenCalledWith(disabledKey.id)
   })
 
   it('reorders rows from the sort menu and remembers the choice', () => {
@@ -461,6 +631,68 @@ describe('ApiKeySettingsCard expand action', () => {
       triggerAfterFirstEscape!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
     })
     expect(dialog()).toBeNull()
+  })
+
+  it('treats an open per-key manage dialog as an inner modal: Escape closes only the dialog, keeping the card expanded', async () => {
+    await act(async () => {
+      root.render(<ApiKeySettingsCard apiKeys={[apiKey]} onSaveAlias={vi.fn()} onRegenerateKey={vi.fn(async () => null)} />)
+    })
+    act(() => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="usage_stats.api_key_settings_expand"]')!.click()
+    })
+    const expandedDialog = () => document.body.querySelector('[role="dialog"][aria-modal="true"]:not(.modal)')
+    expect(expandedDialog()).not.toBeNull()
+
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>(`[data-api-key-manage-open="${apiKey.id}"]`)!.click()
+      await Promise.resolve()
+    })
+    const manageModal = () => document.body.querySelector('.modal[role="dialog"][aria-modal="true"]')
+    expect(manageModal()).not.toBeNull()
+
+    // document 上一次真实的 Escape：管理面板是当前唯一打开的 Modal，直接命中它自己的监听器；
+    // 展开卡片这边的 window 级 Escape 监听在 innerModalOpen 为真时根本没有注册，不会被同一次按键连带收起。
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    })
+    expect(manageModal()).toBeNull()
+    expect(expandedDialog()).not.toBeNull()
+  })
+
+  // item 7 回归：manageDialogId 是开着管理面板时记下的 id，但如果刷新失败把 apiKeys 清空，
+  // 这个 id 再也找不到对应的 item 了。旧代码用 manageDialogId !== null 判断内层弹窗，
+  // 哪怕面板本身因为 manageDialogItem 为 null 已经从 DOM 消失，innerModalOpen 仍然卡在 true，
+  // 导致 Esc 再也无法收起展开的卡片。修复后用 manageDialogItem !== null 判断，列表清空后
+  // Esc 必须照常生效。
+  it('still collapses the expanded card on Escape after the manage dialog item disappears from an emptied list', async () => {
+    await act(async () => {
+      root.render(<ApiKeySettingsCard apiKeys={[apiKey]} onSaveAlias={vi.fn()} onRegenerateKey={vi.fn(async () => null)} />)
+    })
+    act(() => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="usage_stats.api_key_settings_expand"]')!.click()
+    })
+    const expandedDialog = () => document.body.querySelector('[role="dialog"][aria-modal="true"]:not(.modal)')
+    expect(expandedDialog()).not.toBeNull()
+
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>(`[data-api-key-manage-open="${apiKey.id}"]`)!.click()
+      await Promise.resolve()
+    })
+    const manageModal = () => document.body.querySelector('.modal[role="dialog"][aria-modal="true"]')
+    expect(manageModal()).not.toBeNull()
+
+    // 模拟一次刷新失败把列表清空：manageDialogId 这个 state 不会被这次 prop 变化自动重置。
+    await act(async () => {
+      root.render(<ApiKeySettingsCard apiKeys={[]} onSaveAlias={vi.fn()} onRegenerateKey={vi.fn(async () => null)} />)
+    })
+    // 面板找不到对应 item，自己已经从 DOM 消失。
+    expect(manageModal()).toBeNull()
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    })
+    expect(expandedDialog()).toBeNull()
+    expect(container.querySelector('button[aria-label="usage_stats.api_key_settings_expand"]')).not.toBeNull()
   })
 })
 

@@ -890,6 +890,9 @@ export interface ApiKeyTightestLimit {
   value: number
   used: number
   ratio: number
+  // 常规限额与当前生效的临时调整额；adjustmentUsd 缺失表示该周期没有生效的临时调整。
+  baseValue?: number
+  adjustmentUsd?: number
 }
 
 export interface ApiKeyPolicySummary {

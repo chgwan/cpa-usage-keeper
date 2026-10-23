@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { appendUniqueUsageEvents, getBackToCPALinkURL, getCredentialSectionVisibility, getOverviewDisplayLoading, getUsageCustomRangeForTab, getUsageTabOptions, handleUsageEventLoadMoreError, isUsagePageVisible, loadAnalysisSections, loadRequestEventsPreferences, loadUsagePageVersionInfo, normalizeRequestEventsPreferences, normalizeStoredApiKeyFilter, normalizeUsageTabValue, refreshPageData, REQUEST_EVENTS_PREFERENCES_STORAGE_KEY, resolveApiKeyFilterRequestState, resolveCredentialTimeZone, runUsageEventRequestLogDownload, sanitizeRequestEventFilters, saveRequestEventsPreferences, scheduleOverviewAutoRefresh, shouldAutoRefreshUsageTab, shouldResetSelectedApiKeyFilter, shouldShowApiKeyFilter, shouldShowRangeControls, shouldShowUpdateCheckButton, getUpdateCheckToastDuration, API_KEY_FILTER_MAX_LENGTH } from '../UsagePage';
+import { appendUniqueUsageEvents, getBackToCPALinkURL, getCredentialSectionVisibility, getOverviewDisplayLoading, getUsageCustomRangeForTab, getUsageTabOptions, handleUsageEventLoadMoreError, isUsagePageVisible, loadAnalysisSections, loadRequestEventsPreferences, loadUsagePageVersionInfo, normalizeRequestEventsPreferences, normalizeStoredApiKeyFilter, normalizeUsageTabValue, refreshPageData, REQUEST_EVENTS_PREFERENCES_STORAGE_KEY, resolveApiKeyFilterRequestState, resolveCredentialTimeZone, runUsageEventRequestLogDownload, sanitizeRequestEventFilters, saveRequestEventsPreferences, scheduleOverviewAutoRefresh, shouldAutoRefreshUsageTab, shouldResetSelectedApiKeyFilter, shouldShowApiKeyFilter, shouldShowQuotaAdjustmentSuccessToast, shouldShowRangeControls, shouldShowUpdateCheckButton, getUpdateCheckToastDuration, API_KEY_FILTER_MAX_LENGTH } from '../UsagePage';
 import { REQUEST_EVENT_COLUMN_IDS } from '@/components/usage/RequestEventsDetailsCard';
 import { ApiError } from '@/lib/api';
 import type { UsageFilterWindow, VersionResponse } from '@/lib/types';
@@ -418,6 +418,33 @@ describe('UsagePage update check controls', () => {
     expect(getUpdateCheckToastDuration('success')).toBe(4_000);
     expect(getUpdateCheckToastDuration('info')).toBe(4_000);
     expect(getUpdateCheckToastDuration('error')).toBe(6_000);
+  });
+});
+
+describe('shouldShowQuotaAdjustmentSuccessToast', () => {
+  it('shows success when at least one (key, window) pair was applied', () => {
+    expect(shouldShowQuotaAdjustmentSuccessToast({
+      applied: [{ apiKeyId: '1', window: 'weekly' }],
+      skipped: [],
+    })).toBe(true);
+  });
+
+  it('still shows success when some pairs applied and others were skipped', () => {
+    expect(shouldShowQuotaAdjustmentSuccessToast({
+      applied: [{ apiKeyId: '1', window: 'weekly' }],
+      skipped: [{ apiKeyId: '2', window: 'daily', reason: 'no_limit' }],
+    })).toBe(true);
+  });
+
+  it('does not show success when every pair was skipped', () => {
+    expect(shouldShowQuotaAdjustmentSuccessToast({
+      applied: [],
+      skipped: [{ apiKeyId: '1', window: 'weekly', reason: 'no_limit' }],
+    })).toBe(false);
+  });
+
+  it('does not show success when the request failed (null result)', () => {
+    expect(shouldShowQuotaAdjustmentSuccessToast(null)).toBe(false);
   });
 });
 

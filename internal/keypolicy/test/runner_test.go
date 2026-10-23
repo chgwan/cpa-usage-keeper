@@ -549,3 +549,203 @@ func TestRunnerRestoresQuotaDisabledKeyAfterQuotaReset(t *testing.T) {
 		t.Fatalf("quota reset must keep usage events: count=%d err=%v", events, err)
 	}
 }
+
+// seedWeeklyAdjustableKey 建一个带周费用上限的 key 并灌入一条当周事件，供调整类用例复用。
+func seedWeeklyAdjustableKey(t *testing.T, db *gorm.DB, apiKey string, limitValue float64, tokens int64) int64 {
+	t.Helper()
+	row := entities.CPAAPIKey{APIKey: apiKey, DisplayKey: apiKey}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+	if err := repository.UpsertCPAAPIKeyPolicy(db, &entities.CPAAPIKeyPolicy{
+		CPAAPIKeyID: row.ID, Limits: `[{"type":"cost","window":"weekly","value":` + fmt64(limitValue) + `}]`,
+		Enabled: true, EnforcementState: string(keypolicy.StateActive),
+	}); err != nil {
+		t.Fatalf("seed policy: %v", err)
+	}
+	now := time.Now()
+	noon := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, now.Location())
+	event := entities.UsageEvent{APIGroupKey: apiKey, Model: "m", InputTokens: tokens, TotalTokens: tokens, Timestamp: noon}
+	if err := db.Create(&event).Error; err != nil {
+		t.Fatalf("seed event: %v", err)
+	}
+	return row.ID
+}
+
+// TestRunnerAppliesActiveAdjustmentAndRestoresAfterDelete 验证临时调整叠加进评估：
+// 周限额 100、用量 60 本不超限，当周 -50 调整把生效限额收紧到 50 后立即触发禁用；
+// 删除调整后再评估必须自动恢复（恢复路径走 restoreKey，审计原因固定为 policy_updated）。
+func TestRunnerAppliesActiveAdjustmentAndRestoresAfterDelete(t *testing.T) {
+	db := newKeypolicyTestDB(t)
+	fake := &fakeCPAAPIKeys{keys: []string{"sk-adjusted", "sk-peer"}}
+	server := startFakeCPA(t, fake)
+	client := newCPAClient(t, server)
+	keyID := seedWeeklyAdjustableKey(t, db, "sk-adjusted", 100, 60)
+	other := entities.CPAAPIKey{APIKey: "sk-peer", DisplayKey: "sk-peer"}
+	if err := db.Create(&other).Error; err != nil {
+		t.Fatalf("seed peer key: %v", err)
+	}
+	runner := keypolicy.NewRunner(db, client, newRunnerCatalog(t), time.Minute, logrus.New(), nil)
+	if err := runner.EvaluateOnce(context.Background()); err != nil {
+		t.Fatalf("evaluate without adjustment: %v", err)
+	}
+	policy, err := repository.FindCPAAPIKeyPolicy(db, keyID)
+	if err != nil || policy.EnforcementState != string(keypolicy.StateActive) {
+		t.Fatalf("expected active before adjustment, got %+v err %v", policy, err)
+	}
+
+	now := time.Now()
+	weekKey := keypolicy.WindowKey(keypolicy.WeeklyWindow(now))
+	if err := repository.UpsertAPIKeyQuotaAdjustments(db, []entities.APIKeyQuotaAdjustment{{
+		CPAAPIKeyID: keyID, Window: "weekly", WindowKey: weekKey, DeltaUSD: -50, CreatedAt: now, UpdatedAt: now,
+	}}); err != nil {
+		t.Fatalf("seed adjustment: %v", err)
+	}
+	if err := runner.EvaluateOnce(context.Background()); err != nil {
+		t.Fatalf("evaluate with adjustment: %v", err)
+	}
+	policy, err = repository.FindCPAAPIKeyPolicy(db, keyID)
+	if err != nil || policy.EnforcementState != string(keypolicy.StateDisabledByQuota) {
+		t.Fatalf("expected disabled_by_quota after tightening adjustment, got %+v err %v", policy, err)
+	}
+	logs, _ := repository.ListAPIKeyEnforcementLogs(db, keyID, 10)
+	if len(logs) == 0 || logs[0].Action != "disabled" || logs[0].Reason != "limit_breached" {
+		t.Fatalf("expected disabled audit log, got %+v", logs)
+	}
+
+	if err := repository.DeleteAPIKeyQuotaAdjustments(db, []int64{keyID}, []string{"weekly"}); err != nil {
+		t.Fatalf("delete adjustment: %v", err)
+	}
+	if err := runner.EvaluateOnce(context.Background()); err != nil {
+		t.Fatalf("evaluate after delete: %v", err)
+	}
+	policy, err = repository.FindCPAAPIKeyPolicy(db, keyID)
+	if err != nil || policy.EnforcementState != string(keypolicy.StateActive) {
+		t.Fatalf("expected restored to active once adjustment is deleted, got %+v err %v", policy, err)
+	}
+	if len(fake.keys) != 2 {
+		t.Fatalf("expected key restored to CPA, got %v", fake.keys)
+	}
+}
+
+// TestRunnerIgnoresAdjustmentWithStaleWindowKey 验证 window_key 不是当前周期的调整行已经失效：
+// 若 -50 调整仍然生效会把周限额收紧到 50 触发超限，但过期行必须被忽略，key 保持 active。
+func TestRunnerIgnoresAdjustmentWithStaleWindowKey(t *testing.T) {
+	db := newKeypolicyTestDB(t)
+	fake := &fakeCPAAPIKeys{keys: []string{"sk-stale-adj", "sk-peer"}}
+	server := startFakeCPA(t, fake)
+	client := newCPAClient(t, server)
+	keyID := seedWeeklyAdjustableKey(t, db, "sk-stale-adj", 100, 60)
+	other := entities.CPAAPIKey{APIKey: "sk-peer", DisplayKey: "sk-peer"}
+	if err := db.Create(&other).Error; err != nil {
+		t.Fatalf("seed peer key: %v", err)
+	}
+	now := time.Now()
+	if err := repository.UpsertAPIKeyQuotaAdjustments(db, []entities.APIKeyQuotaAdjustment{{
+		CPAAPIKeyID: keyID, Window: "weekly", WindowKey: "2000-W01", DeltaUSD: -50, CreatedAt: now, UpdatedAt: now,
+	}}); err != nil {
+		t.Fatalf("seed stale adjustment: %v", err)
+	}
+	runner := keypolicy.NewRunner(db, client, newRunnerCatalog(t), time.Minute, logrus.New(), nil)
+	if err := runner.EvaluateOnce(context.Background()); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	policy, err := repository.FindCPAAPIKeyPolicy(db, keyID)
+	if err != nil || policy.EnforcementState != string(keypolicy.StateActive) {
+		t.Fatalf("expected stale adjustment ignored and key kept active, got %+v err %v", policy, err)
+	}
+	if len(fake.keys) != 2 {
+		t.Fatalf("expected both keys still in CPA, got %v", fake.keys)
+	}
+}
+
+// TestRunnerLastKeyGuardAppliesWithActiveAdjustment 验证叠加调整之后的收敛仍然受 last-key 守卫约束：
+// 场上只有一个 key 时，即便调整把它推过限额，runner 也绝不能把它从 CPA 删空。
+func TestRunnerLastKeyGuardAppliesWithActiveAdjustment(t *testing.T) {
+	db := newKeypolicyTestDB(t)
+	fake := &fakeCPAAPIKeys{keys: []string{"sk-only-adj"}}
+	server := startFakeCPA(t, fake)
+	client := newCPAClient(t, server)
+	keyID := seedWeeklyAdjustableKey(t, db, "sk-only-adj", 100, 60)
+	now := time.Now()
+	if err := repository.UpsertAPIKeyQuotaAdjustments(db, []entities.APIKeyQuotaAdjustment{{
+		CPAAPIKeyID: keyID, Window: "weekly", WindowKey: keypolicy.WindowKey(keypolicy.WeeklyWindow(now)), DeltaUSD: -50, CreatedAt: now, UpdatedAt: now,
+	}}); err != nil {
+		t.Fatalf("seed adjustment: %v", err)
+	}
+	runner := keypolicy.NewRunner(db, client, newRunnerCatalog(t), time.Minute, logrus.New(), nil)
+	if err := runner.EvaluateOnce(context.Background()); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if len(fake.keys) != 1 || fake.keys[0] != "sk-only-adj" {
+		t.Fatalf("last key must never be removed even when an adjustment breaches it, got %v", fake.keys)
+	}
+	policy, err := repository.FindCPAAPIKeyPolicy(db, keyID)
+	if err != nil || policy.EnforcementState != string(keypolicy.StateActive) {
+		t.Fatalf("expected state to stay active, got %+v err %v", policy, err)
+	}
+	logs, _ := repository.ListAPIKeyEnforcementLogs(db, keyID, 10)
+	if len(logs) == 0 || logs[0].Action != "skipped_last_key" {
+		t.Fatalf("expected skipped_last_key audit, got %+v", logs)
+	}
+}
+
+// TestRunnerRestoresAdjustmentDisabledKeyAfterWeekRolloverWithWindowResetReason 验证临时调整
+// 导致的禁用在周期翻转后自动恢复：用 NewRunnerWithClock 注入可推进的假时钟直接跨过周边界，
+// 不依赖真实挂钟时间，也不需要等到真的跨周才能跑这条用例。翻转后旧调整行的 window_key 不再匹配
+// 当前周（判定为过期调整被忽略），且禁用时记录的 DisabledWindowKey 不等于新一轮任何窗口 key，
+// 所以 restoreKey 必须把恢复原因落成 window_reset，而不是默认的 policy_updated。
+func TestRunnerRestoresAdjustmentDisabledKeyAfterWeekRolloverWithWindowResetReason(t *testing.T) {
+	db := newKeypolicyTestDB(t)
+	fake := &fakeCPAAPIKeys{keys: []string{"sk-rollover", "sk-peer"}}
+	server := startFakeCPA(t, fake)
+	client := newCPAClient(t, server)
+	keyID := seedWeeklyAdjustableKey(t, db, "sk-rollover", 100, 60)
+	other := entities.CPAAPIKey{APIKey: "sk-peer", DisplayKey: "sk-peer"}
+	if err := db.Create(&other).Error; err != nil {
+		t.Fatalf("seed peer key: %v", err)
+	}
+
+	clock := time.Now()
+	runner := keypolicy.NewRunnerWithClock(db, client, newRunnerCatalog(t), time.Minute, logrus.New(), nil, func() time.Time { return clock })
+
+	// 当周灌入 -50 调整：周限额 100 叠加调整收紧到 50，用量 60 立即超限触发禁用。
+	weekKey := keypolicy.WindowKey(keypolicy.WeeklyWindow(clock))
+	if err := repository.UpsertAPIKeyQuotaAdjustments(db, []entities.APIKeyQuotaAdjustment{{
+		CPAAPIKeyID: keyID, Window: "weekly", WindowKey: weekKey, DeltaUSD: -50, CreatedAt: clock, UpdatedAt: clock,
+	}}); err != nil {
+		t.Fatalf("seed adjustment: %v", err)
+	}
+	if err := runner.EvaluateOnce(context.Background()); err != nil {
+		t.Fatalf("evaluate with adjustment: %v", err)
+	}
+	rolloverPolicy, err := repository.FindCPAAPIKeyPolicy(db, keyID)
+	if err != nil || rolloverPolicy.EnforcementState != string(keypolicy.StateDisabledByQuota) {
+		t.Fatalf("expected disabled_by_quota after tightening adjustment, got %+v err %v", rolloverPolicy, err)
+	}
+	if rolloverPolicy.DisabledWindowKey != weekKey {
+		t.Fatalf("expected disabled window key %q, got %q", weekKey, rolloverPolicy.DisabledWindowKey)
+	}
+	if len(fake.keys) != 1 || fake.keys[0] != "sk-peer" {
+		t.Fatalf("expected breached key removed from CPA, got %v", fake.keys)
+	}
+
+	// 推进假时钟整整一周：调整行的 window_key 不再匹配新一周，视为过期被忽略；
+	// 用量窗口也随之滚动，旧事件落到上一周，当周用量归零。调整和限额都没被删除/重置，
+	// 唯一变化是周期翻转——这正是 item 8 要覆盖的场景。
+	clock = clock.AddDate(0, 0, 7)
+	if err := runner.EvaluateOnce(context.Background()); err != nil {
+		t.Fatalf("evaluate after week rollover: %v", err)
+	}
+	rolloverPolicy, err = repository.FindCPAAPIKeyPolicy(db, keyID)
+	if err != nil || rolloverPolicy.EnforcementState != string(keypolicy.StateActive) {
+		t.Fatalf("expected restored to active after week rollover, got %+v err %v", rolloverPolicy, err)
+	}
+	if len(fake.keys) != 2 {
+		t.Fatalf("expected key restored to CPA after week rollover, got %v", fake.keys)
+	}
+	rolloverLogs, _ := repository.ListAPIKeyEnforcementLogs(db, keyID, 10)
+	if len(rolloverLogs) == 0 || rolloverLogs[0].Action != "restored" || rolloverLogs[0].Reason != "window_reset" {
+		t.Fatalf("expected restored/window_reset audit, got %+v", rolloverLogs)
+	}
+}

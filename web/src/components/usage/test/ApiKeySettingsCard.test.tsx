@@ -89,9 +89,10 @@ describe('ApiKeySettingsCard', () => {
     expect(html).toContain('aria-label="Show full API keys"');
     expect(countOccurrences(html, 'aria-label="Copy"')).toBe(2);
     expect(html).toContain('title="sk-*********123456"');
-    // 该 id 只应出现在行的 data-api-key-settings-item 测试钩子里，不作为可见文案展示。
-    expect(countOccurrences(html, '9007199254740993')).toBe(1);
+    // 该 id 只应出现在两个测试钩子里（行容器 + 管理面板打开按钮），不作为可见文案展示。
+    expect(countOccurrences(html, '9007199254740993')).toBe(2);
     expect(html).toContain('data-api-key-settings-item="9007199254740993"');
+    expect(html).toContain('data-api-key-manage-open="9007199254740993"');
     expect(html).not.toContain('Local ID');
   });
 
@@ -100,7 +101,7 @@ describe('ApiKeySettingsCard', () => {
     expect(getApiKeySettingsVisibleKey(apiKeys[0], true)).toBe('sk-alpha123456');
   });
 
-  it('renders every lifecycle action inline in each row', () => {
+  it('keeps only alias + Save inline per row; lifecycle actions moved to the per-key manage dialog', () => {
     const html = renderCard({
       onCreateKey: () => Promise.resolve(null),
       onRegenerateKey: () => Promise.resolve(null),
@@ -111,17 +112,20 @@ describe('ApiKeySettingsCard', () => {
       onResetQuotas: () => Promise.resolve(true),
     });
 
-    // 行内直接平铺 保存/重新生成/禁用/删除 四个动作；两行 key → 各出现两次。
-    // 限额设置与清零已移到卡片头部，各出现一次。
+    // 行内只剩 保存；重新生成/启停/删除移进了单 key 管理面板，不再平铺在行内。
+    // 两行 key → 保存与管理面板打开按钮各出现两次；限额设置/清零仍在卡片头部，各一次。
     expect(countOccurrences(html, '>Edit<')).toBe(0);
     expect(countOccurrences(html, '>Save<')).toBe(2);
-    expect(countOccurrences(html, '>Regenerate<')).toBe(2);
-    expect(countOccurrences(html, '>Disable<')).toBe(2);
-    expect(countOccurrences(html, '>Delete<')).toBe(2);
+    expect(countOccurrences(html, '>Regenerate<')).toBe(0);
+    expect(countOccurrences(html, '>Disable<')).toBe(0);
+    expect(countOccurrences(html, '>Delete<')).toBe(0);
+    expect(countOccurrences(html, 'data-api-key-manage-open="9007199254740993"')).toBe(1);
+    expect(countOccurrences(html, 'data-api-key-manage-open="9007199254740994"')).toBe(1);
+    expect(countOccurrences(html, 'aria-haspopup="dialog"')).toBe(2);
     expect(countOccurrences(html, '>Quota<')).toBe(0);
     expect(countOccurrences(html, '>Quota settings<')).toBe(1);
     expect(countOccurrences(html, '>Reset quota<')).toBe(1);
-    // 未提供对应生命周期 handler 时不渲染相应按钮。
+    // 未提供对应生命周期 handler 时不渲染相应按钮；管理面板打开按钮始终渲染（行点击目标）。
     const bare = renderCard();
     expect(bare).not.toContain('>Edit<');
     expect(bare).not.toContain('>Regenerate<');
@@ -130,6 +134,7 @@ describe('ApiKeySettingsCard', () => {
     expect(bare).not.toContain('>Quota settings<');
     expect(bare).not.toContain('>Reset quota<');
     expect(bare).toContain('>Save<');
+    expect(countOccurrences(bare, 'aria-haspopup="dialog"')).toBe(2);
   });
 
   it('copies the raw key value', async () => {
@@ -172,5 +177,41 @@ describe('ApiKeySettingsCard', () => {
   it('renders empty and loading states', () => {
     expect(renderCard({ apiKeys: [], loading: true })).toContain('Loading...');
     expect(renderCard({ apiKeys: [], loading: false })).toContain('No CPA API keys synced yet.');
+  });
+
+  it('shows a temp adjustment badge only on the window with an active adjustment', () => {
+    const limited: CpaApiKeySettingsItem = {
+      ...apiKeys[0],
+      policy: {
+        enabled: true,
+        enforcementState: 'active',
+        tightest: null,
+        limits: [
+          { type: 'cost', window: 'weekly', value: 2600, used: 40.0631, ratio: 0.0154, baseValue: 2100, adjustmentUsd: 500 },
+          { type: 'cost', window: 'monthly', value: 10, used: 12, ratio: 1.2 },
+        ],
+      },
+    };
+    const html = renderCard({ apiKeys: [limited] });
+    expect(html).toContain('$40.0631 / $2600.0000');
+    expect(html).toContain('temp +$500.00');
+    expect(html).toContain('title="Normal limit: $2100.0000"');
+    expect(html).toContain('$12.0000 / $10.0000');
+    // 只有一个窗口带调整：徽章只出现一次。
+    expect(countOccurrences(html, 'temp ')).toBe(1);
+  });
+
+  it('formats a negative temp adjustment with a true minus sign', () => {
+    const limited: CpaApiKeySettingsItem = {
+      ...apiKeys[0],
+      policy: {
+        enabled: true,
+        enforcementState: 'active',
+        tightest: null,
+        limits: [{ type: 'cost', window: 'daily', value: 300, used: 10, ratio: 0.0333, baseValue: 500, adjustmentUsd: -200 }],
+      },
+    };
+    const html = renderCard({ apiKeys: [limited] });
+    expect(html).toContain('temp −$200.00');
   });
 });

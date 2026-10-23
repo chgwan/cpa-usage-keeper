@@ -79,16 +79,17 @@ func UpdateCPAAPIKeyPolicyRuntime(db *gorm.DB, cpaAPIKeyID int64, state string, 
 		}).Error
 }
 
-// UpdateCPAAPIKeyPolicyConfig 只更新管理员可编辑的配置列（limits/enabled）。
+// UpdateCPAAPIKeyPolicyConfig 只更新管理员可编辑的配置列（limits）。
 // 绝不触碰 runner 拥有的 enforcement_state / admin_disabled / disabled_window_key /
 // last_evaluated_at：读-改-写整行回写会把读取时的旧运行时值复活，覆盖 runner 在
 // 读与写之间落下的并发禁用（runner 的禁用路径不持有管理服务的互斥锁）。
-func UpdateCPAAPIKeyPolicyConfig(db *gorm.DB, cpaAPIKeyID int64, limits string, enabled bool) error {
+// enabled 固定写 true：限额开关已不可从应用层关闭，调用方不再传入该值。
+func UpdateCPAAPIKeyPolicyConfig(db *gorm.DB, cpaAPIKeyID int64, limits string) error {
 	return db.Clauses(dbresolver.Write).Model(&entities.CPAAPIKeyPolicy{}).
 		Where("cpa_api_key_id = ?", cpaAPIKeyID).
 		Updates(map[string]any{
 			"limits":     limits,
-			"enabled":    enabled,
+			"enabled":    true,
 			"updated_at": time.Now(),
 		}).Error
 }

@@ -8,11 +8,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"cpa-usage-keeper/internal/config"
 	"cpa-usage-keeper/internal/entities"
 	"cpa-usage-keeper/internal/keypolicy"
+	"cpa-usage-keeper/internal/repository"
 	"cpa-usage-keeper/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -34,6 +37,16 @@ type stubManagementProvider struct {
 	resetWindows  []keypolicy.LimitWindow
 	updateIDs     []int64
 	updateChanges service.CPAAPIKeyPolicyChanges
+
+	setAdjIDs     []int64
+	setAdjWindows []keypolicy.LimitWindow
+	setAdjDelta   float64
+	setAdjResult  service.QuotaAdjustmentResult
+	setAdjErr     error
+
+	clearAdjIDs     []int64
+	clearAdjWindows []keypolicy.LimitWindow
+	clearAdjErr     error
 }
 
 func (s *stubManagementProvider) CreateCPAAPIKey(_ context.Context, alias, _ string) (entities.CPAAPIKey, string, error) {
@@ -60,7 +73,7 @@ func (s *stubManagementProvider) GetCPAAPIKeyPolicy(_ context.Context, _ int64) 
 
 // SaveCPAAPIKeyPolicy 复刻真实服务“先校验再保存”的契约：非法限额包装 ErrInvalidInput 走 400，
 // saveErr 用于注入基础设施错误验证未知错误的 500 语义。
-func (s *stubManagementProvider) SaveCPAAPIKeyPolicy(_ context.Context, _ int64, limits keypolicy.Limits, _ bool) error {
+func (s *stubManagementProvider) SaveCPAAPIKeyPolicy(_ context.Context, _ int64, limits keypolicy.Limits) error {
 	s.limitsIn = limits
 	if s.saveErr != nil {
 		return s.saveErr
@@ -80,9 +93,17 @@ func (s *stubManagementProvider) ResetCPAAPIKeyQuotas(_ context.Context, ids []i
 	return s.err
 }
 
+// UpdateCPAAPIKeyPolicies 复刻真实服务“没有限额要改就 400”的契约：enabled 开关移除后，
+// 没有 limits 的批量请求已经无事可做。
 func (s *stubManagementProvider) UpdateCPAAPIKeyPolicies(_ context.Context, ids []int64, changes service.CPAAPIKeyPolicyChanges) error {
 	s.updateIDs, s.updateChanges = ids, changes
-	return s.err
+	if s.err != nil {
+		return s.err
+	}
+	if len(changes.Limits) == 0 {
+		return fmt.Errorf("%w: nothing to update", service.ErrInvalidInput)
+	}
+	return nil
 }
 
 func (s *stubManagementProvider) ListCPAAPIKeyPolicySummaries(_ context.Context) (map[int64]service.CPAAPIKeyPolicySummary, error) {
@@ -90,6 +111,19 @@ func (s *stubManagementProvider) ListCPAAPIKeyPolicySummaries(_ context.Context)
 		return nil, s.summariesErr
 	}
 	return s.summaries, nil
+}
+
+func (s *stubManagementProvider) SetCPAAPIKeyQuotaAdjustments(_ context.Context, ids []int64, windows []keypolicy.LimitWindow, deltaUSD float64) (service.QuotaAdjustmentResult, error) {
+	s.setAdjIDs, s.setAdjWindows, s.setAdjDelta = ids, windows, deltaUSD
+	if s.setAdjErr != nil {
+		return service.QuotaAdjustmentResult{}, s.setAdjErr
+	}
+	return s.setAdjResult, nil
+}
+
+func (s *stubManagementProvider) ClearCPAAPIKeyQuotaAdjustments(_ context.Context, ids []int64, windows []keypolicy.LimitWindow) error {
+	s.clearAdjIDs, s.clearAdjWindows = ids, windows
+	return s.clearAdjErr
 }
 
 // stubCPAAPIKeyListProvider 给列表路由提供最小 CPAAPIKeyProvider 实现。
@@ -222,7 +256,7 @@ func TestCPAAPIKeyListRouteAttachesPolicySummaries(t *testing.T) {
 		{ID: 2, APIKey: "sk-beta654321"},
 	}}, &stubManagementProvider{summaries: map[int64]service.CPAAPIKeyPolicySummary{
 		1: {
-			Enabled: true, EnforcementState: "active",
+			EnforcementState: "active",
 			Tightest: &keypolicy.TightestLimit{
 				Limit: keypolicy.Limit{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowDaily, Value: 100},
 				Used:  40,
@@ -265,8 +299,8 @@ func TestCPAAPIKeyListRouteAttachesPolicySummaries(t *testing.T) {
 		if parsed.Items[0].Policy.Tightest.Value != 100 || parsed.Items[0].Policy.Tightest.Used != 40 || parsed.Items[0].Policy.Tightest.Ratio != 0.4 {
 			t.Fatalf("%s: expected tightest limit detail, got %+v", path, parsed.Items[0].Policy.Tightest)
 		}
-		// 没有策略行的 key 输出默认徽标：enabled=false、active、无限额。
-		if parsed.Items[1].Policy == nil || parsed.Items[1].Policy.Enabled || parsed.Items[1].Policy.EnforcementState != "active" || parsed.Items[1].Policy.Tightest != nil {
+		// 没有策略行的 key 也输出 enabled=true 的默认徽标：限额强制常开，没有策略行只是没有限额。
+		if parsed.Items[1].Policy == nil || !parsed.Items[1].Policy.Enabled || parsed.Items[1].Policy.EnforcementState != "active" || parsed.Items[1].Policy.Tightest != nil {
 			t.Fatalf("%s: expected default policy summary on second row, got %+v", path, parsed.Items[1].Policy)
 		}
 	}
@@ -330,10 +364,244 @@ func TestBulkPolicyRouteKeepsNullAsRemoval(t *testing.T) {
 	}
 	daily, hasDaily := provider.updateChanges.Limits[keypolicy.LimitWindowDaily]
 	monthly, hasMonthly := provider.updateChanges.Limits[keypolicy.LimitWindowMonthly]
-	if fmt.Sprint(provider.updateIDs) != "[3 4]" || !hasDaily || daily == nil || *daily != 5 || !hasMonthly || monthly != nil || provider.updateChanges.Enabled != nil {
+	if fmt.Sprint(provider.updateIDs) != "[3 4]" || !hasDaily || daily == nil || *daily != 5 || !hasMonthly || monthly != nil {
 		t.Fatalf("unexpected bulk policy call: ids=%v changes=%+v", provider.updateIDs, provider.updateChanges)
 	}
 	if _, hasWeekly := provider.updateChanges.Limits[keypolicy.LimitWindowWeekly]; hasWeekly {
 		t.Fatalf("weekly was not requested and must stay untouched")
+	}
+}
+
+// openBulkPolicyTestDB 开一个真实迁移过的临时 sqlite 库，供下面的端到端用例验证落库结果；
+// stubManagementProvider 不持久化，验证"行 enabled=1"必须经过真实服务。
+func openBulkPolicyTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "cpa_api_keys_policies_bulk.db")
+	db, err := repository.OpenDatabase(config.Config{SQLitePath: dbPath})
+	if err != nil {
+		t.Fatalf("open bulk policy test database: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("load bulk policy test sql database: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := sqlDB.Close(); err != nil {
+			t.Fatalf("close bulk policy test database: %v", err)
+		}
+	})
+	return db
+}
+
+// TestBulkPolicyRouteRejectsEnabledOnlyRequest 验证 enabled 字段从请求体移除后，
+// 只传 apiKeyIds + enabled、没有 limits 的 PATCH 已经无事可做，必须是 400。
+func TestBulkPolicyRouteRejectsEnabledOnlyRequest(t *testing.T) {
+	db := openBulkPolicyTestDB(t)
+	key := entities.CPAAPIKey{APIKey: "sk-bulk-reject", DisplayKey: "sk-bulk-reject"}
+	if err := db.Create(&key).Error; err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+	provider := service.NewCPAAPIKeyManagementService(db, nil, nil, nil)
+	response := httptest.NewRecorder()
+	body := fmt.Sprintf(`{"apiKeyIds":["%d"],"enabled":false}`, key.ID)
+	newManagementTestRouter(provider).ServeHTTP(response, httptest.NewRequest(http.MethodPatch, "/api/v1/usage/api-keys/policies", strings.NewReader(body)))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+// TestBulkPolicyRouteIgnoresEnabledAndForcesRowOn 验证一个仍发送 enabled: false 的旧前端不会
+// 关掉限额开关：limits 之外的 enabled 被忽略，且落库的 enabled 始终是 1。
+func TestBulkPolicyRouteIgnoresEnabledAndForcesRowOn(t *testing.T) {
+	db := openBulkPolicyTestDB(t)
+	key := entities.CPAAPIKey{APIKey: "sk-bulk-force-on", DisplayKey: "sk-bulk-force-on"}
+	if err := db.Create(&key).Error; err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+	// 模拟迁移前残留的 enabled = 0 行，证明 PATCH 会把它纠正回 1。
+	legacy := entities.CPAAPIKeyPolicy{CPAAPIKeyID: key.ID, Limits: "[]", Enabled: false, EnforcementState: string(keypolicy.StateActive)}
+	if err := repository.UpsertCPAAPIKeyPolicy(db, &legacy); err != nil {
+		t.Fatalf("seed legacy disabled policy: %v", err)
+	}
+	provider := service.NewCPAAPIKeyManagementService(db, nil, nil, nil)
+	response := httptest.NewRecorder()
+	body := fmt.Sprintf(`{"apiKeyIds":["%d"],"limits":{"daily":5},"enabled":false}`, key.ID)
+	newManagementTestRouter(provider).ServeHTTP(response, httptest.NewRequest(http.MethodPatch, "/api/v1/usage/api-keys/policies", strings.NewReader(body)))
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", response.Code, response.Body.String())
+	}
+	policy, err := repository.FindCPAAPIKeyPolicy(db, key.ID)
+	if err != nil {
+		t.Fatalf("load policy: %v", err)
+	}
+	if !policy.Enabled {
+		t.Fatalf("expected enabled forced to 1 regardless of request body, got %+v", policy)
+	}
+}
+
+// TestSinglePolicyRouteIgnoresEnabledAndForcesRowOn 验证单 key 的 PUT .../policy 同样忽略
+// enabled 字段并把行强制写成 enabled = 1，即便请求体里带着 enabled: false。
+func TestSinglePolicyRouteIgnoresEnabledAndForcesRowOn(t *testing.T) {
+	db := openBulkPolicyTestDB(t)
+	key := entities.CPAAPIKey{APIKey: "sk-single-force-on", DisplayKey: "sk-single-force-on"}
+	if err := db.Create(&key).Error; err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+	legacy := entities.CPAAPIKeyPolicy{CPAAPIKeyID: key.ID, Limits: "[]", Enabled: false, EnforcementState: string(keypolicy.StateActive)}
+	if err := repository.UpsertCPAAPIKeyPolicy(db, &legacy); err != nil {
+		t.Fatalf("seed legacy disabled policy: %v", err)
+	}
+	provider := service.NewCPAAPIKeyManagementService(db, nil, nil, nil)
+	response := httptest.NewRecorder()
+	body := fmt.Sprintf(`{"enabled":false,"limits":[{"type":"cost","window":"daily","value":5}]}`)
+	request := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/v1/usage/api-keys/%d/policy", key.ID), strings.NewReader(body))
+	newManagementTestRouter(provider).ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", response.Code, response.Body.String())
+	}
+	policy, err := repository.FindCPAAPIKeyPolicy(db, key.ID)
+	if err != nil {
+		t.Fatalf("load policy: %v", err)
+	}
+	if !policy.Enabled {
+		t.Fatalf("expected enabled forced to 1 regardless of request body, got %+v", policy)
+	}
+}
+
+// TestQuotaAdjustmentRouteAppliedSkippedJSONShape 验证 POST 的成功响应用字符串 id 回显
+// applied/skipped 两个列表，字段名与设计文档一致。
+func TestQuotaAdjustmentRouteAppliedSkippedJSONShape(t *testing.T) {
+	provider := &stubManagementProvider{setAdjResult: service.QuotaAdjustmentResult{
+		Applied: []service.QuotaAdjustmentTarget{{APIKeyID: 7, Window: keypolicy.LimitWindowWeekly}},
+		Skipped: []service.QuotaAdjustmentTarget{{APIKeyID: 9, Window: keypolicy.LimitWindowDaily}},
+	}}
+	response := httptest.NewRecorder()
+	body := `{"apiKeyIds":["7","9"],"windows":["daily","weekly"],"deltaUsd":500}`
+	newManagementTestRouter(provider).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/usage/api-keys/quota-adjustments", strings.NewReader(body)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	var decoded struct {
+		Applied []struct {
+			APIKeyID string `json:"apiKeyId"`
+			Window   string `json:"window"`
+		} `json:"applied"`
+		Skipped []struct {
+			APIKeyID string `json:"apiKeyId"`
+			Window   string `json:"window"`
+			Reason   string `json:"reason"`
+		} `json:"skipped"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(decoded.Applied) != 1 || decoded.Applied[0].APIKeyID != "7" || decoded.Applied[0].Window != "weekly" {
+		t.Fatalf("unexpected applied list: %+v", decoded.Applied)
+	}
+	if len(decoded.Skipped) != 1 || decoded.Skipped[0].APIKeyID != "9" || decoded.Skipped[0].Window != "daily" || decoded.Skipped[0].Reason != "no_limit" {
+		t.Fatalf("unexpected skipped list: %+v", decoded.Skipped)
+	}
+	if fmt.Sprint(provider.setAdjIDs) != "[7 9]" || provider.setAdjDelta != 500 {
+		t.Fatalf("expected provider called with parsed ids/delta, got ids=%v delta=%v", provider.setAdjIDs, provider.setAdjDelta)
+	}
+}
+
+// TestQuotaAdjustmentRouteRejectsZeroDelta 验证 deltaUsd: 0 在服务层被拒绝后路由映射为 400。
+func TestQuotaAdjustmentRouteRejectsZeroDelta(t *testing.T) {
+	provider := &stubManagementProvider{setAdjErr: service.ErrInvalidInput}
+	response := httptest.NewRecorder()
+	body := `{"apiKeyIds":["7"],"windows":["weekly"],"deltaUsd":0}`
+	newManagementTestRouter(provider).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/usage/api-keys/quota-adjustments", strings.NewReader(body)))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+// TestQuotaAdjustmentRouteDeleteClears 验证 DELETE 把字符串 id 解析后转交服务层，成功返回 204。
+func TestQuotaAdjustmentRouteDeleteClears(t *testing.T) {
+	provider := &stubManagementProvider{}
+	response := httptest.NewRecorder()
+	body := `{"apiKeyIds":["7","8"],"windows":["weekly","monthly"]}`
+	newManagementTestRouter(provider).ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/api/v1/usage/api-keys/quota-adjustments", strings.NewReader(body)))
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", response.Code, response.Body.String())
+	}
+	if fmt.Sprint(provider.clearAdjIDs) != "[7 8]" {
+		t.Fatalf("expected parsed ids forwarded, got %v", provider.clearAdjIDs)
+	}
+	if fmt.Sprint(provider.clearAdjWindows) != "[weekly monthly]" {
+		t.Fatalf("expected parsed windows forwarded, got %v", provider.clearAdjWindows)
+	}
+}
+
+// TestCPAAPIKeyListRouteIncludesBaseValueAndAdjustmentUsd 验证列表徽标的 limits 项携带
+// baseValue（正常限额）与 adjustmentUsd（当前生效的 delta，没有调整时整体省略）。
+func TestCPAAPIKeyListRouteIncludesBaseValueAndAdjustmentUsd(t *testing.T) {
+	delta := 500.0
+	router := gin.New()
+	group := router.Group("/api/v1")
+	registerCPAAPIKeyRoutes(group, stubCPAAPIKeyListProvider{rows: []entities.CPAAPIKey{
+		{ID: 1, APIKey: "sk-alpha123456"},
+	}}, &stubManagementProvider{summaries: map[int64]service.CPAAPIKeyPolicySummary{
+		1: {
+			EnforcementState: "active",
+			Limits: []keypolicy.TightestLimit{
+				{Limit: keypolicy.Limit{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowWeekly, Value: 600}, Used: 40, Ratio: 40.0 / 600, Base: 100, Adjustment: &delta},
+			},
+		},
+	}})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/usage/api-keys", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"baseValue":100`) {
+		t.Fatalf("expected baseValue in response, got %s", response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"adjustmentUsd":500`) {
+		t.Fatalf("expected adjustmentUsd in response, got %s", response.Body.String())
+	}
+
+	var parsed struct {
+		Items []struct {
+			Policy struct {
+				Limits []struct {
+					BaseValue     float64  `json:"baseValue"`
+					AdjustmentUSD *float64 `json:"adjustmentUsd"`
+				} `json:"limits"`
+			} `json:"policy"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	limits := parsed.Items[0].Policy.Limits
+	if len(limits) != 1 || limits[0].BaseValue != 100 || limits[0].AdjustmentUSD == nil || *limits[0].AdjustmentUSD != 500 {
+		t.Fatalf("unexpected limit item: %+v", limits)
+	}
+}
+
+// TestCPAAPIKeyListRouteOmitsAdjustmentUsdWhenNoAdjustment 验证没有生效调整时 adjustmentUsd
+// 字段整体省略（omitempty），而 baseValue 仍然等于限额本身。
+func TestCPAAPIKeyListRouteOmitsAdjustmentUsdWhenNoAdjustment(t *testing.T) {
+	router := gin.New()
+	group := router.Group("/api/v1")
+	registerCPAAPIKeyRoutes(group, stubCPAAPIKeyListProvider{rows: []entities.CPAAPIKey{
+		{ID: 1, APIKey: "sk-alpha123456"},
+	}}, &stubManagementProvider{summaries: map[int64]service.CPAAPIKeyPolicySummary{
+		1: {
+			EnforcementState: "active",
+			Limits: []keypolicy.TightestLimit{
+				{Limit: keypolicy.Limit{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowDaily, Value: 100}, Used: 10, Ratio: 0.1, Base: 100},
+			},
+		},
+	}})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/usage/api-keys", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "adjustmentUsd") {
+		t.Fatalf("expected adjustmentUsd omitted without an active adjustment, got %s", response.Body.String())
 	}
 }

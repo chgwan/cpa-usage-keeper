@@ -2018,6 +2018,27 @@
   -webkit-line-clamp: 2;
 }
 
+// 行内打开管理面板的按钮：外观维持原来纯文本展示，只补一个可聚焦/可点击的 hover 态。
+.apiKeySettingsManageOpen {
+  display: block;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 6px;
+
+  &:hover .apiKeySettingsName {
+    color: var(--primary-color);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 2px;
+  }
+}
+
 .apiKeySettingsCopyIconButton {
   appearance: none;
   display: inline-flex;
@@ -2186,7 +2207,9 @@
   display: grid;
   gap: 2px;
   width: 100%;
-  max-width: 260px;
+  // 260px 装不下"用量 / 限额 · temp 徽章"整行，逼着徽章在金额中间断行；
+  // 放宽到桌面端能容纳最长 fixture 行（如 "$500.1234 / $999.9999 · temp +$599.99"）的宽度。
+  max-width: 420px;
   margin: 2px 0 0;
   padding: 0;
   list-style: none;
@@ -2206,10 +2229,11 @@
 }
 
 .apiKeyQuotaWindowValue {
-  overflow: hidden;
+  // 临时调整徽章让这一列变长；原先 nowrap + ellipsis 会把徽章金额直接截断成不可读的 "..."，
+  // 改成允许换行，保证金额本身永远完整可见。
+  min-width: 0;
   font-variant-numeric: tabular-nums;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: break-word;
 }
 
 .apiKeyQuotaWindowPercent {
@@ -2336,10 +2360,77 @@
   border-radius: 999px;
 }
 
-.apiKeyQuotaEnforcement {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+// 常规 / 临时调整的模式切换：样式沿用语言切换器的分段控件。
+.apiKeyQuotaModeSwitch {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-secondary) 78%, transparent);
+}
+
+.apiKeyQuotaModeOption {
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 14px;
+  line-height: 18px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+
+  &:hover {
+    color: var(--text-primary);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 2px;
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+}
+
+.apiKeyQuotaModeOptionActive {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.1);
+}
+
+// 临时调整徽章：跟在用量数值后面，用较弱的强调色区分于常规限额。
+.apiKeyQuotaWindowAdjustment {
+  margin-left: 4px;
+  color: var(--primary-color);
+  font-weight: 600;
+  cursor: help;
+  // 整个徽章当作一个不可拆分的词：换行只能发生在徽章前面，不能把符号和金额拆成两行。
+  white-space: nowrap;
+}
+
+.apiKeyQuotaAdjustmentSkipped {
+  display: grid;
+  gap: 4px;
+}
+
+.apiKeyQuotaAdjustmentSkippedList {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0 0 0 16px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.apiKeyQuotaAdjustmentSkippedItem {
+  list-style: disc;
 }
 
 .apiKeyPolicyStack {
@@ -2541,6 +2632,53 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+// 单 key 管理面板：quota / reset / 操作三个区块纵向堆叠，用上边框分隔（手机宽度下同样生效）。
+.apiKeyManageStack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.apiKeyManageSection {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 16px;
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+
+  &:first-child {
+    padding-top: 0;
+    border-top: none;
+  }
+}
+
+.apiKeyManageSectionTitle {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+// quota 区块内嵌表单（面板没有外层 Modal footer，Save/Apply/Clear 按钮放在内容区里）。
+.apiKeyQuotaSectionStack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+// flex-grow 而不是固定网格列数：1/2/3 个按钮（Save 单个、Apply+Clear 两个、三个生命周期动作）
+// 都能按内容自适应撑满整行，不会出现网格里单个按钮卡在半宽的问题。
+.apiKeyManageActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+
+  > :global(.btn) {
+    flex: 1 1 140px;
+    justify-content: center;
+  }
 }
 
 .apiKeyRevealStack p,
@@ -2960,10 +3098,9 @@
     align-items: stretch;
   }
 
-  // 手机卡片放不下一排四个按钮，横向滚动会截断“删除”且滚动条压在按钮下方；改为两列网格全部可见。
+  // 行内只剩 Save 一个按钮（Regenerate/Disable/Delete 移进了管理面板），不再需要网格，占满整行即可。
   .apiKeySettingsActions {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    display: flex;
     overflow-x: visible;
     padding-bottom: 0;
 
@@ -2983,6 +3120,11 @@
   }
 
   .apiKeyQuotaBar {
+    max-width: 100%;
+  }
+
+  // 手机卡片比桌面端 420px 还窄，直接撑满卡片宽度；徽章本身是 nowrap，装不下就整体换到下一行。
+  .apiKeyQuotaWindows {
     max-width: 100%;
   }
 

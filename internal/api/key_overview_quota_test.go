@@ -52,9 +52,12 @@ func keyOverviewQuotaTestRouter(t *testing.T, management service.CPAAPIKeyManage
 }
 
 func TestKeyOverviewQuotaReturnsViewerCostWindows(t *testing.T) {
+	limits := keypolicy.Limits{{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowWeekly, Value: 20}}
 	provider := &stubManagementProvider{policyView: service.CPAAPIKeyPolicyView{
 		Policy: entities.CPAAPIKeyPolicy{Enabled: true, EnforcementState: "active"},
-		Limits: keypolicy.Limits{{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowWeekly, Value: 20}},
+		Limits: limits,
+		// 没有临时调整时 Effective 等于正常限额：keypolicy.ApplyAdjustments(limits, nil) 原样透传。
+		Effective: keypolicy.ApplyAdjustments(limits, nil),
 		Usage: keypolicy.UsageByWindow{
 			keypolicy.LimitWindowDaily:   {CostUSD: 1.5},
 			keypolicy.LimitWindowWeekly:  {CostUSD: 8.1},
@@ -101,6 +104,59 @@ func TestKeyOverviewQuotaReturnsViewerCostWindows(t *testing.T) {
 	}
 	if body.Windows[2].CostUSD != 23.4 {
 		t.Fatalf("monthly spend mismatch: %+v", body.Windows[2])
+	}
+}
+
+// TestKeyOverviewQuotaUsesEffectiveLimitNotNormalLimit 复现 viewer 端与实际执行脱节的问题：
+// 一个正常限额 $100、本周期被临时调整 -$200 砍到 0（已经 disabled_by_quota）的 key，
+// viewer 必须看到 limit=0 / ratio=1，而不是旧代码读 view.Limits 时展示的 "$42 / $100, 42%"。
+func TestKeyOverviewQuotaUsesEffectiveLimitNotNormalLimit(t *testing.T) {
+	limits := keypolicy.Limits{{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowWeekly, Value: 100}}
+	adjustment := -200.0
+	provider := &stubManagementProvider{policyView: service.CPAAPIKeyPolicyView{
+		Policy:    entities.CPAAPIKeyPolicy{Enabled: true, EnforcementState: "disabled_by_quota"},
+		Limits:    limits,
+		Effective: keypolicy.ApplyAdjustments(limits, keypolicy.Adjustments{keypolicy.LimitWindowWeekly: adjustment}),
+		Usage: keypolicy.UsageByWindow{
+			keypolicy.LimitWindowWeekly: {CostUSD: 42},
+		},
+	}}
+	router, token := keyOverviewQuotaTestRouter(t, provider)
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/key-overview/quota", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d %s", resp.Code, resp.Body.String())
+	}
+	var body struct {
+		Windows []struct {
+			Window string   `json:"window"`
+			Limit  *float64 `json:"limit"`
+			Ratio  *float64 `json:"ratio"`
+		} `json:"windows"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode quota response: %v", err)
+	}
+	var weekly *struct {
+		Window string   `json:"window"`
+		Limit  *float64 `json:"limit"`
+		Ratio  *float64 `json:"ratio"`
+	}
+	for i := range body.Windows {
+		if body.Windows[i].Window == "weekly" {
+			weekly = &body.Windows[i]
+		}
+	}
+	if weekly == nil || weekly.Limit == nil || weekly.Ratio == nil {
+		t.Fatalf("expected weekly window with limit/ratio, got %+v", body.Windows)
+	}
+	if *weekly.Limit != 0 {
+		t.Fatalf("expected effective limit 0 (100 - 200 floored), got %v", *weekly.Limit)
+	}
+	if *weekly.Ratio != 1 {
+		t.Fatalf("expected ratio 1 when effective limit is 0, got %v", *weekly.Ratio)
 	}
 }
 

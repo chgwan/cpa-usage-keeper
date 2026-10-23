@@ -31,5 +31,7 @@ func All() []any {
 		&APIKeyEnforcementLog{},
 		// 限额临时清零点随核心模型注册。
 		&APIKeyQuotaReset{},
+		// 限额临时调整额随核心模型注册。
+		&APIKeyQuotaAdjustment{},
 	}
 }

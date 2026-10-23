@@ -59,6 +59,16 @@ func NewRunner(db *gorm.DB, client *cpa.Client, catalog *pricing.Catalog, interv
 	}
 }
 
+// NewRunnerWithClock 和 NewRunner 等价，但允许注入自定义时钟；仅供测试推进周期边界
+// （例如验证超限禁用在周窗口翻转后自动恢复），生产代码必须始终走 NewRunner 的真实时钟。
+func NewRunnerWithClock(db *gorm.DB, client *cpa.Client, catalog *pricing.Catalog, interval time.Duration, logger logrus.FieldLogger, keyMutations sync.Locker, now func() time.Time) *Runner {
+	runner := NewRunner(db, client, catalog, interval, logger, keyMutations)
+	if now != nil {
+		runner.now = now
+	}
+	return runner
+}
+
 // NotifyUsageEventsCommitted 非阻塞接收 usage 提交信号并唤醒评估。
 func (r *Runner) NotifyUsageEventsCommitted([]entities.UsageEvent) { r.wakeNow() }
 
@@ -146,6 +156,11 @@ func (r *Runner) EvaluateOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// 临时调整额每轮只加载一次，避免逐行重复查询；没有调整的 key 在 map 里缺省为 nil。
+	adjustments, err := r.store.ActiveAdjustments(daily, weekly, monthly)
+	if err != nil {
+		return err
+	}
 	currentKeys, err := r.client.FetchManagementAPIKeys(ctx)
 	if err != nil {
 		// CPA 不可达时保持现状，下一轮重试。
@@ -157,7 +172,7 @@ func (r *Runner) EvaluateOnce(ctx context.Context) error {
 	}
 	round := &roundState{remaining: len(currentKeys.Payload.APIKeys), present: present}
 	for _, row := range rows {
-		r.reconcileRow(ctx, row, usage[row.CPAAPIKeyID], round, daily, weekly, monthly, now)
+		r.reconcileRow(ctx, row, usage[row.CPAAPIKeyID], adjustments[row.CPAAPIKeyID], round, daily, weekly, monthly, now)
 	}
 	return nil
 }
@@ -179,7 +194,7 @@ func (s *roundState) shrink(apiKey string) {
 }
 
 // reconcileRow 把单条策略收敛到目标态，所有分支独立容错。
-func (r *Runner) reconcileRow(ctx context.Context, row repository.CPAAPIKeyPolicyRow, usage UsageByWindow, round *roundState, daily, weekly, monthly Window, now time.Time) {
+func (r *Runner) reconcileRow(ctx context.Context, row repository.CPAAPIKeyPolicyRow, usage UsageByWindow, adjustments Adjustments, round *roundState, daily, weekly, monthly Window, now time.Time) {
 	limits, err := ParseLimits(row.Limits)
 	if err != nil {
 		r.logger.WithError(err).WithField("cpa_api_key_id", row.CPAAPIKeyID).Warn("parse api key limits failed")
@@ -190,7 +205,9 @@ func (r *Runner) reconcileRow(ctx context.Context, row repository.CPAAPIKeyPolic
 	if row.AdminDisabled || state == StateDisabledManual {
 		return
 	}
-	breach := Evaluate(limits, usage)
+	// 禁用/恢复判定统一用叠加临时调整后的生效限额；没有调整时 ApplyAdjustments 等价于原值。
+	effective := ApplyAdjustments(limits, adjustments).Limits()
+	breach := Evaluate(effective, usage)
 	if breach != nil {
 		windowKey := WindowKey(daily)
 		switch breach.Limit.Window {

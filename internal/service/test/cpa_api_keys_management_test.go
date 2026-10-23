@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -139,7 +140,7 @@ func TestRegenerateCPAAPIKeyKeepsAliasAndPolicy(t *testing.T) {
 	created, fullKey, _ := provider.CreateCPAAPIKey(context.Background(), "alias-1", "")
 	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), created.ID, keypolicy.Limits{
 		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowDaily, Value: 100},
-	}, true); err != nil {
+	}); err != nil {
 		t.Fatalf("save policy: %v", err)
 	}
 	row, newKey, err := provider.RegenerateCPAAPIKey(context.Background(), created.ID)
@@ -162,7 +163,7 @@ func TestRegenerateCPAAPIKeyRejectsQuotaDisabledKey(t *testing.T) {
 	provider, _, db := newManagementTestEnv(t)
 	created, _, _ := provider.CreateCPAAPIKey(context.Background(), "", "")
 	// 先落一条策略，runner 只会改已有策略行的运行时字段。
-	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), created.ID, nil, true); err != nil {
+	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), created.ID, nil); err != nil {
 		t.Fatalf("save policy: %v", err)
 	}
 	// 直接改库模拟 runner 置为 disabled_by_quota。
@@ -177,7 +178,7 @@ func TestRegenerateCPAAPIKeyRejectsQuotaDisabledKey(t *testing.T) {
 func TestDeleteCPAAPIKeyRemovesEverywhere(t *testing.T) {
 	provider, fake, db := newManagementTestEnv(t)
 	created, fullKey, _ := provider.CreateCPAAPIKey(context.Background(), "", "")
-	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), created.ID, nil, true); err != nil {
+	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), created.ID, nil); err != nil {
 		t.Fatalf("save policy: %v", err)
 	}
 	if err := provider.DeleteCPAAPIKey(context.Background(), created.ID); err != nil {
@@ -219,7 +220,7 @@ func TestSaveCPAAPIKeyPolicyValidatesLimits(t *testing.T) {
 	provider, _, _ := newManagementTestEnv(t)
 	created, _, _ := provider.CreateCPAAPIKey(context.Background(), "", "")
 	bad := keypolicy.Limits{{Type: "bogus", Window: keypolicy.LimitWindowDaily, Value: 1}}
-	err := provider.SaveCPAAPIKeyPolicy(context.Background(), created.ID, bad, true)
+	err := provider.SaveCPAAPIKeyPolicy(context.Background(), created.ID, bad)
 	if !errors.Is(err, service.ErrInvalidInput) {
 		t.Fatalf("expected invalid limits rejected as ErrInvalidInput, got %v", err)
 	}
@@ -261,7 +262,7 @@ func TestSaveCPAAPIKeyPolicyRejectsLegacyDimensions(t *testing.T) {
 	created, _, _ := provider.CreateCPAAPIKey(context.Background(), "", "")
 	for _, legacy := range []string{"tokens", "requests"} {
 		limits := keypolicy.Limits{{Type: keypolicy.LimitType(legacy), Window: keypolicy.LimitWindowDaily, Value: 100}}
-		if err := provider.SaveCPAAPIKeyPolicy(context.Background(), created.ID, limits, true); !errors.Is(err, service.ErrInvalidInput) {
+		if err := provider.SaveCPAAPIKeyPolicy(context.Background(), created.ID, limits); !errors.Is(err, service.ErrInvalidInput) {
 			t.Fatalf("expected %s limit rejected as ErrInvalidInput, got %v", legacy, err)
 		}
 	}
@@ -272,12 +273,12 @@ func TestSaveCPAAPIKeyPolicyRejectsLegacyDimensions(t *testing.T) {
 func TestSaveCPAAPIKeyPolicyKeepsRunnerOwnedColumns(t *testing.T) {
 	provider, _, db := newManagementTestEnv(t)
 	created, _, _ := provider.CreateCPAAPIKey(context.Background(), "", "")
-	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), created.ID, nil, true); err != nil {
+	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), created.ID, nil); err != nil {
 		t.Fatalf("seed policy: %v", err)
 	}
 	injectRunnerDisableOnPolicyRead(t, db, created.ID)
 	newLimits := keypolicy.Limits{{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowDaily, Value: 42}}
-	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), created.ID, newLimits, false); err != nil {
+	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), created.ID, newLimits); err != nil {
 		t.Fatalf("save policy: %v", err)
 	}
 	policy, err := repository.FindCPAAPIKeyPolicy(db, created.ID)
@@ -293,8 +294,33 @@ func TestSaveCPAAPIKeyPolicyKeepsRunnerOwnedColumns(t *testing.T) {
 	if policy.AdminDisabled {
 		t.Fatalf("runner disable does not set admin flag, got %+v", policy)
 	}
-	if policy.Enabled || !strings.Contains(policy.Limits, "42") {
+	// enabled 已不再是可关闭的开关：保存入口永远强制写 true。
+	if !policy.Enabled || !strings.Contains(policy.Limits, "42") {
 		t.Fatalf("config columns must still update, got %+v", policy)
+	}
+}
+
+// TestSaveCPAAPIKeyPolicyAlwaysForcesEnabled 验证限额开关已不可从应用层关闭：
+// 即便策略行是迁移前残留的 enabled = 0，保存限额也会把它纠正为 enabled = 1。
+func TestSaveCPAAPIKeyPolicyAlwaysForcesEnabled(t *testing.T) {
+	provider, _, db := newManagementTestEnv(t)
+	created, _, _ := provider.CreateCPAAPIKey(context.Background(), "", "")
+	// 绕开已经去掉 enabled 参数的保存入口，直接落库模拟遗留的 enabled = 0 行。
+	legacy := entities.CPAAPIKeyPolicy{CPAAPIKeyID: created.ID, Limits: "[]", Enabled: false, EnforcementState: string(keypolicy.StateActive)}
+	if err := repository.UpsertCPAAPIKeyPolicy(db, &legacy); err != nil {
+		t.Fatalf("seed legacy disabled policy: %v", err)
+	}
+	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), created.ID, keypolicy.Limits{
+		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowDaily, Value: 10},
+	}); err != nil {
+		t.Fatalf("save policy: %v", err)
+	}
+	policy, err := repository.FindCPAAPIKeyPolicy(db, created.ID)
+	if err != nil {
+		t.Fatalf("load policy: %v", err)
+	}
+	if !policy.Enabled {
+		t.Fatalf("expected save to force enabled = 1, got %+v", policy)
 	}
 }
 
@@ -470,7 +496,7 @@ func TestUpdateCPAAPIKeyPoliciesMergesOnlyRequestedWindows(t *testing.T) {
 	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), keys[0].ID, keypolicy.Limits{
 		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowWeekly, Value: 20},
 		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowMonthly, Value: 80},
-	}, false); err != nil {
+	}); err != nil {
 		t.Fatalf("seed policy: %v", err)
 	}
 	daily := 3.5
@@ -483,8 +509,8 @@ func TestUpdateCPAAPIKeyPoliciesMergesOnlyRequestedWindows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load first policy: %v", err)
 	}
-	if fmt.Sprint(first.Limits) != "[{cost daily 3.5} {cost weekly 20}]" || first.Policy.Enabled {
-		t.Fatalf("expected daily added, weekly kept, monthly removed, enabled kept off; got %v enabled=%v", first.Limits, first.Policy.Enabled)
+	if fmt.Sprint(first.Limits) != "[{cost daily 3.5} {cost weekly 20}]" || !first.Policy.Enabled {
+		t.Fatalf("expected daily added, weekly kept, monthly removed, enabled forced on; got %v enabled=%v", first.Limits, first.Policy.Enabled)
 	}
 	second, err := provider.GetCPAAPIKeyPolicy(context.Background(), keys[1].ID)
 	if err != nil {
@@ -504,5 +530,366 @@ func TestUpdateCPAAPIKeyPoliciesMergesOnlyRequestedWindows(t *testing.T) {
 		Limits: map[keypolicy.LimitWindow]*float64{keypolicy.LimitWindowDaily: &daily},
 	}); !errors.Is(err, service.ErrInvalidInput) {
 		t.Fatalf("expected empty key selection rejected, got %v", err)
+	}
+}
+
+// TestUpdateCPAAPIKeyPoliciesRejectsEmptyChanges 验证 enabled 开关移除后，没有限额变更的批量请求
+// 没有别的事可做，必须被拒绝，而不是悄悄返回成功。
+func TestUpdateCPAAPIKeyPoliciesRejectsEmptyChanges(t *testing.T) {
+	db := openManagementTestDB(t)
+	key := entities.CPAAPIKey{APIKey: "sk-empty-changes", DisplayKey: "sk-empty-changes"}
+	if err := db.Create(&key).Error; err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+	provider := service.NewCPAAPIKeyManagementService(db, nil, nil, nil)
+	if err := provider.UpdateCPAAPIKeyPolicies(context.Background(), []int64{key.ID}, service.CPAAPIKeyPolicyChanges{}); !errors.Is(err, service.ErrInvalidInput) {
+		t.Fatalf("expected empty changes rejected, got %v", err)
+	}
+}
+
+// TestUpdateCPAAPIKeyPoliciesAlwaysForcesEnabled 验证批量更新入口同样不会保留 enabled = 0 的遗留行。
+func TestUpdateCPAAPIKeyPoliciesAlwaysForcesEnabled(t *testing.T) {
+	db := openManagementTestDB(t)
+	key := entities.CPAAPIKey{APIKey: "sk-force-enable", DisplayKey: "sk-force-enable"}
+	if err := db.Create(&key).Error; err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+	legacy := entities.CPAAPIKeyPolicy{CPAAPIKeyID: key.ID, Limits: "[]", Enabled: false, EnforcementState: string(keypolicy.StateActive)}
+	if err := repository.UpsertCPAAPIKeyPolicy(db, &legacy); err != nil {
+		t.Fatalf("seed legacy disabled policy: %v", err)
+	}
+	provider := service.NewCPAAPIKeyManagementService(db, nil, nil, nil)
+	daily := 5.0
+	if err := provider.UpdateCPAAPIKeyPolicies(context.Background(), []int64{key.ID}, service.CPAAPIKeyPolicyChanges{
+		Limits: map[keypolicy.LimitWindow]*float64{keypolicy.LimitWindowDaily: &daily},
+	}); err != nil {
+		t.Fatalf("bulk update: %v", err)
+	}
+	policy, err := repository.FindCPAAPIKeyPolicy(db, key.ID)
+	if err != nil {
+		t.Fatalf("load policy: %v", err)
+	}
+	if !policy.Enabled {
+		t.Fatalf("expected bulk update to force enabled = 1, got %+v", policy)
+	}
+}
+
+// TestSetCPAAPIKeyQuotaAdjustmentsAppliesOnlyConfiguredWindowsAndWakesRunner 验证只对已有正常限额的
+// 窗口写入调整（没有限额的窗口记为 skipped），再次设置是替换而不是累加，并在提交后唤醒 runner。
+func TestSetCPAAPIKeyQuotaAdjustmentsAppliesOnlyConfiguredWindowsAndWakesRunner(t *testing.T) {
+	db := openManagementTestDB(t)
+	key := entities.CPAAPIKey{APIKey: "sk-adj-1", DisplayKey: "sk-adj-1"}
+	if err := db.Create(&key).Error; err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+	wakes := 0
+	provider := service.NewCPAAPIKeyManagementServiceWithWaker(db, nil, nil, nil, func() { wakes++ })
+	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), key.ID, keypolicy.Limits{
+		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowWeekly, Value: 100},
+	}); err != nil {
+		t.Fatalf("seed policy: %v", err)
+	}
+
+	result, err := provider.SetCPAAPIKeyQuotaAdjustments(context.Background(), []int64{key.ID},
+		[]keypolicy.LimitWindow{keypolicy.LimitWindowDaily, keypolicy.LimitWindowWeekly}, 500)
+	if err != nil {
+		t.Fatalf("set adjustments: %v", err)
+	}
+	if len(result.Applied) != 1 || result.Applied[0] != (service.QuotaAdjustmentTarget{APIKeyID: key.ID, Window: keypolicy.LimitWindowWeekly}) {
+		t.Fatalf("expected weekly applied, got %+v", result.Applied)
+	}
+	if len(result.Skipped) != 1 || result.Skipped[0] != (service.QuotaAdjustmentTarget{APIKeyID: key.ID, Window: keypolicy.LimitWindowDaily}) {
+		t.Fatalf("expected daily skipped (no normal limit), got %+v", result.Skipped)
+	}
+	if wakes != 1 {
+		t.Fatalf("expected runner woken after commit, got %d", wakes)
+	}
+
+	var rows []entities.APIKeyQuotaAdjustment
+	if err := db.Where("cpa_api_key_id = ?", key.ID).Find(&rows).Error; err != nil {
+		t.Fatalf("load adjustments: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Window != "weekly" || rows[0].DeltaUSD != 500 {
+		t.Fatalf("expected one weekly adjustment row of 500, got %+v", rows)
+	}
+
+	// 再次设置是替换而不是累加。
+	if _, err := provider.SetCPAAPIKeyQuotaAdjustments(context.Background(), []int64{key.ID},
+		[]keypolicy.LimitWindow{keypolicy.LimitWindowWeekly}, -200); err != nil {
+		t.Fatalf("replace adjustment: %v", err)
+	}
+	if err := db.Where("cpa_api_key_id = ?", key.ID).Find(&rows).Error; err != nil {
+		t.Fatalf("reload adjustments: %v", err)
+	}
+	if len(rows) != 1 || rows[0].DeltaUSD != -200 {
+		t.Fatalf("expected replaced delta -200, got %+v", rows)
+	}
+
+	logs, err := provider.ListCPAAPIKeyEnforcementLogs(context.Background(), key.ID, 10)
+	if err != nil || len(logs) == 0 || logs[0].Action != "quota_adjusted" || logs[0].Reason != "admin_action" {
+		t.Fatalf("expected quota_adjusted audit log, got %+v err %v", logs, err)
+	}
+}
+
+// TestSetCPAAPIKeyQuotaAdjustmentsRejectsInvalidInput 覆盖裁决清单里的每一类非法输入：
+// 空 ids、空 windows、零/NaN/±Inf 的 deltaUsd 全部映射为 ErrInvalidInput。
+func TestSetCPAAPIKeyQuotaAdjustmentsRejectsInvalidInput(t *testing.T) {
+	db := openManagementTestDB(t)
+	key := entities.CPAAPIKey{APIKey: "sk-adj-invalid", DisplayKey: "sk-adj-invalid"}
+	if err := db.Create(&key).Error; err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+	provider := service.NewCPAAPIKeyManagementService(db, nil, nil, nil)
+	if _, err := provider.SetCPAAPIKeyQuotaAdjustments(context.Background(), nil, []keypolicy.LimitWindow{keypolicy.LimitWindowWeekly}, 10); !errors.Is(err, service.ErrInvalidInput) {
+		t.Fatalf("expected empty ids rejected, got %v", err)
+	}
+	if _, err := provider.SetCPAAPIKeyQuotaAdjustments(context.Background(), []int64{key.ID}, nil, 10); !errors.Is(err, service.ErrInvalidInput) {
+		t.Fatalf("expected empty windows rejected, got %v", err)
+	}
+	if _, err := provider.SetCPAAPIKeyQuotaAdjustments(context.Background(), []int64{key.ID}, []keypolicy.LimitWindow{keypolicy.LimitWindowWeekly}, 0); !errors.Is(err, service.ErrInvalidInput) {
+		t.Fatalf("expected zero delta rejected, got %v", err)
+	}
+	if _, err := provider.SetCPAAPIKeyQuotaAdjustments(context.Background(), []int64{key.ID}, []keypolicy.LimitWindow{keypolicy.LimitWindowWeekly}, math.NaN()); !errors.Is(err, service.ErrInvalidInput) {
+		t.Fatalf("expected NaN delta rejected, got %v", err)
+	}
+	if _, err := provider.SetCPAAPIKeyQuotaAdjustments(context.Background(), []int64{key.ID}, []keypolicy.LimitWindow{keypolicy.LimitWindowWeekly}, math.Inf(1)); !errors.Is(err, service.ErrInvalidInput) {
+		t.Fatalf("expected +Inf delta rejected, got %v", err)
+	}
+	if _, err := provider.SetCPAAPIKeyQuotaAdjustments(context.Background(), []int64{key.ID}, []keypolicy.LimitWindow{keypolicy.LimitWindowWeekly}, math.Inf(-1)); !errors.Is(err, service.ErrInvalidInput) {
+		t.Fatalf("expected -Inf delta rejected, got %v", err)
+	}
+}
+
+// TestListCPAAPIKeyPolicySummariesReportsEffectiveLimitWithBaseAndAdjustment 验证列表摘要
+// 的 tightest/limits 都报告叠加调整后的生效值，Base 仍是正常限额，Adjustment 是当前生效的 delta；
+// 清除调整后摘要和数据库行都要回到没有调整的状态。
+func TestListCPAAPIKeyPolicySummariesReportsEffectiveLimitWithBaseAndAdjustment(t *testing.T) {
+	db := openManagementTestDB(t)
+	key := entities.CPAAPIKey{APIKey: "sk-adj-summary", DisplayKey: "sk-adj-summary"}
+	if err := db.Create(&key).Error; err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+	provider := service.NewCPAAPIKeyManagementService(db, nil, nil, nil)
+	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), key.ID, keypolicy.Limits{
+		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowWeekly, Value: 100},
+	}); err != nil {
+		t.Fatalf("seed policy: %v", err)
+	}
+	if _, err := provider.SetCPAAPIKeyQuotaAdjustments(context.Background(), []int64{key.ID}, []keypolicy.LimitWindow{keypolicy.LimitWindowWeekly}, 500); err != nil {
+		t.Fatalf("set adjustment: %v", err)
+	}
+
+	summaries, err := provider.ListCPAAPIKeyPolicySummaries(context.Background())
+	if err != nil {
+		t.Fatalf("list summaries: %v", err)
+	}
+	summary, ok := summaries[key.ID]
+	if !ok || summary.Tightest == nil {
+		t.Fatalf("expected summary with tightest limit, got %+v ok=%v", summary, ok)
+	}
+	if summary.Tightest.Limit.Value != 600 || summary.Tightest.Base != 100 || summary.Tightest.Adjustment == nil || *summary.Tightest.Adjustment != 500 {
+		t.Fatalf("expected effective 600 (base 100 + 500), got %+v", summary.Tightest)
+	}
+	if len(summary.Limits) != 1 || summary.Limits[0].Limit.Value != 600 || summary.Limits[0].Base != 100 {
+		t.Fatalf("expected window usages to report effective value, got %+v", summary.Limits)
+	}
+
+	// GetCPAAPIKeyPolicy 的 Tightest 同样要反映生效值，但 Limits（可编辑配置）保持正常限额。
+	view, err := provider.GetCPAAPIKeyPolicy(context.Background(), key.ID)
+	if err != nil {
+		t.Fatalf("get policy: %v", err)
+	}
+	if view.Tightest == nil || view.Tightest.Limit.Value != 600 || view.Tightest.Base != 100 {
+		t.Fatalf("expected single-key view tightest to use effective limit, got %+v", view.Tightest)
+	}
+	if len(view.Limits) != 1 || view.Limits[0].Value != 100 {
+		t.Fatalf("expected single-key view limits to stay the normal stored config, got %+v", view.Limits)
+	}
+
+	if err := provider.ClearCPAAPIKeyQuotaAdjustments(context.Background(), []int64{key.ID}, []keypolicy.LimitWindow{keypolicy.LimitWindowWeekly}); err != nil {
+		t.Fatalf("clear adjustment: %v", err)
+	}
+	summaries, err = provider.ListCPAAPIKeyPolicySummaries(context.Background())
+	if err != nil {
+		t.Fatalf("list summaries after clear: %v", err)
+	}
+	summary = summaries[key.ID]
+	if summary.Tightest == nil || summary.Tightest.Limit.Value != 100 || summary.Tightest.Adjustment != nil {
+		t.Fatalf("expected adjustment cleared, got %+v", summary.Tightest)
+	}
+	var remaining int64
+	if err := db.Model(&entities.APIKeyQuotaAdjustment{}).Where("cpa_api_key_id = ?", key.ID).Count(&remaining).Error; err != nil || remaining != 0 {
+		t.Fatalf("expected adjustment row removed, count=%d err=%v", remaining, err)
+	}
+}
+
+// TestClearCPAAPIKeyQuotaAdjustmentsWakesRunnerAndValidates 验证清除调整写审计、唤醒 runner，
+// 并沿用与设置入口相同的 id/窗口校验（空 ids 400，未知 key 404）。
+func TestClearCPAAPIKeyQuotaAdjustmentsWakesRunnerAndValidates(t *testing.T) {
+	db := openManagementTestDB(t)
+	key := entities.CPAAPIKey{APIKey: "sk-adj-clear", DisplayKey: "sk-adj-clear"}
+	if err := db.Create(&key).Error; err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+	wakes := 0
+	provider := service.NewCPAAPIKeyManagementServiceWithWaker(db, nil, nil, nil, func() { wakes++ })
+	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), key.ID, keypolicy.Limits{
+		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowWeekly, Value: 100},
+	}); err != nil {
+		t.Fatalf("seed policy: %v", err)
+	}
+	if _, err := provider.SetCPAAPIKeyQuotaAdjustments(context.Background(), []int64{key.ID}, []keypolicy.LimitWindow{keypolicy.LimitWindowWeekly}, 500); err != nil {
+		t.Fatalf("set adjustment: %v", err)
+	}
+	wakes = 0
+	if err := provider.ClearCPAAPIKeyQuotaAdjustments(context.Background(), []int64{key.ID}, []keypolicy.LimitWindow{keypolicy.LimitWindowWeekly}); err != nil {
+		t.Fatalf("clear adjustment: %v", err)
+	}
+	if wakes != 1 {
+		t.Fatalf("expected runner woken once after clear, got %d", wakes)
+	}
+	logs, err := provider.ListCPAAPIKeyEnforcementLogs(context.Background(), key.ID, 10)
+	if err != nil || len(logs) == 0 || logs[0].Action != "quota_adjustment_cleared" {
+		t.Fatalf("expected quota_adjustment_cleared audit log, got %+v err %v", logs, err)
+	}
+
+	if err := provider.ClearCPAAPIKeyQuotaAdjustments(context.Background(), nil, []keypolicy.LimitWindow{keypolicy.LimitWindowWeekly}); !errors.Is(err, service.ErrInvalidInput) {
+		t.Fatalf("expected empty ids rejected, got %v", err)
+	}
+	if err := provider.ClearCPAAPIKeyQuotaAdjustments(context.Background(), []int64{999}, []keypolicy.LimitWindow{keypolicy.LimitWindowWeekly}); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("expected unknown key rejected, got %v", err)
+	}
+}
+
+// effectiveLimitForWindow 在测试里从 EffectiveLimits 里挑出某个窗口的那一条，没找到返回 nil。
+func effectiveLimitForWindow(limits keypolicy.EffectiveLimits, window keypolicy.LimitWindow) *keypolicy.EffectiveLimit {
+	for i := range limits {
+		if limits[i].Window == window {
+			return &limits[i]
+		}
+	}
+	return nil
+}
+
+// TestSaveCPAAPIKeyPolicyClearsAdjustmentWhenWindowLimitRemoved 覆盖 item 3 的回归场景：
+// weekly 限额 100 叠加 -100 的临时调整后，移除 weekly 限额再把它加回来（weekly 200），
+// 如果旧的 adjustment 行没被一起清掉，它会在新周期内原样复活，effective 变成 100 而不是 200。
+func TestSaveCPAAPIKeyPolicyClearsAdjustmentWhenWindowLimitRemoved(t *testing.T) {
+	db := openManagementTestDB(t)
+	key := entities.CPAAPIKey{APIKey: "sk-save-resurrect", DisplayKey: "sk-save-resurrect"}
+	if err := db.Create(&key).Error; err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+	provider := service.NewCPAAPIKeyManagementService(db, nil, nil, nil)
+	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), key.ID, keypolicy.Limits{
+		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowWeekly, Value: 100},
+	}); err != nil {
+		t.Fatalf("seed weekly limit: %v", err)
+	}
+	if _, err := provider.SetCPAAPIKeyQuotaAdjustments(context.Background(), []int64{key.ID}, []keypolicy.LimitWindow{keypolicy.LimitWindowWeekly}, -100); err != nil {
+		t.Fatalf("set adjustment: %v", err)
+	}
+	var adjustmentCount int64
+	if err := db.Model(&entities.APIKeyQuotaAdjustment{}).Where("cpa_api_key_id = ?", key.ID).Count(&adjustmentCount).Error; err != nil || adjustmentCount != 1 {
+		t.Fatalf("expected one adjustment row before removal, count=%d err=%v", adjustmentCount, err)
+	}
+
+	// 移除 weekly 限额：同一个 key 的 weekly adjustment 必须跟着被删掉。
+	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), key.ID, keypolicy.Limits{}); err != nil {
+		t.Fatalf("remove weekly limit: %v", err)
+	}
+	if err := db.Model(&entities.APIKeyQuotaAdjustment{}).Where("cpa_api_key_id = ?", key.ID).Count(&adjustmentCount).Error; err != nil || adjustmentCount != 0 {
+		t.Fatalf("expected adjustment row deleted when limit removed, count=%d err=%v", adjustmentCount, err)
+	}
+
+	// 原周期内把 weekly 限额加回来（200）：旧 adjustment 已经被删了，不应该复活。
+	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), key.ID, keypolicy.Limits{
+		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowWeekly, Value: 200},
+	}); err != nil {
+		t.Fatalf("re-add weekly limit: %v", err)
+	}
+	view, err := provider.GetCPAAPIKeyPolicy(context.Background(), key.ID)
+	if err != nil {
+		t.Fatalf("get policy: %v", err)
+	}
+	weekly := effectiveLimitForWindow(view.Effective, keypolicy.LimitWindowWeekly)
+	if weekly == nil || weekly.Value != 200 || weekly.Adjustment != nil {
+		t.Fatalf("expected effective weekly 200 with no resurrected adjustment, got %+v", weekly)
+	}
+}
+
+// TestUpdateCPAAPIKeyPoliciesClearsAdjustmentWhenWindowLimitRemoved 是 item 3 场景在批量更新
+// 入口（UpdateCPAAPIKeyPolicies）下的等价回归：nil 值移除 weekly 限额时同样要清掉对应 adjustment。
+func TestUpdateCPAAPIKeyPoliciesClearsAdjustmentWhenWindowLimitRemoved(t *testing.T) {
+	db := openManagementTestDB(t)
+	key := entities.CPAAPIKey{APIKey: "sk-bulk-resurrect", DisplayKey: "sk-bulk-resurrect"}
+	if err := db.Create(&key).Error; err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+	provider := service.NewCPAAPIKeyManagementService(db, nil, nil, nil)
+	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), key.ID, keypolicy.Limits{
+		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowWeekly, Value: 100},
+	}); err != nil {
+		t.Fatalf("seed weekly limit: %v", err)
+	}
+	if _, err := provider.SetCPAAPIKeyQuotaAdjustments(context.Background(), []int64{key.ID}, []keypolicy.LimitWindow{keypolicy.LimitWindowWeekly}, -100); err != nil {
+		t.Fatalf("set adjustment: %v", err)
+	}
+
+	// 用批量入口把 weekly 置为 nil（移除）。
+	if err := provider.UpdateCPAAPIKeyPolicies(context.Background(), []int64{key.ID}, service.CPAAPIKeyPolicyChanges{
+		Limits: map[keypolicy.LimitWindow]*float64{keypolicy.LimitWindowWeekly: nil},
+	}); err != nil {
+		t.Fatalf("bulk remove weekly: %v", err)
+	}
+	var adjustmentCount int64
+	if err := db.Model(&entities.APIKeyQuotaAdjustment{}).Where("cpa_api_key_id = ?", key.ID).Count(&adjustmentCount).Error; err != nil || adjustmentCount != 0 {
+		t.Fatalf("expected adjustment row deleted when limit removed, count=%d err=%v", adjustmentCount, err)
+	}
+
+	// 再用批量入口把 weekly 加回来（200），旧 adjustment 不应该复活。
+	weeklyValue := 200.0
+	if err := provider.UpdateCPAAPIKeyPolicies(context.Background(), []int64{key.ID}, service.CPAAPIKeyPolicyChanges{
+		Limits: map[keypolicy.LimitWindow]*float64{keypolicy.LimitWindowWeekly: &weeklyValue},
+	}); err != nil {
+		t.Fatalf("bulk re-add weekly: %v", err)
+	}
+	view, err := provider.GetCPAAPIKeyPolicy(context.Background(), key.ID)
+	if err != nil {
+		t.Fatalf("get policy: %v", err)
+	}
+	weekly := effectiveLimitForWindow(view.Effective, keypolicy.LimitWindowWeekly)
+	if weekly == nil || weekly.Value != 200 || weekly.Adjustment != nil {
+		t.Fatalf("expected effective weekly 200 with no resurrected adjustment, got %+v", weekly)
+	}
+}
+
+// TestSetCPAAPIKeyQuotaAdjustmentsRejectsDeltaAboveMagnitudeCap 覆盖 item 4：|delta| 超过
+// 1e9 的上限必须被拒绝为 ErrInvalidInput，避免 limit+delta 把响应 JSON 编码撑爆。
+func TestSetCPAAPIKeyQuotaAdjustmentsRejectsDeltaAboveMagnitudeCap(t *testing.T) {
+	db := openManagementTestDB(t)
+	key := entities.CPAAPIKey{APIKey: "sk-adj-cap", DisplayKey: "sk-adj-cap"}
+	if err := db.Create(&key).Error; err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+	provider := service.NewCPAAPIKeyManagementService(db, nil, nil, nil)
+	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), key.ID, keypolicy.Limits{
+		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowWeekly, Value: 100},
+	}); err != nil {
+		t.Fatalf("seed weekly limit: %v", err)
+	}
+	if _, err := provider.SetCPAAPIKeyQuotaAdjustments(context.Background(), []int64{key.ID}, []keypolicy.LimitWindow{keypolicy.LimitWindowWeekly}, 1e9+1); !errors.Is(err, service.ErrInvalidInput) {
+		t.Fatalf("expected delta above +1e9 rejected, got %v", err)
+	}
+	if _, err := provider.SetCPAAPIKeyQuotaAdjustments(context.Background(), []int64{key.ID}, []keypolicy.LimitWindow{keypolicy.LimitWindowWeekly}, -1e9-1); !errors.Is(err, service.ErrInvalidInput) {
+		t.Fatalf("expected delta below -1e9 rejected, got %v", err)
+	}
+	// 恰好等于上限必须被接受（拒绝的是超过，不是达到）。
+	if _, err := provider.SetCPAAPIKeyQuotaAdjustments(context.Background(), []int64{key.ID}, []keypolicy.LimitWindow{keypolicy.LimitWindowWeekly}, 1e9); err != nil {
+		t.Fatalf("expected delta exactly at +1e9 accepted, got %v", err)
+	}
+	var adjustmentCount int64
+	if err := db.Model(&entities.APIKeyQuotaAdjustment{}).Where("cpa_api_key_id = ?", key.ID).Count(&adjustmentCount).Error; err != nil || adjustmentCount != 1 {
+		t.Fatalf("expected the accepted adjustment to persist, count=%d err=%v", adjustmentCount, err)
 	}
 }

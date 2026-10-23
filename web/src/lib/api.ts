@@ -1034,13 +1034,13 @@ export async function fetchCpaApiKeyPolicy(id: string, signal?: AbortSignal): Pr
   return (await response.json()) as ApiKeyPolicyResponse
 }
 
-export async function saveCpaApiKeyPolicy(id: string, limits: ApiKeyPolicyLimit[], enabled: boolean): Promise<void> {
+export async function saveCpaApiKeyPolicy(id: string, limits: ApiKeyPolicyLimit[]): Promise<void> {
   const response = await apiFetch(apiPath(`/usage/api-keys/${encodeURIComponent(id)}/policy`), {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ limits, enabled }),
+    body: JSON.stringify({ limits }),
   })
   if (!response.ok) {
     await parseApiError(response, `Failed to save CPA API key policy: ${response.status}`)
@@ -1061,11 +1061,10 @@ export async function resetCpaApiKeyQuotas(request: { allKeys: boolean; apiKeyId
   }
 }
 
-// 批量限额：limits 只列要改的窗口，null 表示移除该窗口限额；enabled 省略则保持各 key 原值。
+// 批量限额：limits 只列要改的窗口，null 表示移除该窗口限额。
 export async function updateCpaApiKeyPolicies(request: {
   apiKeyIds: string[]
   limits: Partial<Record<ApiKeyLimitWindow, number | null>>
-  enabled?: boolean
 }): Promise<void> {
   const response = await apiFetch(apiPath('/usage/api-keys/policies'), {
     method: 'PATCH',
@@ -1076,6 +1075,42 @@ export async function updateCpaApiKeyPolicies(request: {
   })
   if (!response.ok) {
     await parseApiError(response, `Failed to update CPA API key policies: ${response.status}`)
+  }
+}
+
+// 临时调整：只在所选周期已有常规限额的 key 上生效；没有常规限额的组合进 skipped，不报错。
+export async function setCpaApiKeyQuotaAdjustments(request: {
+  apiKeyIds: string[]
+  windows: ApiKeyLimitWindow[]
+  deltaUsd: number
+}): Promise<{
+  applied: { apiKeyId: string; window: ApiKeyLimitWindow }[]
+  skipped: { apiKeyId: string; window: ApiKeyLimitWindow; reason: 'no_limit' }[]
+}> {
+  const response = await apiFetch(apiPath('/usage/api-keys/quota-adjustments'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to set CPA API key quota adjustments: ${response.status}`)
+  }
+  return await response.json()
+}
+
+// 清除临时调整：清除后下一次用量读取立即回落到常规限额。
+export async function clearCpaApiKeyQuotaAdjustments(request: { apiKeyIds: string[]; windows: ApiKeyLimitWindow[] }): Promise<void> {
+  const response = await apiFetch(apiPath('/usage/api-keys/quota-adjustments'), {
+    method: 'DELETE',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to clear CPA API key quota adjustments: ${response.status}`)
   }
 }
 
