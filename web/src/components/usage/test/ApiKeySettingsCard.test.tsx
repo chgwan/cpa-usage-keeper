@@ -2,7 +2,7 @@ import React from 'react';
 import '@/i18n';
 import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ApiKeySettingsCard, copyApiKeyToClipboard, getApiKeySettingsVisibleKey, nextApiKeySortDirection, sortApiKeySettingsItems, type ApiKeySortDirection } from '../ApiKeySettingsCard';
+import { ApiKeySettingsCard, copyApiKeyToClipboard, getApiKeySettingsVisibleKey, resolveStoredApiKeySort, sortApiKeySettingsItems, type ApiKeySortKey } from '../ApiKeySettingsCard';
 import type { CpaApiKeySettingsItem } from '@/lib/types';
 
 const apiKeys: CpaApiKeySettingsItem[] = [
@@ -24,44 +24,57 @@ const renderCard = (props: Partial<React.ComponentProps<typeof ApiKeySettingsCar
 const countOccurrences = (text: string, value: string) => text.split(value).length - 1;
 
 describe('ApiKeySettingsCard', () => {
-  it('sorts by status and alphabetically, alone or combined, in both directions', () => {
-    const item = (id: string, keyAlias: string, displayKey: string, state?: 'active' | 'disabled_manual' | 'disabled_by_quota'): CpaApiKeySettingsItem => ({
+  it('sorts by one key at a time, with name A–Z as the tie-break', () => {
+    const tightest = (ratio: number, used: number) => ({ type: 'cost' as const, window: 'daily' as const, value: 10, used, ratio });
+    const item = (
+      id: string,
+      keyAlias: string,
+      displayKey: string,
+      state?: 'active' | 'disabled_manual' | 'disabled_by_quota',
+      limit: ReturnType<typeof tightest> | null = null,
+    ): CpaApiKeySettingsItem => ({
       id, apiKey: '', keyAlias, displayKey, label: keyAlias || displayKey, lastSyncedAt: null,
-      policy: state ? { enabled: true, enforcementState: state, tightest: null } : undefined,
+      policy: state ? { enabled: true, enforcementState: state, tightest: limit } : undefined,
     });
     const items = [
-      item('1', 'zeta', 'sk-***1', 'active'),
+      item('1', 'zeta', 'sk-***1', 'active', tightest(0.5, 5)),
       item('2', '', 'sk-***2', 'disabled_manual'),
-      item('3', 'Alpha', 'sk-***3', 'disabled_by_quota'),
-      item('4', 'key10', 'sk-***4', 'active'),
+      item('3', 'Alpha', 'sk-***3', 'disabled_by_quota', tightest(1.2, 12)),
+      item('4', 'key10', 'sk-***4', 'active', tightest(0.9, 1.8)),
       item('5', 'key9', 'sk-***5'),
+      item('6', 'beta', 'sk-***6', 'active', tightest(0.5, 5)),
     ];
-    const ids = (alphabetical: ApiKeySortDirection, status: ApiKeySortDirection) => sortApiKeySettingsItems(items, { alphabetical, status }).map((value) => value.id);
+    const ids = (sortKey: ApiKeySortKey) => sortApiKeySettingsItems(items, sortKey).map((value) => value.id);
 
-    expect(sortApiKeySettingsItems(items, { alphabetical: null, status: null })).toBe(items);
-    expect(ids('asc', null)).toEqual(['3', '5', '4', '2', '1']);
-    expect(ids('desc', null)).toEqual(['1', '2', '4', '5', '3']);
-    // 只按状态排序时组内保持原顺序。
-    expect(ids(null, 'asc')).toEqual(['1', '4', '2', '3', '5']);
-    expect(ids(null, 'desc')).toEqual(['5', '3', '2', '1', '4']);
-    expect(ids('asc', 'asc')).toEqual(['4', '1', '2', '3', '5']);
-    expect(ids('desc', 'desc')).toEqual(['5', '3', '2', '1', '4']);
-    expect(ids('asc', 'desc')).toEqual(['5', '3', '2', '4', '1']);
-    expect(items.map((value) => value.id)).toEqual(['1', '2', '3', '4', '5']);
+    expect(ids('name_asc')).toEqual(['3', '6', '5', '4', '2', '1']);
+    expect(ids('name_desc')).toEqual(['1', '2', '4', '5', '6', '3']);
+    expect(ids('status')).toEqual(['6', '4', '1', '2', '3', '5']);
+    // 无限额（tightest 为空）的 key 在两种限额排序下都排在最后。
+    expect(ids('quota_ratio')).toEqual(['3', '4', '6', '1', '5', '2']);
+    expect(ids('quota_spend')).toEqual(['3', '6', '1', '4', '5', '2']);
+    expect(items.map((value) => value.id)).toEqual(['1', '2', '3', '4', '5', '6']);
   });
 
-  it('cycles each sort toggle through off, ascending, and descending', () => {
-    expect(nextApiKeySortDirection(null)).toBe('asc');
-    expect(nextApiKeySortDirection('asc')).toBe('desc');
-    expect(nextApiKeySortDirection('desc')).toBeNull();
+  it('restores the saved sort key and migrates the old toggle settings', () => {
+    expect(resolveStoredApiKeySort(null, null)).toBe('name_asc');
+    expect(resolveStoredApiKeySort('quota_spend', null)).toBe('quota_spend');
+    expect(resolveStoredApiKeySort('bogus', null)).toBe('name_asc');
+    expect(resolveStoredApiKeySort(null, '{"alphabetical":"desc","status":null}')).toBe('name_desc');
+    expect(resolveStoredApiKeySort(null, '{"alphabetical":"asc","status":"desc"}')).toBe('status');
+    expect(resolveStoredApiKeySort(null, '{"alphabetical":null,"status":null}')).toBe('name_asc');
+    expect(resolveStoredApiKeySort(null, 'not json')).toBe('name_asc');
+    // 新值优先于旧值。
+    expect(resolveStoredApiKeySort('name_asc', '{"alphabetical":"desc","status":null}')).toBe('name_asc');
   });
 
-  it('renders both sort toggles unpressed by default', () => {
+  it('renders one closed sort menu trigger showing the default order', () => {
     const html = renderCard();
 
-    expect(html).toContain('aria-label="Sort keys alphabetically"');
-    expect(html).toContain('aria-label="Sort keys by status"');
-    expect(html).toContain('aria-pressed="false"');
+    expect(countOccurrences(html, 'data-api-key-sort-trigger')).toBe(1);
+    expect(html).toContain('aria-haspopup="menu"');
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('Name A → Z');
+    expect(html).not.toContain('role="menu"');
   });
 
   it('renders alias, masked key, and string ids without local ids by default', () => {
@@ -76,7 +89,9 @@ describe('ApiKeySettingsCard', () => {
     expect(html).toContain('aria-label="Show full API keys"');
     expect(countOccurrences(html, 'aria-label="Copy"')).toBe(2);
     expect(html).toContain('title="sk-*********123456"');
-    expect(html).not.toContain('9007199254740993');
+    // 该 id 只应出现在行的 data-api-key-settings-item 测试钩子里，不作为可见文案展示。
+    expect(countOccurrences(html, '9007199254740993')).toBe(1);
+    expect(html).toContain('data-api-key-settings-item="9007199254740993"');
     expect(html).not.toContain('Local ID');
   });
 

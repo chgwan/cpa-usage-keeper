@@ -10,6 +10,7 @@ import { useScrollBoundaryContainment } from '@/hooks/useScrollBoundaryContainme
 import { resolveQuotaProgress } from '@/lib/quotaProgress';
 import type { CreatedApiKey, CpaApiKeySettingsItem } from '@/lib/types';
 import { ApiKeyQuotaResetModal, ApiKeyQuotaSettingsModal, type QuotaPolicyUpdateRequest, type QuotaResetRequest } from './ApiKeyQuotaDialogs';
+import { ApiKeySortMenu } from './ApiKeySortMenu';
 import styles from '@/pages/UsagePage.module.scss';
 
 type ClipboardWriter = Pick<Clipboard, 'writeText'>;
@@ -42,46 +43,55 @@ type CopyContext = {
   document?: CopyDocument;
 };
 
-export type ApiKeySortDirection = 'asc' | 'desc' | null;
+export type ApiKeySortKey = 'name_asc' | 'name_desc' | 'status' | 'quota_ratio' | 'quota_spend';
 
-export interface ApiKeySettingsSort {
-  alphabetical: ApiKeySortDirection;
-  status: ApiKeySortDirection;
-}
+export const API_KEY_SORT_KEYS: readonly ApiKeySortKey[] = ['name_asc', 'name_desc', 'status', 'quota_ratio', 'quota_spend'];
 
-const API_KEY_SETTINGS_SORT_STORAGE_KEY = 'cpa-usage-keeper-api-key-settings-sort';
-// 旧版只存了字母序开关；读到 'true' 时迁移为字母升序。
-const LEGACY_API_KEY_SETTINGS_SORT_STORAGE_KEY = 'cpa-usage-keeper-api-key-settings-sort-alphabetical';
+export const DEFAULT_API_KEY_SORT: ApiKeySortKey = 'name_asc';
 
-const normalizeSortDirection = (value: unknown): ApiKeySortDirection => (
-  value === 'asc' || value === 'desc' ? value : null
+const API_KEY_SETTINGS_SORT_STORAGE_KEY = 'cpa-usage-keeper-api-key-settings-sort-v2';
+// 旧版存的是 {alphabetical, status} 两个开关；首次读取时迁移为单一排序键。
+const LEGACY_API_KEY_SETTINGS_SORT_STORAGE_KEY = 'cpa-usage-keeper-api-key-settings-sort';
+
+const isApiKeySortKey = (value: unknown): value is ApiKeySortKey => (
+  typeof value === 'string' && (API_KEY_SORT_KEYS as readonly string[]).includes(value)
 );
 
-const getInitialSort = (): ApiKeySettingsSort => {
+export function resolveStoredApiKeySort(v2Raw: string | null, legacyJsonRaw: string | null): ApiKeySortKey {
+  if (isApiKeySortKey(v2Raw)) {
+    return v2Raw;
+  }
+  if (!legacyJsonRaw) {
+    return DEFAULT_API_KEY_SORT;
+  }
+  try {
+    const legacy = JSON.parse(legacyJsonRaw) as Record<string, unknown> | null;
+    if (legacy?.status === 'asc' || legacy?.status === 'desc') {
+      return 'status';
+    }
+    return legacy?.alphabetical === 'desc' ? 'name_desc' : DEFAULT_API_KEY_SORT;
+  } catch {
+    return DEFAULT_API_KEY_SORT;
+  }
+}
+
+const getInitialSort = (): ApiKeySortKey => {
   try {
     if (typeof window === 'undefined') {
-      return { alphabetical: null, status: null };
+      return DEFAULT_API_KEY_SORT;
     }
-    const raw = window.localStorage.getItem(API_KEY_SETTINGS_SORT_STORAGE_KEY);
-    if (raw) {
-      const stored = JSON.parse(raw) as Record<string, unknown>;
-      return { alphabetical: normalizeSortDirection(stored?.alphabetical), status: normalizeSortDirection(stored?.status) };
-    }
-    const legacy = window.localStorage.getItem(LEGACY_API_KEY_SETTINGS_SORT_STORAGE_KEY) === 'true';
-    return { alphabetical: legacy ? 'asc' : null, status: null };
+    return resolveStoredApiKeySort(
+      window.localStorage.getItem(API_KEY_SETTINGS_SORT_STORAGE_KEY),
+      window.localStorage.getItem(LEGACY_API_KEY_SETTINGS_SORT_STORAGE_KEY),
+    );
   } catch {
-    return { alphabetical: null, status: null };
+    return DEFAULT_API_KEY_SORT;
   }
 };
 
-// 排序按钮循环：关闭 → 升序 → 降序 → 关闭。
-export const nextApiKeySortDirection = (current: ApiKeySortDirection): ApiKeySortDirection => (
-  current === null ? 'asc' : current === 'asc' ? 'desc' : null
-);
-
 const apiKeySortCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 
-// 状态升序：可用 → 手动停用 → 限额停用 → 状态未知。
+// 状态排序：可用 → 手动停用 → 限额停用 → 状态未知。
 const API_KEY_STATUS_RANK: Record<string, number> = {
   active: 0,
   disabled_manual: 1,
@@ -92,27 +102,42 @@ const apiKeyStatusRank = (item: CpaApiKeySettingsItem) => (
   API_KEY_STATUS_RANK[item.policy?.enforcementState ?? ''] ?? 3
 );
 
-// 状态与字母序可叠加：状态作为主序分组，组内再按别名（未设置时回落脱敏 key）排序；都关闭时保持服务端顺序。
-export function sortApiKeySettingsItems(items: CpaApiKeySettingsItem[], sort: ApiKeySettingsSort) {
-  if (!sort.alphabetical && !sort.status) {
-    return items;
-  }
-  const sortLabel = (item: CpaApiKeySettingsItem) => item.keyAlias.trim() || item.displayKey;
-  const statusSign = sort.status === 'desc' ? -1 : 1;
-  const alphabeticalSign = sort.alphabetical === 'desc' ? -1 : 1;
+const apiKeySortLabel = (item: CpaApiKeySettingsItem) => item.keyAlias.trim() || item.displayKey;
+
+const compareApiKeyNames = (left: CpaApiKeySettingsItem, right: CpaApiKeySettingsItem) => (
+  apiKeySortCollator.compare(apiKeySortLabel(left), apiKeySortLabel(right))
+  || apiKeySortCollator.compare(left.displayKey, right.displayKey)
+  || apiKeySortCollator.compare(left.id, right.id)
+);
+
+// 限额排序取最紧窗口（与行内进度条一致）；未配置限额的 key 无论如何都排在最后。
+const apiKeyQuotaMetric = (sortKey: ApiKeySortKey) => {
+  if (sortKey === 'quota_ratio') return (item: CpaApiKeySettingsItem) => item.policy?.tightest?.ratio;
+  if (sortKey === 'quota_spend') return (item: CpaApiKeySettingsItem) => item.policy?.tightest?.used;
+  return null;
+};
+
+// 每次只按一个键排序，名称 A → Z 作为所有排序的兜底次序。
+export function sortApiKeySettingsItems(items: CpaApiKeySettingsItem[], sortKey: ApiKeySortKey) {
+  const metric = apiKeyQuotaMetric(sortKey);
   return [...items].sort((left, right) => {
-    if (sort.status) {
-      const byStatus = (apiKeyStatusRank(left) - apiKeyStatusRank(right)) * statusSign;
+    if (sortKey === 'name_desc') {
+      return compareApiKeyNames(right, left);
+    }
+    if (sortKey === 'status') {
+      const byStatus = apiKeyStatusRank(left) - apiKeyStatusRank(right);
       if (byStatus !== 0) return byStatus;
     }
-    if (sort.alphabetical) {
-      return alphabeticalSign * (
-        apiKeySortCollator.compare(sortLabel(left), sortLabel(right))
-        || apiKeySortCollator.compare(left.displayKey, right.displayKey)
-        || apiKeySortCollator.compare(left.id, right.id)
-      );
+    if (metric) {
+      const leftValue = metric(left);
+      const rightValue = metric(right);
+      if (leftValue === undefined || rightValue === undefined) {
+        if (leftValue !== rightValue) return leftValue === undefined ? 1 : -1;
+      } else if (leftValue !== rightValue) {
+        return rightValue - leftValue;
+      }
     }
-    return 0;
+    return compareApiKeyNames(left, right);
   });
 }
 
@@ -217,10 +242,10 @@ export function ApiKeySettingsCard({
 }: ApiKeySettingsCardProps) {
   const { t } = useTranslation();
   const [showFullApiKeys, setShowFullApiKeys] = useState(false);
-  const [sort, setSort] = useState<ApiKeySettingsSort>(getInitialSort);
+  const [sortKey, setSortKey] = useState<ApiKeySortKey>(getInitialSort);
   // 展开态把同一张卡片挂到 body 上的全屏遮罩里；状态都在本组件内，切换时草稿不丢。
   const [expanded, setExpanded] = useState(false);
-  const sortedApiKeys = useMemo(() => sortApiKeySettingsItems(apiKeys, sort), [apiKeys, sort]);
+  const sortedApiKeys = useMemo(() => sortApiKeySettingsItems(apiKeys, sortKey), [apiKeys, sortKey]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const apiKeySettingsBodyRef = useRef<HTMLDivElement | null>(null);
@@ -372,16 +397,14 @@ export function ApiKeySettingsCard({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [expanded, innerModalOpen]);
 
-  const cycleSort = useCallback((field: keyof ApiKeySettingsSort) => {
-    setSort((current) => {
-      const next = { ...current, [field]: nextApiKeySortDirection(current[field]) };
-      try { window.localStorage.setItem(API_KEY_SETTINGS_SORT_STORAGE_KEY, JSON.stringify(next)); } catch { /* 浏览器存储不可用时仅保留当前选择。 */ }
-      return next;
-    });
+  const changeSort = useCallback((next: ApiKeySortKey) => {
+    setSortKey(next);
+    try {
+      window.localStorage.setItem(API_KEY_SETTINGS_SORT_STORAGE_KEY, next);
+    } catch {
+      // 存储不可用（隐私模式等）时只在本次会话内生效。
+    }
   }, []);
-  const alphabeticalSortLabel = t(`usage_stats.api_key_settings_sort_alphabetical_${sort.alphabetical ?? 'off'}`);
-  const statusSortLabel = t(`usage_stats.api_key_settings_sort_status_${sort.status ?? 'off'}`);
-  const sortArrow = (direction: ApiKeySortDirection) => (direction === 'asc' ? ' ↑' : direction === 'desc' ? ' ↓' : '');
   const toggleLabel = showFullApiKeys
     ? t('usage_stats.api_key_settings_hide_full')
     : t('usage_stats.api_key_settings_show_full');
@@ -433,30 +456,7 @@ export function ApiKeySettingsCard({
               {t('usage_stats.api_key_quota_reset_button')}
             </Button>
           )}
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className={`${styles.apiKeyVisibilityToggle} ${styles.apiKeySortToggle} ${sort.status ? styles.apiKeyVisibilityToggleActive : ''}`.trim()}
-            onClick={() => cycleSort('status')}
-            aria-label={statusSortLabel}
-            aria-pressed={sort.status !== null}
-            title={statusSortLabel}
-          >
-            {t('usage_stats.api_key_settings_sort_status')}{sortArrow(sort.status)}
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className={`${styles.apiKeyVisibilityToggle} ${styles.apiKeySortToggle} ${sort.alphabetical ? styles.apiKeyVisibilityToggleActive : ''}`.trim()}
-            onClick={() => cycleSort('alphabetical')}
-            aria-label={alphabeticalSortLabel}
-            aria-pressed={sort.alphabetical !== null}
-            title={alphabeticalSortLabel}
-          >
-            {sort.alphabetical === 'desc' ? 'Z–A' : 'A–Z'}{sortArrow(sort.alphabetical)}
-          </Button>
+          <ApiKeySortMenu value={sortKey} onChange={changeSort} />
           <Button
             type="button"
             variant="ghost"
@@ -515,7 +515,7 @@ export function ApiKeySettingsCard({
               const quota = resolveQuotaProgress(item.policy);
               const quotaPercent = quota === null ? 0 : Math.round(quota.ratio * 100);
               return (
-                <div key={item.id} className={styles.apiKeySettingsItem}>
+                <div key={item.id} className={styles.apiKeySettingsItem} data-api-key-settings-item={item.id}>
                   <div className={styles.apiKeySettingsSummary}>
                     <span className={styles.apiKeyFieldLabel}>{t('usage_stats.api_key_settings_display_key')}</span>
                     <div className={styles.apiKeySettingsNameRow}>

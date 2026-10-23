@@ -36,6 +36,12 @@ const translations: Record<string, string> = {
   'usage_stats.api_key_settings_reveal_done': "I've saved it",
   'usage_stats.api_key_settings_disabled_by_quota': 'Disabled (quota)',
   'usage_stats.api_key_settings_disabled_manual': 'Manually disabled',
+  'usage_stats.api_key_settings_sort': 'Sort keys',
+  'usage_stats.api_key_settings_sort_name_asc': 'Name A → Z',
+  'usage_stats.api_key_settings_sort_name_desc': 'Name Z → A',
+  'usage_stats.api_key_settings_sort_status': 'Status',
+  'usage_stats.api_key_settings_sort_quota_ratio': 'Quota used %',
+  'usage_stats.api_key_settings_sort_quota_spend': 'Quota spend',
 }
 
 vi.mock('react-i18next', () => ({
@@ -184,6 +190,8 @@ describe('ApiKeySettingsCard row actions', () => {
     await act(async () => root.unmount())
     container.remove()
     vi.restoreAllMocks()
+    // “记住排序选择”的测试会写 localStorage，清掉避免影响后面的测试。
+    window.localStorage.clear()
   })
 
   // 确认弹窗通过 portal 挂到 document.body，行内动作按钮仍在 container 里。
@@ -349,6 +357,32 @@ describe('ApiKeySettingsCard row actions', () => {
     })
     expect(onDeleteKey).toHaveBeenCalledWith(disabledKey.id)
   })
+
+  it('reorders rows from the sort menu and remembers the choice', () => {
+    window.localStorage.clear()
+    const keys: CpaApiKeySettingsItem[] = [
+      { ...apiKey, id: 'a', keyAlias: 'alpha', policy: { enabled: true, enforcementState: 'active', tightest: { type: 'cost', window: 'daily', value: 10, used: 1, ratio: 0.1 } } },
+      { ...apiKey, id: 'b', keyAlias: 'bravo', policy: { enabled: true, enforcementState: 'active', tightest: { type: 'cost', window: 'daily', value: 10, used: 9, ratio: 0.9 } } },
+    ]
+    act(() => {
+      root.render(<ApiKeySettingsCard apiKeys={keys} loading={false} savingId={null} onSaveAlias={() => undefined} />)
+    })
+    const rowIds = () => Array.from(container.querySelectorAll('[data-api-key-settings-item]')).map((row) => row.getAttribute('data-api-key-settings-item'))
+    expect(rowIds()).toEqual(['a', 'b'])
+
+    const trigger = container.querySelector<HTMLButtonElement>('[data-api-key-sort-trigger]')!
+    act(() => { trigger.click() })
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    const options = Array.from(container.querySelectorAll('[data-api-key-sort-option]')).map((option) => option.getAttribute('data-api-key-sort-option'))
+    expect(options).toEqual(['name_asc', 'name_desc', 'status', 'quota_ratio', 'quota_spend'])
+    expect(container.querySelector('[data-api-key-sort-option="name_asc"]')!.getAttribute('aria-checked')).toBe('true')
+
+    act(() => { container.querySelector<HTMLButtonElement>('[data-api-key-sort-option="quota_spend"]')!.click() })
+    expect(rowIds()).toEqual(['b', 'a'])
+    expect(container.querySelector('[role="menu"]')).toBeNull()
+    expect(trigger.textContent).toContain('Quota spend')
+    expect(window.localStorage.getItem('cpa-usage-keeper-api-key-settings-sort-v2')).toBe('quota_spend')
+  })
 })
 
 describe('ApiKeySettingsCard expand action', () => {
@@ -393,6 +427,40 @@ describe('ApiKeySettingsCard expand action', () => {
     expect(container.querySelector('button[aria-label="usage_stats.api_key_settings_expand"]')).not.toBeNull()
     expect(aliasInput().value).toBe('Draft alias')
     expect(document.body.style.overflow).toBe('')
+  })
+
+  it('closes only the sort menu on Escape, keeping the card expanded; a second Escape then collapses it', () => {
+    act(() => {
+      root.render(<ApiKeySettingsCard apiKeys={[apiKey]} onSaveAlias={vi.fn()} />)
+    })
+    act(() => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="usage_stats.api_key_settings_expand"]')!.click()
+    })
+    const dialog = () => document.body.querySelector('[role="dialog"][aria-modal="true"]')
+    expect(dialog()).not.toBeNull()
+
+    const trigger = document.body.querySelector<HTMLButtonElement>('[data-api-key-sort-trigger]')!
+    act(() => { trigger.click() })
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    act(() => { trigger.focus() })
+
+    // 用真实的冒泡 keydown（而非 window.dispatchEvent）让同一次 Escape 同时到达菜单自己的 onKeyDown 和展开卡片的 window 监听。
+    act(() => {
+      trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    })
+    // 核心断言：菜单自己处理掉 Escape 后，外层展开卡片不能被同一次按键连带收起。
+    expect(dialog()).not.toBeNull()
+    const triggerAfterFirstEscape = document.body.querySelector<HTMLButtonElement>('[data-api-key-sort-trigger]')
+    expect(triggerAfterFirstEscape).not.toBeNull()
+    expect(document.body.querySelector('[role="menu"]')).toBeNull()
+    expect(triggerAfterFirstEscape!.getAttribute('aria-expanded')).toBe('false')
+    // 焦点回到触发按钮。
+    expect(document.activeElement).toBe(triggerAfterFirstEscape)
+
+    act(() => {
+      triggerAfterFirstEscape!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    })
+    expect(dialog()).toBeNull()
   })
 })
 
