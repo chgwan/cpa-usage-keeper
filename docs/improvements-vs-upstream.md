@@ -1,13 +1,13 @@
-# Fork improvements vs upstream — 2026-09-21 (updated 2026-10-08)
+# Fork improvements vs upstream — 2026-09-21 (updated 2026-10-21)
 
-Baseline: local `dev` @ `4ce068f` compared against `origin/main` @ `2c09d65`
-(`Willxup/cpa-usage-keeper`). Deployed to TxNj as `v1.15.10-15-g4ce068fd`.
+Baseline: local `dev` @ `374e7e6` compared against `origin/main` @ `aa6056b`
+(`Willxup/cpa-usage-keeper`). Deployed to TxNj as `v1.15.11-22-g374e7e66`.
 
-- **10 commits ahead, 0 behind** — fully synced with upstream as of 2026-10-08.
+- **15 commits ahead, 0 behind** — fully synced with upstream as of 2026-10-18.
   The fork history was reorganised into one commit per feature on 2026-10-08.
-- 133 files changed, ~10,700 insertions, ~900 deletions.
+- 133 files changed, ~10,900 insertions, ~900 deletions.
 - Every feature below ships with tests; the full `go test ./...` and web suites
-  pass (1444 web tests).
+  pass (1473 web tests).
 
 ---
 
@@ -45,6 +45,16 @@ Full create/regenerate/delete/enable/disable for CPA API keys from the Keeper UI
   a near-full-screen overlay through a portal on `document.body`. Esc, ⤡ or a
   backdrop click closes it, unsaved alias drafts survive the switch, and the
   create / reveal / confirm dialogs still stack above it.
+- **Per-window quota rows.** Under each key's progress bar, the list shows one
+  row per configured limit — `Daily $used / $limit 75%`, then weekly, then
+  monthly — in both the compact and expanded views. Windows without a limit are
+  omitted, and a row turns red once its limit is reached. The list summary
+  gained a `limits` array for this (`Limits.WindowUsages` in
+  `internal/keypolicy/evaluate.go`), built from the per-window usage the list
+  already loads, so it adds no queries.
+- **Compact alias input.** On desktop the alias field is a fixed ~200px instead
+  of stretching across the row; the alias and actions sit on the right and the
+  key and quota column takes the freed width. Phones keep a full-width field.
 
 ## 3. Per-key cost quota enforcement
 
@@ -126,6 +136,11 @@ advisories).
 ## 8. Operations
 
 - Project timezone set to `Asia/Singapore` via local `.env` (not committed).
+- Login session lifetime on TxNj raised from 2h to 8h on 2026-10-21 via
+  `AUTH_SESSION_TTL=8h` in the server's `.env` (config only, no code change;
+  the built-in default is `168h`). The lifetime is fixed at login and does not
+  slide with activity, so sessions created before the change keep their 2h
+  expiry. The previous file is kept as `.env.20261021-124545.bak`.
 - Deployment: build with embedded `web/dist`, scp to `wan@TxNj:services/cpa-usage-keeper/`,
   `systemctl --user restart cpa-usage-keeper`, health check on
   `https://127.0.0.1:58809/healthz`. A `.bak` binary is always kept for rollback.
@@ -160,3 +175,14 @@ test reorganisation into `test/` packages with shared fixtures).
 - Migrations stay in date order: `20260920_cost_only_api_key_limits` then upstream's
   `20260922_normalize_usage_event_parent_session_null`, which applied cleanly in
   production.
+
+Upstream was merged again on 2026-10-18 (`89aa1cd`, 18 commits: execution-only
+usage events and failed-inbox recovery, total-only Responses usage, request
+streaming indicators and user-agent copy, xAI shared quota details, a compact
+usage distribution chart, and README Star History charts).
+
+- No merge conflicts. Upstream now rejects Redis usage messages without an
+  `execution_id`, so the fork-only key-policy notifier test fixture gained one,
+  matching how upstream updated its own fixtures.
+- Upstream's `20261018_recover_execution_usage_events` migration runs after the
+  fork's migrations and applied cleanly in production in about a second.
