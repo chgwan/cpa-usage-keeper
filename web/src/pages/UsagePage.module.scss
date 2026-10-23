@@ -2960,12 +2960,17 @@
     align-items: stretch;
   }
 
+  // 手机卡片放不下一排四个按钮，横向滚动会截断“删除”且滚动条压在按钮下方；改为两列网格全部可见。
   .apiKeySettingsActions {
-    justify-content: stretch;
-  }
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow-x: visible;
+    padding-bottom: 0;
 
-  .apiKeySettingsSaveButton {
-    flex: 1 1 0;
+    > :global(.btn) {
+      justify-content: center;
+      min-width: 0;
+    }
   }
 
   .apiKeyAliasField {
