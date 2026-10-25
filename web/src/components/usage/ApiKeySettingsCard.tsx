@@ -98,7 +98,9 @@ const getInitialSort = (): ApiKeySortKey => {
   }
 };
 
-const apiKeySortCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+// zh 排序规则：英文按 A–Z，中文按拼音；不受浏览器语言影响。
+const apiKeySortCollator = new Intl.Collator('zh', { numeric: true, sensitivity: 'base' });
+const HAN_START = /^\p{Script=Han}/u;
 
 // 状态排序：可用 → 手动停用 → 限额停用 → 状态未知。
 const API_KEY_STATUS_RANK: Record<string, number> = {
@@ -113,8 +115,12 @@ const apiKeyStatusRank = (item: CpaApiKeySettingsItem) => (
 
 const apiKeySortLabel = (item: CpaApiKeySettingsItem) => item.keyAlias.trim() || item.displayKey;
 
+// 中文开头的名称排在其他名称之后（zh 规则默认把中文排在前面）。
+const apiKeyNameGroup = (label: string) => (HAN_START.test(label) ? 1 : 0);
+
 const compareApiKeyNames = (left: CpaApiKeySettingsItem, right: CpaApiKeySettingsItem) => (
-  apiKeySortCollator.compare(apiKeySortLabel(left), apiKeySortLabel(right))
+  apiKeyNameGroup(apiKeySortLabel(left)) - apiKeyNameGroup(apiKeySortLabel(right))
+  || apiKeySortCollator.compare(apiKeySortLabel(left), apiKeySortLabel(right))
   || apiKeySortCollator.compare(left.displayKey, right.displayKey)
   || apiKeySortCollator.compare(left.id, right.id)
 );

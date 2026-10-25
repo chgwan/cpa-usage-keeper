@@ -55,6 +55,17 @@ describe('ApiKeySettingsCard', () => {
     expect(items.map((value) => value.id)).toEqual(['1', '2', '3', '4', '5', '6']);
   });
 
+  it('sorts Chinese names by pinyin after the other names', () => {
+    const item = (id: string, keyAlias: string): CpaApiKeySettingsItem => ({
+      id, apiKey: '', keyAlias, displayKey: `sk-***${id}`, label: keyAlias, lastSyncedAt: null,
+    });
+    const items = [item('1', '张三'), item('2', 'zebra'), item('3', '李四'), item('4', 'Alice'), item('5', '阿明'), item('6', '王五')];
+    const names = (sortKey: ApiKeySortKey) => sortApiKeySettingsItems(items, sortKey).map((value) => value.keyAlias);
+
+    expect(names('name_asc')).toEqual(['Alice', 'zebra', '阿明', '李四', '王五', '张三']);
+    expect(names('name_desc')).toEqual(['张三', '王五', '李四', '阿明', 'zebra', 'Alice']);
+  });
+
   it('restores the saved sort key and migrates the old toggle settings', () => {
     expect(resolveStoredApiKeySort(null, null)).toBe('name_asc');
     expect(resolveStoredApiKeySort('quota_spend', null)).toBe('quota_spend');
