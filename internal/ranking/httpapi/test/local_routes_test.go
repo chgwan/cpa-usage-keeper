@@ -59,42 +59,45 @@ func TestLocalRankingProfileRouteUpdatesAliasAndAvatar(t *testing.T) {
 func TestLocalRankingRouteValidatesSelectionAndDisablesCaching(t *testing.T) {
 	provider := &localRankingProviderStub{}
 	router := localRankingRouter(provider)
-	response := rankingResponse(router, http.MethodGet, "/api/v1/ranking/local/leaderboards?period=today&metric=overall", "")
-	if response.Code != http.StatusOK || provider.period != ranking.LeaderboardToday || provider.metric != ranking.MetricOverall {
+	response := rankingResponse(router, http.MethodGet, "/api/v1/ranking/local/leaderboards?period=today&metric=total_tokens", "")
+	if response.Code != http.StatusOK || provider.period != ranking.LeaderboardToday || provider.metric != ranking.MetricTotalTokens {
 		t.Fatalf("unexpected local leaderboard result: status=%d body=%s provider=%+v", response.Code, response.Body.String(), provider)
 	}
 	if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Pragma") != "no-cache" || response.Header().Get("Expires") != "0" {
 		t.Fatalf("local leaderboard response allowed caching: %+v", response.Header())
 	}
 
-	invalid := rankingResponse(router, http.MethodGet, "/api/v1/ranking/local/leaderboards?period=today&metric=unknown", "")
-	if invalid.Code != http.StatusBadRequest || !strings.Contains(invalid.Body.String(), "invalid_leaderboard_selection") {
-		t.Fatalf("unexpected invalid local selection response: status=%d body=%s", invalid.Code, invalid.Body.String())
+	// 综合分已移除，overall 与未知指标一样被拒绝。
+	for _, metric := range []string{"unknown", "overall"} {
+		invalid := rankingResponse(router, http.MethodGet, "/api/v1/ranking/local/leaderboards?period=today&metric="+metric, "")
+		if invalid.Code != http.StatusBadRequest || !strings.Contains(invalid.Body.String(), "invalid_leaderboard_selection") {
+			t.Fatalf("unexpected invalid local selection response for %s: status=%d body=%s", metric, invalid.Code, invalid.Body.String())
+		}
 	}
 }
 
-func TestLocalRankingRouteAcceptsLocalOnlyCostMetric(t *testing.T) {
+func TestLocalRankingRouteAcceptsCostMetric(t *testing.T) {
 	provider := &localRankingProviderStub{}
 	router := localRankingRouter(provider)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/ranking/local/leaderboards?period=today&metric=cost", nil))
 	if response.Code != http.StatusOK || provider.metric != ranking.MetricCost {
-		t.Fatalf("local route should accept the local-only cost metric: status=%d body=%s provider=%+v", response.Code, response.Body.String(), provider)
+		t.Fatalf("local route should accept the cost metric: status=%d body=%s provider=%+v", response.Code, response.Body.String(), provider)
 	}
 }
 
-func TestLocalRankingRouteAcceptsLocalOnlyWeekPeriods(t *testing.T) {
+func TestLocalRankingRouteAcceptsWeekPeriods(t *testing.T) {
 	for _, period := range []ranking.LeaderboardPeriod{ranking.LeaderboardCurrentWeek, ranking.LeaderboardPreviousWeek} {
 		provider := &localRankingProviderStub{}
-		response := rankingResponse(localRankingRouter(provider), http.MethodGet, "/api/v1/ranking/local/leaderboards?period="+string(period)+"&metric=overall", "")
+		response := rankingResponse(localRankingRouter(provider), http.MethodGet, "/api/v1/ranking/local/leaderboards?period="+string(period)+"&metric=total_tokens", "")
 		if response.Code != http.StatusOK || provider.period != period {
-			t.Fatalf("local route should accept the local-only %s period: status=%d body=%s provider=%+v", period, response.Code, response.Body.String(), provider)
+			t.Fatalf("local route should accept the %s period: status=%d body=%s provider=%+v", period, response.Code, response.Body.String(), provider)
 		}
 	}
 }
 
 func TestLocalRankingRouteUsesLocalFailureCode(t *testing.T) {
-	response := rankingResponse(localRankingRouter(&localRankingProviderStub{err: errors.New("boom")}), http.MethodGet, "/api/v1/ranking/local/leaderboards?period=today&metric=overall", "")
+	response := rankingResponse(localRankingRouter(&localRankingProviderStub{err: errors.New("boom")}), http.MethodGet, "/api/v1/ranking/local/leaderboards?period=today&metric=total_tokens", "")
 	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "local_ranking_failed") {
 		t.Fatalf("unexpected local failure response: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -105,4 +108,14 @@ func localRankingRouter(provider httpapi.LocalProvider) *gin.Engine {
 	router := gin.New()
 	httpapi.RegisterLocalRoutes(router.Group("/api/v1"), provider)
 	return router
+}
+
+func rankingResponse(router http.Handler, method, path, body string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(method, path, strings.NewReader(body))
+	if body != "" {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	return response
 }

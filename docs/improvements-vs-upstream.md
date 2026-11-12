@@ -92,15 +92,19 @@ A quota engine that disables a key automatically when it burns through its budge
   snapshot table, so no migration was needed; unlike the month boards they also
   count usage from before local ranking was enabled. The periods are local-only:
   the Community protocol and its period validation are unchanged.
-- **Ranking tab is local-only.** The Local/Community switch is gone and the
-  Community leaderboard (which ranks this Keeper against other instances through
-  an external service) is no longer requested. The change is confined to
-  `UsagePage.tsx` so the shared ranking feature still matches upstream.
-- **Sortable leaderboard table.** Score, Token, Requests, Cache rate, TTFT,
-  Latency, TPM, RPM and Cost headers sort on click: descending, ascending, then
-  back to leaderboard order. Rank badges keep each key's leaderboard position and
-  the podium is untouched, so a sort never reads as a new ranking; rows missing
-  the sorted value stay last; headers expose `aria-sort`.
+- **Ranking is local-only.** Upstream v2 removed ranking entirely; this fork
+  keeps the local per-API-key leaderboard. The Community leaderboard, its
+  participation flow and its backend client are gone.
+- **No composite score.** The Overall metric and its score computation are
+  removed. Every leaderboard entry carries all metrics, and the table shows
+  Token, Requests, Cache rate, TTFT, Latency, TPM, RPM and Cost as columns.
+- **Sortable leaderboard table.** The table sorts by Token descending by
+  default. Clicking a header sorts by that column descending, and clicking it
+  again toggles ascending. Rank badges and the podium keep the Token order, so a
+  sort never reads as a new ranking; rows missing the sorted value stay last;
+  headers expose `aria-sort`.
+- **Cost uses stored event cost.** The Cost column sums each event's stored
+  `cost_usd`, the same figure the dashboard shows.
 
 ## 6. Claude Fable weekly quota row
 
@@ -186,3 +190,26 @@ usage distribution chart, and README Star History charts).
   matching how upstream updated its own fixtures.
 - Upstream's `20261018_recover_execution_usage_events` migration runs after the
   fork's migrations and applied cleanly in production in about a second.
+
+Upstream v2 was merged on 2026-11-12 (402 commits: CPA v8 management API, stored
+per-event costs with a pricing redesign, OIDC admin login, plugin-sourced API key
+identities, a Models tab, live request-event streaming, and removal of ranking).
+
+- **Ranking kept.** The ranking schema migrations stay registered. Upstream's
+  `20261009_remove_ranking` keeps its version ID for ordering but only deletes
+  the obsolete community `ranking.identity` setting; the local table, avatar
+  column and period state are preserved. `main.tsx` no longer drops the saved
+  ranking tab.
+- **Quota enforcement uses stored cost.** Upstream prices each event at ingest
+  (with per-request context and time-of-day branches), so `keypolicy` now sums
+  `cost_usd` instead of re-pricing summed tokens per model.
+- **CPA api-keys writes stay on v0.** Reads use upstream's
+  `/v8/management/config/access/api-keys`; create, regenerate, delete, disable
+  and restore keep using `/v0/management/api-keys`, which CPA v8 still serves
+  with the same PUT, PATCH and DELETE semantics.
+- **Plugin identities are read-only.** Plugin-sourced keys show a third-party
+  badge in the fork's API key list, cannot be revealed or copied, and are
+  rejected by every lifecycle and quota action.
+- The fork's API key settings list replaces upstream's redesigned identity
+  cards; upstream's OIDC login and the fork's TOTP field both appear on the
+  login page.

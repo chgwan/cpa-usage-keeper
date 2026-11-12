@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchLocalRankingLeaderboard, RankingApiError, updateLocalRankingProfile } from '../api';
-import type {
-  LocalRankingProfileRequest,
-  LocalRankingProfileResponse,
-  RankingLeaderboardResponse,
-  RankingMetric,
-  RankingPeriod,
+import { loadRankingPeriod, persistRankingPeriod } from '../preferences';
+import {
+  DEFAULT_RANKING_METRIC,
+  type LocalRankingProfileRequest,
+  type LocalRankingProfileResponse,
+  type RankingLeaderboardResponse,
+  type RankingMetric,
+  type RankingPeriod,
 } from '../types';
 
 export const LOCAL_RANKING_POLL_INTERVAL_MS = 60_000;
@@ -28,7 +30,6 @@ const defaultAPI: LocalRankingDataAPI = {
   updateProfile: updateLocalRankingProfile,
 };
 const isAbortError = (error: unknown) => error instanceof DOMException && error.name === 'AbortError';
-const leaderboardKey = (period: RankingPeriod, metric: RankingMetric) => `${period}:${metric}`;
 type LocalRankingProfilePatch = Partial<Pick<LocalRankingProfileResponse, 'key_alias' | 'display_name' | 'avatar_id'>>;
 const applyLocalProfile = (
   board: RankingLeaderboardResponse,
@@ -46,52 +47,50 @@ const applyLocalProfile = (
 
 export interface UseLocalRankingDataOptions {
   enabled: boolean;
-  period: RankingPeriod;
-  metric: RankingMetric;
   onAuthRequired?: () => void;
   onBackgroundRefreshError?: (error: unknown) => void;
   api?: LocalRankingDataAPI;
 }
 
-// useLocalRankingData 只维护本地只读榜单，不加载 Community metadata、状态或参与动作。
+// useLocalRankingData 维护本地榜单的周期选择与数据；榜单始终按 Token 总量拉取，其余列在表格内排序。
 export function useLocalRankingData({
   enabled,
-  period,
-  metric,
   onAuthRequired,
   onBackgroundRefreshError,
   api = defaultAPI,
 }: UseLocalRankingDataOptions) {
+  const [period, setPeriodState] = useState<RankingPeriod>(() => loadRankingPeriod());
   const [leaderboard, setLeaderboard] = useState<RankingLeaderboardResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<unknown>(null);
-  const enabledRef = useRef(enabled);
   const controllerRef = useRef<AbortController | null>(null);
   const generationRef = useRef(0);
-  const cacheRef = useRef(new Map<string, RankingLeaderboardResponse>());
-  enabledRef.current = enabled;
+  const cacheRef = useRef(new Map<RankingPeriod, RankingLeaderboardResponse>());
+
+  const setPeriod = useCallback((next: RankingPeriod) => {
+    setPeriodState(next);
+    persistRankingPeriod(next);
+  }, []);
 
   const loadLeaderboard = useCallback(async (
     nextPeriod: RankingPeriod,
-    nextMetric: RankingMetric,
     { silent = false }: { silent?: boolean } = {},
   ) => {
     controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
     const generation = ++generationRef.current;
-    const key = leaderboardKey(nextPeriod, nextMetric);
-    const cachedBoard = cacheRef.current.get(key) ?? null;
+    const cachedBoard = cacheRef.current.get(nextPeriod) ?? null;
     if (!silent) {
       setLoading(true);
       setError(null);
-      // 目标缓存缺失时保留上一份响应；页面会按 period/metric 过滤内容，但标题栏无需闪动。
+      // 目标缓存缺失时保留上一份响应；页面会按 period 过滤内容，但标题栏无需闪动。
       setLeaderboard((current) => cachedBoard ?? current);
     }
     try {
-      const board = await api.leaderboard(nextPeriod, nextMetric, controller.signal);
+      const board = await api.leaderboard(nextPeriod, DEFAULT_RANKING_METRIC, controller.signal);
       if (generationRef.current === generation) {
-        cacheRef.current.set(key, board);
+        cacheRef.current.set(nextPeriod, board);
         setLeaderboard(board);
         setError(null);
       }
@@ -116,8 +115,8 @@ export function useLocalRankingData({
   }, [api, onAuthRequired, onBackgroundRefreshError]);
 
   const refreshLeaderboard = useCallback(
-    () => loadLeaderboard(period, metric),
-    [loadLeaderboard, metric, period],
+    () => loadLeaderboard(period),
+    [loadLeaderboard, period],
   );
 
   const patchProfileCache = useCallback((participantID: string, profile: LocalRankingProfilePatch) => {
@@ -156,22 +155,24 @@ export function useLocalRankingData({
       setLoading(false);
       return;
     }
-    void loadLeaderboard(period, metric);
+    void loadLeaderboard(period);
     return () => controllerRef.current?.abort();
-  }, [enabled, loadLeaderboard, metric, period]);
+  }, [enabled, loadLeaderboard, period]);
 
   useEffect(() => {
     if (!enabled) return;
     const interval = window.setInterval(() => {
       if (document.visibilityState === 'hidden') return;
-      void loadLeaderboard(period, metric, { silent: true });
+      void loadLeaderboard(period, { silent: true });
     }, LOCAL_RANKING_POLL_INTERVAL_MS);
     return () => window.clearInterval(interval);
-  }, [enabled, loadLeaderboard, metric, period]);
+  }, [enabled, loadLeaderboard, period]);
 
   useEffect(() => () => controllerRef.current?.abort(), []);
 
   return {
+    period,
+    setPeriod,
     leaderboard,
     leaderboardLoading: loading,
     leaderboardError: error,

@@ -1,13 +1,13 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Modal } from '@/components/ui/Modal'
 import { Button } from '@/components/ui/Button'
 import { IconRefreshCw } from '@/components/ui/icons'
 import { ProviderBrandIcon } from '@/components/ProviderBrandIcon'
 import { RequestEventLogModal } from '@/components/usage/RequestEventLogModal'
-import { ApiError, fetchErrorEvents, fetchUsageEvents } from '@/lib/api'
+import { ApiError, fetchErrorEvents, fetchUsageEvents, isCostsBusy } from '@/lib/api'
 import type { ErrorEvent, UsageEvent, UsageEventRequestLogResponse } from '@/lib/types'
-import { AuthFileQuotaPanel } from './AuthFileCredentialsSection'
+import { CredentialQuotaPanel } from './CredentialsSection'
 import { CredentialErrorEventsList } from './CredentialErrorEventsList'
 import { CredentialHealthPanel } from './CredentialHealthPanel'
 import { CredentialPriorityBadge, cacheReadRateTone, credentialToneClassName, formatCredentialNumber, formatCredentialPercent, successRateTone } from './CredentialSectionShell'
@@ -28,6 +28,7 @@ interface CredentialDetailDrawerProps {
   open: boolean
   selection: CredentialDetailSelection | null
   timeZone?: string
+  fallbackFocusRef?: RefObject<HTMLElement | null>
   onAuthRequired?: () => void
   onResetStats?: (id: string) => Promise<void>
   requestLogAccessEnabled?: boolean
@@ -75,6 +76,7 @@ export function CredentialDetailDrawer({
   open,
   selection,
   timeZone,
+  fallbackFocusRef,
   onAuthRequired,
   onResetStats,
   requestLogAccessEnabled = false,
@@ -88,6 +90,15 @@ export function CredentialDetailDrawer({
   onClose,
 }: CredentialDetailDrawerProps) {
   const { t } = useTranslation()
+  const openerRef = useRef<HTMLElement | null>(null)
+  useLayoutEffect(() => {
+    if (open) {
+      openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    } else if (openerRef.current && !openerRef.current.isConnected) {
+      // 正常回焦由 Modal 处理；刷新或筛选移走入口时回到当前区域的稳定筛选控件。
+      fallbackFocusRef?.current?.focus()
+    }
+  }, [fallbackFocusRef, open])
   const overviewTabId = useId()
   const quotaHistoryTabId = useId()
   const requestsTabId = useId()
@@ -143,7 +154,7 @@ export function CredentialDetailDrawer({
       setResettingStats(false)
     }
   }
-  const quotaHistoryProvider = selection?.kind === 'auth-file' ? identity?.type?.trim().toLowerCase() : undefined
+  const quotaHistoryProvider = selection?.kind === 'credential' ? identity?.type?.trim().toLowerCase() : undefined
   const hasQuotaHistory = quotaHistoryProvider === 'codex' || quotaHistoryProvider === 'claude'
   const availableTabs = useMemo<CredentialDetailTab[]>(() => hasQuotaHistory
     ? ['overview', 'quota-history', 'requests', 'errors']
@@ -219,13 +230,17 @@ export function CredentialDetailDrawer({
       setEventsNextCursor(response.has_more === true ? response.next_cursor?.trim() || null : null)
     } catch (error) {
       if (controller.signal.aborted) return
-      setEvents([])
-      setEventsNextCursor(null)
+      // 同一凭证的费用请求暂缓时保留最后一页；切换凭证会由 selectionKey 清空旧数据。
+      if (!isCostsBusy(error)) {
+        setEvents([])
+        setEventsNextCursor(null)
+      }
       if (error instanceof ApiError && error.status === 401) {
         onAuthRequired?.()
         return
       }
-      setEventsError(error instanceof Error ? error.message : t('usage_stats.credentials_detail_requests_load_failed'))
+      setEventsError(isCostsBusy(error) ? t('usage_stats.costs_busy')
+        : error instanceof Error ? error.message : t('usage_stats.credentials_detail_requests_load_failed'))
     } finally {
       if (firstPageControllerRef.current === controller) {
         firstPageControllerRef.current = null
@@ -367,7 +382,8 @@ export function CredentialDetailDrawer({
         return
       }
       setEventsAutoLoadMore(false)
-      setEventsError(error instanceof Error ? error.message : t('usage_stats.credentials_detail_requests_load_failed'))
+      setEventsError(isCostsBusy(error) ? t('usage_stats.costs_busy')
+        : error instanceof Error ? error.message : t('usage_stats.credentials_detail_requests_load_failed'))
     } finally {
       if (loadMoreControllerRef.current === controller) {
         loadMoreControllerRef.current = null
@@ -414,14 +430,14 @@ export function CredentialDetailDrawer({
       <div className={styles.drawerTitleText}>
         <strong>{row.displayName}</strong>
         <span data-credential-detail-subtitle>
-          {selection.kind === 'auth-file'
+          {selection.kind === 'credential'
             ? identity.file_name?.trim() || '-'
             : `${row.providerLabel} · ${row.typeLabel} · ${row.authTypeLabel}`}
         </span>
       </div>
       <div className={styles.drawerTitleBadges}>
-        {selection.kind === 'auth-file' && <CredentialKimiSiteBadge identityType={identity.type} />}
-        {selection.kind === 'auth-file' && selection.row.subscriptionBadge
+        {selection.kind === 'credential' && <CredentialKimiSiteBadge identityType={identity.type} />}
+        {selection.kind === 'credential' && selection.row.subscriptionBadge
           ? <CredentialSubscriptionBadge model={selection.row.subscriptionBadge} />
           : null}
         <CredentialPriorityBadge>{row.priorityLabel || 'P0'}</CredentialPriorityBadge>
@@ -560,10 +576,10 @@ export function CredentialDetailDrawer({
                 <dt>{t('usage_stats.credentials_detail_priority')}</dt><dd>{row.priorityLabel || 'P0'}</dd>
               </dl>
             </section>
-            {selection.kind === 'auth-file' ? (
+            {selection.kind === 'credential' ? (
               <section className={styles.overviewSection}>
                 <h3>{t('usage_stats.credentials_detail_quota')}</h3>
-                <AuthFileQuotaPanel row={selection.row} quotaUsageMode="current" timeZone={timeZone} />
+                <CredentialQuotaPanel row={selection.row} quotaUsageMode="current" timeZone={timeZone} />
               </section>
             ) : null}
           </div>

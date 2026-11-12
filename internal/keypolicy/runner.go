@@ -7,7 +7,6 @@ import (
 
 	"cpa-usage-keeper/internal/cpa"
 	"cpa-usage-keeper/internal/entities"
-	"cpa-usage-keeper/internal/pricing"
 	"cpa-usage-keeper/internal/repository"
 
 	"github.com/sirupsen/logrus"
@@ -41,7 +40,7 @@ type Runner struct {
 
 // NewRunner 构造执行器；interval 同时是兜底 tick 周期。
 // keyMutations 必须与管理服务注入同一实例，nil 时退化为独享锁（仅测试使用）。
-func NewRunner(db *gorm.DB, client *cpa.Client, catalog *pricing.Catalog, interval time.Duration, logger logrus.FieldLogger, keyMutations sync.Locker) *Runner {
+func NewRunner(db *gorm.DB, client *cpa.Client, interval time.Duration, logger logrus.FieldLogger, keyMutations sync.Locker) *Runner {
 	if interval <= 0 {
 		interval = time.Minute
 	}
@@ -52,7 +51,7 @@ func NewRunner(db *gorm.DB, client *cpa.Client, catalog *pricing.Catalog, interv
 		keyMutations = &sync.Mutex{}
 	}
 	return &Runner{
-		db: db, client: client, store: NewStore(db, catalog),
+		db: db, client: client, store: NewStore(db),
 		interval: interval, logger: logger.WithField("runner", "keypolicy"),
 		now: time.Now, wake: make(chan struct{}, 1),
 		keyMutations: keyMutations, debounceInterval: keyPolicyDebounceInterval,
@@ -61,8 +60,8 @@ func NewRunner(db *gorm.DB, client *cpa.Client, catalog *pricing.Catalog, interv
 
 // NewRunnerWithClock 和 NewRunner 等价，但允许注入自定义时钟；仅供测试推进周期边界
 // （例如验证超限禁用在周窗口翻转后自动恢复），生产代码必须始终走 NewRunner 的真实时钟。
-func NewRunnerWithClock(db *gorm.DB, client *cpa.Client, catalog *pricing.Catalog, interval time.Duration, logger logrus.FieldLogger, keyMutations sync.Locker, now func() time.Time) *Runner {
-	runner := NewRunner(db, client, catalog, interval, logger, keyMutations)
+func NewRunnerWithClock(db *gorm.DB, client *cpa.Client, interval time.Duration, logger logrus.FieldLogger, keyMutations sync.Locker, now func() time.Time) *Runner {
+	runner := NewRunner(db, client, interval, logger, keyMutations)
 	if now != nil {
 		runner.now = now
 	}

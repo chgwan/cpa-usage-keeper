@@ -248,11 +248,7 @@ describe('AnalysisPanel token chart data', () => {
     expect(markup).toContain('0.03');
     expect(markup).toContain('usage_stats.tpm');
     expect(markup).toContain('8.33');
-    expect(markup).not.toContain('<table');
     expect(markup).not.toContain('gpt-4o');
-    expect(markup).not.toContain('usage_stats.analysis_model_composition_title');
-    expect(markup).not.toContain('usage_stats.analysis_auth_files_composition_title');
-    expect(markup).not.toContain('usage_stats.analysis_ai_provider_composition_title');
   });
 
   it('uses native usage distribution tooltip callbacks with wrapped long titles', () => {
@@ -845,11 +841,7 @@ describe('AnalysisPanel token chart data', () => {
         output_tokens_per_request: 33.33,
         cache_read_rate: 0,
       })],
-      cost_breakdown: {
-        uncached_input_cost_usd: 0,
-        output_cost_usd: 0,
-        cache_read_cost_usd: 0,
-        cache_write_cost_usd: 0,
+      cost_summary: {
         total_cost_usd: 0,
         cost_available: false,
       },
@@ -882,7 +874,6 @@ describe('AnalysisPanel token chart data', () => {
     expect(chartCapture.scatterData).toHaveLength(0);
     expect(markup).toMatch(/Unpriced Key[\s\S]*\$0\.0000/);
     expect(markup).toContain('usage_stats.cost_need_price');
-    expect(markup).not.toContain('usage_stats.analysis_token_usage_subtitle (usage_stats.cost_need_price)');
     expect([...container.querySelectorAll('h2')].filter((heading) => heading.parentElement?.textContent?.includes('usage_stats.cost_need_price'))).toHaveLength(4);
     expect(container.querySelector('[class*="analysisSummary"]')?.textContent).toContain('usage_stats.analysis_cost_per_million_tokens$0.0000');
     expect(markup).toContain('usage_stats.total_cost: $0.0000');
@@ -895,11 +886,7 @@ describe('AnalysisPanel token chart data', () => {
         cost_usd: 9,
         cost_available: false,
       })],
-      cost_breakdown: {
-        uncached_input_cost_usd: 9,
-        output_cost_usd: 0,
-        cache_read_cost_usd: 0,
-        cache_write_cost_usd: 0,
+      cost_summary: {
         total_cost_usd: 9,
         cost_available: false,
       },

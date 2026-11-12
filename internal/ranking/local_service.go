@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"cpa-usage-keeper/internal/entities"
-	"cpa-usage-keeper/internal/pricing"
 	"cpa-usage-keeper/internal/repository"
 	"cpa-usage-keeper/internal/timeutil"
 	"gorm.io/gorm"
@@ -38,9 +37,8 @@ type LocalRankingServiceOptions struct {
 
 // LocalRankingService 以完整自然日快照维护本地 API Key 排行。
 type LocalRankingService struct {
-	db      *gorm.DB
-	catalog *pricing.Catalog
-	now     func() time.Time
+	db  *gorm.DB
+	now func() time.Time
 
 	aggregateMu sync.Mutex
 
@@ -106,13 +104,13 @@ type localRankingPopulationRow struct {
 	KeyAlias             string
 	LocalRankingAvatarID *uint8
 	UpdatedAt            time.Time
-	// CostUSD 是按当前价格快照对周期 usage_events 现算的费用，不进入快照表。
+	// CostUSD 是周期内 usage_events 已存费用的合计，读取榜单时现算，不进入快照表。
 	CostUSD float64
 	localRankingMetrics
 }
 
-// NewLocalRankingService 创建独立于 Community 同步服务的本地排行服务；catalog 为 nil 时费用维度恒为 0。
-func NewLocalRankingService(db *gorm.DB, catalog *pricing.Catalog, options LocalRankingServiceOptions) (*LocalRankingService, error) {
+// NewLocalRankingService 创建本地排行服务。
+func NewLocalRankingService(db *gorm.DB, options LocalRankingServiceOptions) (*LocalRankingService, error) {
 	if db == nil {
 		return nil, fmt.Errorf("database is nil")
 	}
@@ -120,7 +118,7 @@ func NewLocalRankingService(db *gorm.DB, catalog *pricing.Catalog, options Local
 	if now == nil {
 		now = time.Now
 	}
-	return &LocalRankingService{db: db, catalog: catalog, now: now}, nil
+	return &LocalRankingService{db: db, now: now}, nil
 }
 
 // AggregateOnce 先结算到期完整日，再用一次数据库查询覆盖当前完整今日快照。
@@ -409,7 +407,7 @@ func (s *LocalRankingService) Leaderboard(ctx context.Context, period Leaderboar
 	if s == nil || s.db == nil || s.now == nil {
 		return Leaderboard{}, fmt.Errorf("local ranking service is not configured")
 	}
-	if !validLocalLeaderboardPeriod(period) || !validLocalLeaderboardMetric(metric) {
+	if !ValidLeaderboardPeriod(period) || !ValidLeaderboardMetric(metric) {
 		return Leaderboard{}, ErrInvalidLeaderboard
 	}
 	snapshotAt := timeutil.NormalizeStorageTime(s.now())
@@ -440,13 +438,9 @@ func (s *LocalRankingService) Leaderboard(ctx context.Context, period Leaderboar
 	if generatedAt.IsZero() {
 		generatedAt = snapshotAt
 	}
-	board := Leaderboard{
+	return Leaderboard{
 		Period: period, PeriodKey: window.Key, Metric: metric, GeneratedAt: generatedAt, Stale: false, Entries: entries,
-	}
-	if metric == MetricOverall {
-		board.ScoreExplanation = localOverallScoreExplanation()
-	}
-	return board, nil
+	}, nil
 }
 
 func (s *LocalRankingService) loadLocalRankingPopulation(ctx context.Context, window localRankingPeriodWindow) ([]localRankingPopulationRow, error) {

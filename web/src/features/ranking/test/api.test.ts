@@ -1,17 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
-import {
-  exitRanking,
-  fetchLocalRankingLeaderboard,
-  fetchRankingLeaderboard,
-  fetchRankingMetadata,
-  fetchRankingStatus,
-  joinRanking,
-  pauseRanking,
-  RankingApiError,
-  resumeRanking,
-  syncRanking,
-  updateLocalRankingProfile,
-} from '../api';
+import { fetchLocalRankingLeaderboard, RankingApiError, updateLocalRankingProfile } from '../api';
 
 describe('ranking API', () => {
   let fetchMock: MockInstance<typeof fetch>;
@@ -26,41 +14,15 @@ describe('ranking API', () => {
     vi.unstubAllGlobals();
   });
 
-  it('uses the Keeper base path and exact leaderboard selection', async () => {
-    await fetchRankingLeaderboard('today', 'overall');
-
-    const [rawURL, init] = fetchMock.mock.calls[0];
-    const url = new URL(String(rawURL), 'http://localhost');
-    expect(url.pathname).toBe('/keeper/api/v1/ranking/leaderboards');
-    expect(url.search).toBe('?period=today&metric=overall');
-    expect(init).toMatchObject({ credentials: 'include', cache: 'no-store' });
-  });
-
-  it('uses the dedicated local leaderboard endpoint', async () => {
-    await fetchLocalRankingLeaderboard('today', 'overall');
+  it('uses the Keeper base path and the local leaderboard endpoint', async () => {
+    await fetchLocalRankingLeaderboard('today', 'total_tokens');
 
     const [rawURL, init] = fetchMock.mock.calls[0];
     const url = new URL(String(rawURL), 'http://localhost');
     expect(url.pathname).toBe('/keeper/api/v1/ranking/local/leaderboards');
-    expect(url.search).toBe('?period=today&metric=overall');
+    expect(url.search).toBe('?period=today&metric=total_tokens');
     expect(init).toMatchObject({ credentials: 'include', cache: 'no-store' });
-  });
-
-  it('uses the CPAMC embed session for leaderboard reads', async () => {
-    const sessionStorage = {
-      getItem: vi.fn(() => 'admin-embed-token'),
-    };
-    vi.stubGlobal('window', {
-      __APP_BASE_PATH__: '/keeper/',
-      location: { search: '?embed=cpamc' },
-      sessionStorage,
-    });
-
-    await fetchRankingLeaderboard('today', 'overall');
-
-    const headers = new Headers(fetchMock.mock.calls[0][1]?.headers);
-    expect(headers.get('X-CPA-Usage-Keeper-Embed')).toBe('cpamc');
-    expect(headers.get('X-CPA-Usage-Keeper-Embed-Session')).toBe('admin-embed-token');
+    expect(new Headers(init?.headers).get('X-CPA-Usage-Keeper-Request')).toBeNull();
   });
 
   it('updates a local Key profile through the dedicated admin endpoint', async () => {
@@ -73,45 +35,13 @@ describe('ranking API', () => {
     expect(init?.body).toBe(JSON.stringify({ key_alias: 'Primary', avatar_id: 17 }));
   });
 
-  it('uses the local admin endpoints and request-intent header for every mutation', async () => {
-    vi.stubGlobal('window', { __APP_BASE_PATH__: undefined });
+  it('preserves the server error code for actionable feedback', async () => {
+    fetchMock.mockResolvedValue(Response.json({ error: 'local_ranking_key_not_found' }, { status: 404 }));
 
-    await fetchRankingStatus();
-    await fetchRankingMetadata();
-    await joinRanking({ display_name: 'Keeper_01', avatar_id: 7 });
-    await syncRanking();
-    await pauseRanking();
-    await resumeRanking();
-    await exitRanking();
-
-    expect(fetchMock.mock.calls.map(([url, init]) => [
-      new URL(String(url), 'http://localhost').pathname,
-      init?.method ?? 'GET',
-      new Headers(init?.headers).get('X-CPA-Usage-Keeper-Request'),
-    ])).toEqual([
-      ['/api/v1/ranking/status', 'GET', null],
-      ['/api/v1/ranking/leaderboards/metadata', 'GET', null],
-      ['/api/v1/ranking/join', 'POST', 'fetch'],
-      ['/api/v1/ranking/sync', 'POST', 'fetch'],
-      ['/api/v1/ranking/pause', 'POST', 'fetch'],
-      ['/api/v1/ranking/resume', 'POST', 'fetch'],
-      ['/api/v1/ranking', 'DELETE', 'fetch'],
-    ]);
-    expect(fetchMock.mock.calls[2]?.[1]?.body).toBe(JSON.stringify({ display_name: 'Keeper_01', avatar_id: 7 }));
-  });
-
-  it('preserves the server error code and Retry-After for actionable feedback', async () => {
-    vi.stubGlobal('window', { __APP_BASE_PATH__: undefined });
-    fetchMock.mockResolvedValue(Response.json(
-      { error: 'ranking_center_registration_rate_limited' },
-      { status: 429, headers: { 'Retry-After': '3599' } },
-    ));
-
-    await expect(joinRanking({ display_name: 'Keeper_01', avatar_id: 7 })).rejects.toMatchObject({
+    await expect(updateLocalRankingProfile('42', { key_alias: '', avatar_id: 1 })).rejects.toMatchObject({
       name: 'RankingApiError',
-      status: 429,
-      code: 'ranking_center_registration_rate_limited',
-      retryAfter: '3599',
+      status: 404,
+      code: 'local_ranking_key_not_found',
     } satisfies Partial<RankingApiError>);
   });
 });

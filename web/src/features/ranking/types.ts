@@ -1,11 +1,8 @@
 export const RANKING_PERIODS = ['today', 'yesterday', 'current_week', 'previous_week', 'current_month', 'previous_month'] as const;
 export type RankingPeriod = (typeof RANKING_PERIODS)[number];
 
-export const RANKING_SCOPES = ['local', 'community'] as const;
-export type RankingScope = (typeof RANKING_SCOPES)[number];
-
+// 表格列顺序即指标顺序；榜单默认按 Token 总量排序。
 export const RANKING_METRICS = [
-  'overall',
   'total_tokens',
   'request_count',
   'cache_read_rate',
@@ -16,48 +13,8 @@ export const RANKING_METRICS = [
   'cost',
 ] as const;
 export type RankingMetric = (typeof RANKING_METRICS)[number];
-export type RankingDetailMetric = Exclude<RankingMetric, 'overall'>;
 
-// 费用是本地榜单独有维度：Community 接口继续拒绝它。
-export const LOCAL_ONLY_RANKING_METRICS: readonly RankingMetric[] = ['cost'];
-
-export const isLocalOnlyRankingMetric = (metric: RankingMetric): boolean =>
-  LOCAL_ONLY_RANKING_METRICS.includes(metric);
-
-// 自然周是本地榜单独有周期：Community 协议只定义日 / 月周期。
-export const LOCAL_ONLY_RANKING_PERIODS: readonly RankingPeriod[] = ['current_week', 'previous_week'];
-
-export const isLocalOnlyRankingPeriod = (period: RankingPeriod): boolean =>
-  LOCAL_ONLY_RANKING_PERIODS.includes(period);
-
-export const rankingPeriodsForScope = (scope: RankingScope): readonly RankingPeriod[] =>
-  scope === 'local'
-    ? RANKING_PERIODS
-    : RANKING_PERIODS.filter((period) => !isLocalOnlyRankingPeriod(period));
-
-export const rankingMetricsForScope = (scope: RankingScope): readonly RankingMetric[] =>
-  scope === 'local'
-    ? RANKING_METRICS
-    : RANKING_METRICS.filter((metric) => !isLocalOnlyRankingMetric(metric));
-
-export type RankingParticipationStatus = 'disabled' | 'joining' | 'active' | 'paused' | 'deleted';
-
-export interface RankingStatusResponse {
-  status: RankingParticipationStatus;
-  banned?: boolean;
-  display_name?: string;
-  avatar_id?: number;
-  participant_id?: string;
-  last_successful_complete_day?: string;
-  last_successful_sync_at?: string;
-  last_attempt_at?: string;
-  last_error?: string;
-}
-
-export interface RankingProfileRequest {
-  display_name: string;
-  avatar_id: number;
-}
+export const DEFAULT_RANKING_METRIC: RankingMetric = 'total_tokens';
 
 export interface RankingLeaderboardEntry {
   rank: number;
@@ -68,7 +25,16 @@ export interface RankingLeaderboardEntry {
   value: number;
   rate_numerator?: number;
   rate_denominator?: number;
-  metrics?: Partial<Record<RankingDetailMetric, number>>;
+  metrics?: Partial<Record<RankingMetric, number>>;
+}
+
+export interface RankingLeaderboardResponse {
+  period: RankingPeriod;
+  period_key: string;
+  metric: RankingMetric;
+  generated_at: string;
+  stale: boolean;
+  entries: RankingLeaderboardEntry[];
 }
 
 export interface LocalRankingProfileRequest {
@@ -79,42 +45,4 @@ export interface LocalRankingProfileRequest {
 export interface LocalRankingProfileResponse extends LocalRankingProfileRequest {
   participant_id: string;
   display_name: string;
-}
-
-export interface RankingScoreExplanation {
-  version: number;
-  texts?: Partial<Record<'en' | 'zh' | 'zh-TW', string>> | null;
-}
-
-export interface RankingLeaderboardResponse {
-  period: RankingPeriod;
-  period_key: string;
-  metric: RankingMetric;
-  generated_at: string;
-  stale: boolean;
-  score_explanation?: RankingScoreExplanation;
-  entries: RankingLeaderboardEntry[];
-}
-
-export interface RankingPeriodMetadata {
-  period: RankingPeriod;
-  period_key: string;
-  online: boolean;
-}
-
-export interface RankingMetadataResponse {
-  server_time: string;
-  generated_at: string;
-  stale: boolean;
-  protocol_version: number;
-  metrics_version: number;
-  period_timezone: string;
-  avatar_catalog_version: number;
-  avatar_count: number;
-  read_marker_version: number;
-  refresh_interval_seconds: number;
-  suggested_sync_interval_seconds: number;
-  periods: RankingPeriodMetadata[];
-  metrics: RankingMetric[];
-  overall_weights: Record<string, number>;
 }

@@ -9,7 +9,6 @@ import (
 	"cpa-usage-keeper/internal/config"
 	"cpa-usage-keeper/internal/entities"
 	"cpa-usage-keeper/internal/keypolicy"
-	"cpa-usage-keeper/internal/pricing"
 	"cpa-usage-keeper/internal/repository"
 	"cpa-usage-keeper/internal/repository/migration"
 
@@ -43,28 +42,12 @@ func newKeypolicyTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
-// newSnapshotForTest 用 pricing 真实暴露的 CompileSnapshot 构造价格快照。
-// 简报猜测的字段 InputPricePerMToken 并不存在，输入侧按百万 token 计价的字段是 PromptPricePer1M。
-func newSnapshotForTest(t *testing.T, settings map[string]entities.ModelPriceSetting) *pricing.Snapshot {
-	t.Helper()
-	configs := make([]pricing.ModelConfig, 0, len(settings))
-	for _, setting := range settings {
-		configs = append(configs, pricing.ModelConfig{Pricing: setting})
-	}
-	snapshot, err := pricing.CompileSnapshot(configs)
-	if err != nil {
-		t.Fatalf("compile pricing snapshot: %v", err)
-	}
-	return snapshot
+// storedCost 构造入库时已计价的事件费用。
+func storedCost(value float64) *float64 {
+	return &value
 }
 
-// newEmptySnapshotForTest 直接复用 pricing 暴露的只读空价格快照。
-func newEmptySnapshotForTest(t *testing.T) *pricing.Snapshot {
-	t.Helper()
-	return pricing.EmptySnapshot()
-}
-
-func TestPerKeyUsageAggregatesThreeWindowsAndPricesCost(t *testing.T) {
+func TestPerKeyUsageAggregatesStoredCostAcrossThreeWindows(t *testing.T) {
 	db := newKeypolicyTestDB(t)
 	key := entities.CPAAPIKey{APIKey: "sk-agg", DisplayKey: "sk-agg"}
 	if err := db.Create(&key).Error; err != nil {
@@ -80,6 +63,8 @@ func TestPerKeyUsageAggregatesThreeWindowsAndPricesCost(t *testing.T) {
 		event := entities.UsageEvent{
 			APIGroupKey: "sk-agg", Model: "gpt-5",
 			InputTokens: tokens, OutputTokens: 0, TotalTokens: tokens,
+			// 入库计价 gpt-5 @1/M。
+			CostUSD:   storedCost(float64(tokens) / 1_000_000),
 			Timestamp: ts,
 		}
 		if err := db.Create(&event).Error; err != nil {
@@ -91,10 +76,7 @@ func TestPerKeyUsageAggregatesThreeWindowsAndPricesCost(t *testing.T) {
 	insertEvent(time.Date(2026, 9, 2, 12, 0, 0, 0, time.Local), 200)  // 仅月
 	insertEvent(time.Date(2026, 8, 20, 12, 0, 0, 0, time.Local), 999) // 全部窗口之外
 
-	catalog := pricing.NewCatalog(newSnapshotForTest(t, map[string]entities.ModelPriceSetting{
-		"gpt-5": {Model: "gpt-5", PromptPricePer1M: 1},
-	}))
-	store := keypolicy.NewStore(db, catalog)
+	store := keypolicy.NewStore(db)
 	usage, err := store.PerKeyUsage(context.Background(), daily, weekly, monthly)
 	if err != nil {
 		t.Fatalf("per key usage: %v", err)
@@ -112,7 +94,7 @@ func TestPerKeyUsageAggregatesThreeWindowsAndPricesCost(t *testing.T) {
 	assertCost(keypolicy.LimitWindowMonthly, 0.00035)
 }
 
-func TestPerKeyUsageUnknownModelCostsZero(t *testing.T) {
+func TestPerKeyUsageCountsEventsWithoutStoredCostAsZero(t *testing.T) {
 	db := newKeypolicyTestDB(t)
 	key := entities.CPAAPIKey{APIKey: "sk-unpriced", DisplayKey: "sk-unpriced"}
 	if err := db.Create(&key).Error; err != nil {
@@ -123,13 +105,13 @@ func TestPerKeyUsageUnknownModelCostsZero(t *testing.T) {
 	if err := db.Create(&event).Error; err != nil {
 		t.Fatalf("seed event: %v", err)
 	}
-	store := keypolicy.NewStore(db, pricing.NewCatalog(newEmptySnapshotForTest(t)))
+	store := keypolicy.NewStore(db)
 	usage, err := store.PerKeyUsage(context.Background(), keypolicy.DailyWindow(now), keypolicy.WeeklyWindow(now), keypolicy.MonthlyWindow(now))
 	if err != nil {
 		t.Fatalf("per key usage: %v", err)
 	}
 	if usage[key.ID][keypolicy.LimitWindowDaily].CostUSD != 0 {
-		t.Fatalf("expected zero cost for unpriced model, got %v", usage[key.ID][keypolicy.LimitWindowDaily].CostUSD)
+		t.Fatalf("expected zero cost for event without stored cost, got %v", usage[key.ID][keypolicy.LimitWindowDaily].CostUSD)
 	}
 }
 
@@ -145,7 +127,7 @@ func TestPerKeyUsageCountsOnlyUsageAfterLatestQuotaReset(t *testing.T) {
 	anchor := time.Date(2026, 9, 16, 15, 0, 0, 0, time.Local)
 	daily, weekly, monthly := keypolicy.DailyWindow(anchor), keypolicy.WeeklyWindow(anchor), keypolicy.MonthlyWindow(anchor)
 	insert := func(apiKey string, ts time.Time, tokens int64) {
-		event := entities.UsageEvent{APIGroupKey: apiKey, Model: "gpt-5", InputTokens: tokens, TotalTokens: tokens, Timestamp: ts}
+		event := entities.UsageEvent{APIGroupKey: apiKey, Model: "gpt-5", InputTokens: tokens, TotalTokens: tokens, CostUSD: storedCost(float64(tokens)), Timestamp: ts}
 		if err := db.Create(&event).Error; err != nil {
 			t.Fatalf("seed event: %v", err)
 		}
@@ -173,10 +155,7 @@ func TestPerKeyUsageCountsOnlyUsageAfterLatestQuotaReset(t *testing.T) {
 		t.Fatalf("seed stale reset: %v", err)
 	}
 
-	catalog := pricing.NewCatalog(newSnapshotForTest(t, map[string]entities.ModelPriceSetting{
-		"gpt-5": {Model: "gpt-5", PromptPricePer1M: 1_000_000},
-	}))
-	usage, err := keypolicy.NewStore(db, catalog).PerKeyUsage(context.Background(), daily, weekly, monthly)
+	usage, err := keypolicy.NewStore(db).PerKeyUsage(context.Background(), daily, weekly, monthly)
 	if err != nil {
 		t.Fatalf("per key usage: %v", err)
 	}
@@ -211,7 +190,7 @@ func TestActiveAdjustmentsReturnsOnlyCurrentWindowKey(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed adjustments: %v", err)
 	}
-	store := keypolicy.NewStore(db, nil)
+	store := keypolicy.NewStore(db)
 	got, err := store.ActiveAdjustments(daily, weekly, monthly)
 	if err != nil {
 		t.Fatalf("active adjustments: %v", err)

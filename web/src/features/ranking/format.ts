@@ -1,4 +1,4 @@
-import type { RankingDetailMetric, RankingLeaderboardEntry, RankingMetric, RankingScope } from './types';
+import type { RankingLeaderboardEntry, RankingMetric } from './types';
 
 const formatCompactNumber = (value: number, maximumFractionDigits = 0): string => {
   const absolute = Math.abs(value);
@@ -21,46 +21,21 @@ const formatDuration = (milliseconds: number): string => {
   return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
 };
 
-export const formatLeaderboardValue = (
-  metric: RankingMetric,
-  entry: RankingLeaderboardEntry,
-  scope: RankingScope = 'community',
-): string => {
-  if (metric === 'cache_read_rate') {
-    const percent = entry.rate_denominator && entry.rate_denominator > 0
-      ? (entry.rate_numerator ?? 0) / entry.rate_denominator * 100
-      : entry.value / 10_000;
-    return `${percent.toFixed(2)}%`;
-  }
-  if (metric === 'ttft_average' || metric === 'latency_average') {
-    const milliseconds = entry.rate_denominator && entry.rate_denominator > 0
-      ? (entry.rate_numerator ?? 0) / entry.rate_denominator
-      : entry.value / 1_000;
-    return formatDuration(milliseconds);
-  }
-  if (metric === 'peak_tpm' || metric === 'peak_rpm') {
-    return formatCompactNumber(entry.value / 5, 2);
-  }
-  if (metric === 'cost') {
-    // 后端下发 micro-USD 定点整数；与配额弹窗一致固定 4 位小数。
-    return `$${(entry.value / 1_000_000).toFixed(4)}`;
-  }
-  if (metric === 'overall') {
-    return scope === 'local' ? `${entry.value} PTS` : `${(entry.value / 100).toFixed(2)} PTS`;
-  }
-  return formatCompactNumber(entry.value);
+// formatMetricValue 把后端定点整数还原成展示值：比率为 ppm、耗时为微秒、峰值按五分钟桶、费用为 micro-USD。
+export const formatMetricValue = (metric: RankingMetric, value: number): string => {
+  if (metric === 'cache_read_rate') return `${(value / 10_000).toFixed(2)}%`;
+  if (metric === 'ttft_average' || metric === 'latency_average') return formatDuration(value / 1_000);
+  if (metric === 'peak_tpm' || metric === 'peak_rpm') return formatCompactNumber(value / 5, 2);
+  // 与配额弹窗一致固定 4 位小数。
+  if (metric === 'cost') return `$${(value / 1_000_000).toFixed(4)}`;
+  return formatCompactNumber(value);
 };
 
-export const formatOverallMetricValue = (
-  metric: RankingDetailMetric,
-  entry: RankingLeaderboardEntry,
-): string => {
-  const value = entry.metrics?.[metric];
-  if (value === undefined) return '—';
-  return formatLeaderboardValue(metric, {
-    ...entry,
-    value,
-    rate_numerator: undefined,
-    rate_denominator: undefined,
-  });
+export const metricValue = (entry: RankingLeaderboardEntry, metric: RankingMetric): number | undefined => (
+  entry.metrics?.[metric]
+);
+
+export const formatEntryMetric = (entry: RankingLeaderboardEntry, metric: RankingMetric): string => {
+  const value = metricValue(entry, metric);
+  return value === undefined ? '—' : formatMetricValue(metric, value);
 };

@@ -51,19 +51,33 @@ type StatusRouteConfig struct {
 }
 
 type OptionalProviders struct {
-	UsageIdentity service.UsageIdentityProvider
-	ErrorEvents   service.ErrorEventProvider
-	Quota         QuotaProvider
-	CPAAPIKeys    service.CPAAPIKeyProvider
+	CostReadGate           *service.CostReadGate
+	UsageEventsLive        *service.UsageEventsNotifier
+	UsageEventsLiveContext context.Context
+	UsageIdentity          service.UsageIdentityProvider
+	ErrorEvents            service.ErrorEventProvider
+	Quota                  QuotaProvider
+	CPAAPIKeys             service.CPAAPIKeyProvider
 	// CPAAPIKeyManagement 提供 key 生命周期与限额策略管理路由；为空时相关路由统一返回 501。
 	CPAAPIKeyManagement service.CPAAPIKeyManagementProvider
-	AuthFiles           service.AuthFilesManagementProvider
+	Credentials         service.CredentialsManagementProvider
 	CredentialStatus    service.CredentialStatusProvider
 	CredentialPriority  service.CredentialPriorityProvider
 	RequestLogs         service.RequestLogProvider
-	Ranking             rankinghttpapi.Provider
+	Models              service.ModelsFetcher
 	LocalRanking        rankinghttpapi.LocalProvider
 	Status              StatusRouteConfig
+}
+
+// newRouterEngine 为启动外壳和完整业务路由装配相同的可信代理与异常恢复设置。
+func newRouterEngine(authConfig AuthConfig) *gin.Engine {
+	router := gin.New()
+	trustedProxyCIDRs := append([]string{}, loopbackTrustedProxyCIDRs...)
+	trustedProxyCIDRs = append(trustedProxyCIDRs, authConfig.TrustedProxyCIDRs...)
+	_ = router.SetTrustedProxies(trustedProxyCIDRs)
+	router.RemoteIPHeaders = []string{"X-Forwarded-For"}
+	router.Use(logging.NewGinRecovery())
+	return router
 }
 
 func NewRouter(
@@ -76,18 +90,14 @@ func NewRouter(
 	basePath string,
 	optionalProviders ...OptionalProviders,
 ) *gin.Engine {
-	router := gin.New()
-	trustedProxyCIDRs := append([]string{}, loopbackTrustedProxyCIDRs...)
-	trustedProxyCIDRs = append(trustedProxyCIDRs, authConfig.TrustedProxyCIDRs...)
-	_ = router.SetTrustedProxies(trustedProxyCIDRs)
-	router.RemoteIPHeaders = []string{"X-Forwarded-For"}
-	router.Use(logging.NewGinRecovery())
+	router := newRouterEngine(authConfig)
 	router.Use(requestBodyLimits())
 
 	appGroup := router.Group(basePath)
-	registerHealthRoutes(appGroup)
+	registerHealthRoutes(appGroup, readyStartupStatus)
 
 	apiV1 := appGroup.Group("/api/v1")
+	registerStartupStatusRoute(apiV1, func() StartupStatus { return readyStartupStatus() })
 	apiV1.Use(unauthenticatedLoginRequestLimits(basePath))
 	apiV1.Use(requestIntentMiddleware())
 	if debugAPIRoutesEnabled() {
@@ -101,28 +111,34 @@ func NewRouter(
 	authHandler.registerRoutes(authGroup)
 
 	var usageIdentityProvider service.UsageIdentityProvider
+	var costReadGate *service.CostReadGate
+	var usageEventsLive *service.UsageEventsNotifier
+	var usageEventsLiveContext context.Context
 	var errorEventProvider service.ErrorEventProvider
 	var quotaProvider QuotaProvider
 	var cpaAPIKeyProvider service.CPAAPIKeyProvider
 	var cpaAPIKeyManagementProvider service.CPAAPIKeyManagementProvider
-	var authFilesProvider service.AuthFilesManagementProvider
+	var credentialsProvider service.CredentialsManagementProvider
 	var credentialStatusProvider service.CredentialStatusProvider
 	var credentialPriorityProvider service.CredentialPriorityProvider
 	var requestLogProvider service.RequestLogProvider
-	var rankingProvider rankinghttpapi.Provider
+	var modelsProvider service.ModelsFetcher
 	var localRankingProvider rankinghttpapi.LocalProvider
 	var statusConfig StatusRouteConfig
 	if len(optionalProviders) > 0 {
 		usageIdentityProvider = optionalProviders[0].UsageIdentity
+		costReadGate = optionalProviders[0].CostReadGate
+		usageEventsLive = optionalProviders[0].UsageEventsLive
+		usageEventsLiveContext = optionalProviders[0].UsageEventsLiveContext
 		errorEventProvider = optionalProviders[0].ErrorEvents
 		quotaProvider = optionalProviders[0].Quota
 		cpaAPIKeyProvider = optionalProviders[0].CPAAPIKeys
 		cpaAPIKeyManagementProvider = optionalProviders[0].CPAAPIKeyManagement
-		authFilesProvider = optionalProviders[0].AuthFiles
+		credentialsProvider = optionalProviders[0].Credentials
 		credentialStatusProvider = optionalProviders[0].CredentialStatus
 		credentialPriorityProvider = optionalProviders[0].CredentialPriority
 		requestLogProvider = optionalProviders[0].RequestLogs
-		rankingProvider = optionalProviders[0].Ranking
+		modelsProvider = optionalProviders[0].Models
 		localRankingProvider = optionalProviders[0].LocalRanking
 		statusConfig = optionalProviders[0].Status
 	}
@@ -137,26 +153,26 @@ func NewRouter(
 
 	adminProtected := apiV1.Group("")
 	adminProtected.Use(authHandler.adminMiddleware())
+	adminProtected.Use(costReadMiddleware(costReadGate, basePath))
 	registerStatusRoutes(adminProtected, statusProvider, statusConfig)
 	registerUpdateRoutes(adminProtected, nil)
 	registerUsageOverviewRoute(adminProtected, usageProvider, cpaAPIKeyProvider)
 	registerUsageActivityRoute(adminProtected, usageProvider)
 	registerUsageAnalysisRoute(adminProtected, usageProvider, cpaAPIKeyProvider)
 	registerUsageEventsRoute(adminProtected, usageProvider, usageIdentityProvider, cpaAPIKeyProvider, requestLogProvider, requestLogDownloadTokens, statusConfig.CPARequestLogAccessEnabled)
+	registerUsageEventsLiveRoute(adminProtected, usageProvider, usageIdentityProvider, cpaAPIKeyProvider, usageEventsLive, costReadGate, authHandler, usageEventsLiveContext)
 	registerUsageIdentityRoutes(adminProtected, usageIdentityProvider)
 	registerErrorEventRoutes(adminProtected, errorEventProvider)
-	registerAuthFileManagementRoutes(adminProtected, authFilesProvider)
+	registerCredentialManagementRoutes(adminProtected, credentialsProvider)
 	registerCredentialStatusRoutes(adminProtected, credentialStatusProvider)
 	registerCredentialPriorityRoutes(adminProtected, credentialPriorityProvider)
 	registerAuthSessionManagementRoutes(adminProtected, authHandler)
 	registerTOTPManagementRoutes(adminProtected, authHandler)
-	registerCPAAPIKeyRoutes(adminProtected, cpaAPIKeyProvider, cpaAPIKeyManagementProvider)
+	registerCPAAPIKeyRoutes(adminProtected, cpaAPIKeyProvider, usageProvider, cpaAPIKeyManagementProvider)
 	registerCPAAPIKeyManagementRoutes(adminProtected, cpaAPIKeyManagementProvider)
 	registerPricingRoutes(adminProtected, pricingProvider)
+	registerModelsRoutes(adminProtected, modelsProvider)
 	registerQuotaRoutes(adminProtected, quotaProvider)
-	if rankingProvider != nil {
-		rankinghttpapi.RegisterRoutes(adminProtected, rankingProvider)
-	}
 	if localRankingProvider != nil {
 		rankinghttpapi.RegisterLocalRoutes(adminProtected, localRankingProvider)
 	}
@@ -164,62 +180,13 @@ func NewRouter(
 	keyViewerProtected := apiV1.Group("")
 	keyViewerProtected.Use(authHandler.apiKeyViewerMiddleware())
 	keyViewerProtected.Use(authHandler.activeAPIKeyViewerMiddleware())
+	keyViewerProtected.Use(costReadMiddleware(costReadGate, basePath))
 	registerKeyOverviewRoute(keyViewerProtected, usageProvider)
 	registerKeyQuotaRoute(keyViewerProtected, cpaAPIKeyManagementProvider)
 	registerKeyActivityRoute(keyViewerProtected, usageProvider)
 	registerKeyUsageAnalysisRoute(keyViewerProtected, usageProvider)
 
-	if staticFS != nil {
-		if indexFile, err := staticFS.Open("index.html"); err == nil {
-			_ = indexFile.Close()
-			httpFS := http.FS(staticFS)
-			serveIndex := func(c *gin.Context) {
-				indexHTML, err := renderIndexHTML(staticFS, basePath)
-				if err != nil {
-					c.Status(http.StatusNotFound)
-					return
-				}
-				setHTMLCacheHeaders(c, authConfig.FrameAncestorOrigins)
-				c.Data(http.StatusOK, "text/html; charset=utf-8", indexHTML)
-			}
-			serveAsset := func(c *gin.Context) {
-				assetPath := "assets/" + strings.TrimPrefix(c.Param("filepath"), "/")
-				if assetFile, err := staticFS.Open(assetPath); err == nil {
-					_ = assetFile.Close()
-					setStaticAssetCacheHeaders(c)
-					c.FileFromFS(assetPath, httpFS)
-					return
-				}
-				c.Status(http.StatusNotFound)
-			}
-
-			appGroup.GET("/", serveIndex)
-			appGroup.GET("/assets/*filepath", serveAsset)
-			appGroup.HEAD("/assets/*filepath", serveAsset)
-			router.NoRoute(func(c *gin.Context) {
-				requestPath, ok := stripBasePath(basePath, c.Request.URL.Path)
-				if !ok {
-					c.Status(http.StatusNotFound)
-					return
-				}
-				if strings.HasPrefix(requestPath, "/api/") {
-					c.Status(http.StatusNotFound)
-					return
-				}
-
-				if assetPath, ok := staticAssetPath(requestPath); ok {
-					if assetFile, err := staticFS.Open(assetPath); err == nil {
-						_ = assetFile.Close()
-						setStaticAssetCacheHeaders(c)
-						c.FileFromFS(assetPath, httpFS)
-						return
-					}
-				}
-
-				serveIndex(c)
-			})
-		}
-	}
+	registerStaticRoutes(router, appGroup, staticFS, authConfig.FrameAncestorOrigins, basePath, nil)
 
 	return router
 }

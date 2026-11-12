@@ -3,15 +3,15 @@ import { useTranslation } from 'react-i18next';
 import './index.css';
 import './App.css';
 import './embed/cpamcEmbed.css';
-import { ApiError, appPath, clearEmbedSessionToken, getSession, login, loginWithCPAAPIKey, TOTP_CODE_REQUIRED_ERROR } from './lib/api';
+import { ApiError, appPath, clearEmbedSessionToken, getSession, login, loginWithCPAAPIKey, startOIDCLogin, TOTP_CODE_REQUIRED_ERROR } from './lib/api';
 import type { AuthRole, AuthSessionAPIKeySummary } from './lib/types';
 import { AppFooter } from './components/AppFooter';
 import { isKeyViewerPath, type KeyViewerPath } from './features/key-viewer';
 import { KeyAnalysisPage } from './pages/KeyAnalysisPage';
 import { KeyOverviewPage } from './pages/KeyOverviewPage';
-import { LoginPage } from './pages/LoginPage';
+import { LoginBackdrop, LoginPage } from './pages/LoginPage';
 import { UsagePage } from './pages/UsagePage';
-import { cpamcEmbedSearch, isCPAMCEmbed, notifyCPAMCEmbedReady } from './embed/cpamcEmbed';
+import { cpamcEmbedSearch, isCPAMCEmbed } from './embed/cpamcEmbed';
 import { getUsageTabPath, resolveUsageTabFromPath, stripAppBasePath } from './lib/usageNavigation';
 import { useUsageStatsStore } from './stores/useUsageStatsStore';
 
@@ -38,6 +38,7 @@ export const getRoleTargetPath = (
   if (currentPath === '/') return '/';
 
   const usageTab = resolveUsageTabFromPath(currentPath);
+  // 本地排行不在 CPAMC 嵌入模式中提供。
   if (!usageTab || (isEmbeddedInCPAMC && usageTab === 'ranking')) return '/';
   return getUsageTabPath(usageTab);
 };
@@ -47,6 +48,11 @@ export const shouldNormalizeRolePath = (
   currentPath: string,
   isEmbeddedInCPAMC = false,
 ): boolean => currentPath !== getRoleTargetPath(role, currentPath, isEmbeddedInCPAMC);
+
+export const getOIDCLoginErrorKey = (code: string): string => {
+  const allowed = ['oidc_canceled', 'oidc_expired', 'oidc_denied', 'oidc_unavailable', 'oidc_public_origin', 'login_rate_limited'];
+  return allowed.includes(code) ? `auth.${code}` : 'auth.oidc_failed';
+};
 
 export type AdminLoginErrorKind = 'totp_required' | 'invalid_totp' | 'invalid_password' | 'login_failed';
 
@@ -63,10 +69,11 @@ function App() {
   const [authRole, setAuthRole] = useState<AuthRole | null>(null);
   const [sessionAPIKey, setSessionAPIKey] = useState<AuthSessionAPIKeySummary | undefined>();
   const [keyViewerPath, setKeyViewerPath] = useState<KeyViewerPath>(getInitialKeyViewerPath);
-  const [adminLoginError, setAdminLoginError] = useState('');
+  const [adminLoginErrorKey, setAdminLoginErrorKey] = useState('');
   const [totpRequired, setTOTPRequired] = useState(false);
   const [apiKeyLoginError, setAPIKeyLoginError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [oidcLoginEnabled, setOIDCLoginEnabled] = useState(false);
   const clearUsageStats = useUsageStatsStore((state) => state.clearUsageStats);
   const isEmbeddedInCPAMC = isCPAMCEmbed();
 
@@ -79,6 +86,7 @@ function App() {
   }, [clearUsageStats]);
 
   const applySession = useCallback((session: Awaited<ReturnType<typeof getSession>>) => {
+    setOIDCLoginEnabled(Boolean(session.oidc_login_enabled));
     if (!session.authenticated) {
       clearSession();
       return;
@@ -101,7 +109,13 @@ function App() {
   }, [clearSession, loadSession]);
 
   useEffect(() => {
-    notifyCPAMCEmbedReady();
+    const current = new URL(window.location.href);
+    const errorCode = current.searchParams.get('oidc_error');
+    if (!errorCode) return;
+    // 回调只传本地错误枚举；消费后立即移除，刷新不会重复显示，也不展示 IdP 原文。
+    setAdminLoginErrorKey(getOIDCLoginErrorKey(errorCode));
+    current.searchParams.delete('oidc_error');
+    window.history.replaceState(null, '', current.pathname + current.search + current.hash);
   }, []);
 
   useEffect(() => {
@@ -117,43 +131,43 @@ function App() {
 
   const handlePasswordLogin = useCallback(async (password: string, totpCode = '') => {
     setSubmitting(true);
-    setAdminLoginError('');
+    setAdminLoginErrorKey('');
     setTOTPRequired(false);
     try {
       await login(password, totpCode);
       const session = await loadSession();
       if (!session.authenticated) {
-        setAdminLoginError(t('auth.login_failed'));
+        setAdminLoginErrorKey('auth.login_failed');
         clearSession();
         return;
       }
       const currentPath = stripAppBasePath(window.location.pathname, window.__APP_BASE_PATH__) ?? '/';
-      const targetPath = getRoleTargetPath(session.role ?? 'admin', currentPath, isEmbeddedInCPAMC);
+      const targetPath = getRoleTargetPath(session.role ?? 'admin', currentPath);
       // 管理员凭据直达链接需跨登录保留；发生角色或路由重定向时仍只携带嵌入标记。
-      const keepCredentialSearch = targetPath === currentPath && (targetPath === '/auth-files' || targetPath === '/ai-provider');
+      const keepCredentialSearch = targetPath === currentPath && (targetPath === '/credentials' || targetPath === '/ai-provider');
       const suffix = keepCredentialSearch ? window.location.search + window.location.hash : cpamcEmbedSearch();
       window.history.replaceState(null, '', appPath(targetPath) + suffix);
     } catch (error) {
       switch (resolveAdminLoginError(error)) {
         case 'totp_required':
           setTOTPRequired(true);
-          setAdminLoginError('');
+          setAdminLoginErrorKey('');
           break;
         case 'invalid_totp':
           setTOTPRequired(true);
-          setAdminLoginError(t('auth.invalid_totp_code'));
+          setAdminLoginErrorKey('auth.invalid_totp_code');
           break;
         case 'invalid_password':
-          setAdminLoginError(t('auth.invalid_password'));
+          setAdminLoginErrorKey('auth.invalid_password');
           break;
         default:
-          setAdminLoginError(t('auth.login_failed'));
+          setAdminLoginErrorKey('auth.login_failed');
       }
       clearSession();
     } finally {
       setSubmitting(false);
     }
-  }, [clearSession, isEmbeddedInCPAMC, loadSession, t]);
+  }, [clearSession, loadSession]);
 
   const handleAPIKeyLogin = useCallback(async (apiKey: string) => {
     setSubmitting(true);
@@ -167,7 +181,7 @@ function App() {
         return;
       }
       const currentPath = stripAppBasePath(window.location.pathname, window.__APP_BASE_PATH__) ?? '/';
-      const targetPath = getRoleTargetPath(session.role, currentPath, isEmbeddedInCPAMC) as KeyViewerPath;
+      const targetPath = getRoleTargetPath(session.role, currentPath) as KeyViewerPath;
       setKeyViewerPath(targetPath);
       window.history.replaceState(null, '', appPath(targetPath) + cpamcEmbedSearch());
     } catch (error) {
@@ -182,7 +196,23 @@ function App() {
     } finally {
       setSubmitting(false);
     }
-  }, [clearSession, isEmbeddedInCPAMC, loadSession, t]);
+  }, [clearSession, loadSession, t]);
+
+  const handleOIDCLogin = useCallback(async () => {
+    setSubmitting(true);
+    setAdminLoginErrorKey('');
+    try {
+      const target = window.location.pathname + window.location.search + window.location.hash;
+      const { authorization_url: authorizationURL } = await startOIDCLogin(target);
+      window.location.assign(authorizationURL);
+    } catch (error) {
+      const code = error instanceof ApiError && error.status === 429
+        ? 'login_rate_limited'
+        : error instanceof ApiError ? error.code ?? 'oidc_failed' : 'oidc_unavailable';
+      setAdminLoginErrorKey(getOIDCLoginErrorKey(code));
+      setSubmitting(false);
+    }
+  }, []);
 
   const handleKeyViewerNavigate = useCallback((path: KeyViewerPath) => {
     if (path === keyViewerPath) return;
@@ -194,7 +224,7 @@ function App() {
   if (authState === 'checking') {
     page = <div className="app-checking" aria-busy="true" />;
   } else if (authState === 'unauthenticated') {
-    page = <LoginPage loading={submitting} totpRequired={totpRequired} adminError={adminLoginError} apiKeyError={apiKeyLoginError} onPasswordSubmit={handlePasswordLogin} onAPIKeySubmit={handleAPIKeyLogin} />;
+    page = <LoginPage loading={submitting} totpRequired={totpRequired} oidcEnabled={oidcLoginEnabled && !isEmbeddedInCPAMC} onOIDCLogin={handleOIDCLogin} adminError={adminLoginErrorKey ? t(adminLoginErrorKey) : ''} apiKeyError={apiKeyLoginError} onPasswordSubmit={handlePasswordLogin} onAPIKeySubmit={handleAPIKeyLogin} />;
   } else if (authRole === 'api_key_viewer') {
     page = keyViewerPath === '/key-analysis'
       ? <KeyAnalysisPage apiKey={sessionAPIKey} onNavigate={handleKeyViewerNavigate} onAuthRequired={clearSession} />
@@ -204,7 +234,8 @@ function App() {
   }
 
   return (
-    <div className="app-frame" data-embed={isEmbeddedInCPAMC ? 'cpamc' : undefined}>
+    <div className="app-frame" data-embed={isEmbeddedInCPAMC ? 'cpamc' : undefined} data-page={authState === 'unauthenticated' ? 'login' : undefined}>
+      {authState === 'unauthenticated' && <LoginBackdrop />}
       <main className="app-main">{page}</main>
       <AppFooter loadVersion={authState === 'authenticated'} />
     </div>

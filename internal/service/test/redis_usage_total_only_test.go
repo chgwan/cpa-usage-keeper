@@ -20,8 +20,13 @@ func TestProcessRedisUsageInboxPreservesImageTotalOnlyUsage(t *testing.T) {
 	if err := db.Create(&entities.ModelPriceSetting{Model: "gpt-image-2", PricingStyle: entities.ModelPricingStyleOpenAI, PromptPricePer1M: 1, CompletionPricePer1M: 2, PriceMultiplier: &multiplier}).Error; err != nil {
 		t.Fatal(err)
 	}
+	snapshot, err := repository.LoadPricingSnapshot(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pricingCatalog := pricing.NewCatalog(snapshot)
 	// 使用 issue #636 的完整 Token 形态，验证入库而非仅测试纯处理器。
-	_, err := repository.InsertRedisUsageInboxMessages(db, []repodto.RedisInboxInsert{{
+	_, err = repository.InsertRedisUsageInboxMessages(db, []repodto.RedisInboxInsert{{
 		Source: "usage",
 		RawMessage: `{
    "timestamp":"2026-10-13T08:00:00Z",
@@ -35,7 +40,7 @@ func TestProcessRedisUsageInboxPreservesImageTotalOnlyUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{BaseURL: "https://cpa.example.com"}).ProcessRedisUsageInbox(context.Background())
+	result, err := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{PricingCatalog: pricingCatalog, BaseURL: "https://cpa.example.com"}).ProcessRedisUsageInbox(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,12 +61,8 @@ func TestProcessRedisUsageInboxPreservesImageTotalOnlyUsage(t *testing.T) {
 	if hourly.TotalTokens != 2120 || hourly.InputTokens != 0 || hourly.OutputTokens != 0 {
 		t.Fatalf("unexpected overview: %+v", hourly)
 	}
-	snapshot, err := repository.LoadPricingSnapshot(context.Background(), db)
-	if err != nil {
-		t.Fatal(err)
-	}
 	start, end := event.Timestamp.Add(-time.Minute), event.Timestamp.Add(time.Minute)
-	page, err := service.NewUsageServiceWithOptions(db, service.UsageServiceOptions{PricingCatalog: pricing.NewCatalog(snapshot)}).ListUsageEvents(context.Background(), servicedto.UsageFilter{StartTime: &start, EndTime: &end})
+	page, err := service.NewUsageServiceWithOptions(db, service.UsageServiceOptions{PricingCatalog: pricingCatalog}).ListUsageEvents(context.Background(), servicedto.UsageFilter{StartTime: &start, EndTime: &end})
 	if err != nil {
 		t.Fatal(err)
 	}

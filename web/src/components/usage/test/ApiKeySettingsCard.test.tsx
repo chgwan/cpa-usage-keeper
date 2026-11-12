@@ -187,7 +187,7 @@ describe('ApiKeySettingsCard', () => {
 
   it('renders empty and loading states', () => {
     expect(renderCard({ apiKeys: [], loading: true })).toContain('Loading...');
-    expect(renderCard({ apiKeys: [], loading: false })).toContain('No CPA API keys synced yet.');
+    expect(renderCard({ apiKeys: [], loading: false })).toContain('No API keys available yet.');
   });
 
   it('shows a temp adjustment badge only on the window with an active adjustment', () => {

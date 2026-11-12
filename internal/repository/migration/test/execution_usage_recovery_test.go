@@ -2,6 +2,7 @@ package test
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -459,5 +460,81 @@ func assertExecutionRecoveryVersion(t *testing.T, db *gorm.DB, applied bool) {
 	var count int64
 	if err := db.Table("schema_migrations").Where("version = ?", executionRecoveryVersion).Count(&count).Error; err != nil || (count == 1) != applied {
 		t.Fatalf("version marker: count=%d want applied=%t error=%v", count, applied, err)
+	}
+}
+
+// 验证分阶段升级不会漏掉末尾恢复，也不会在费用结构和排行清理之前执行它。
+func TestExecutionRecoveryRunsAfterNextMigrationPhases(t *testing.T) {
+	for _, alreadyApplied := range []bool{false, true} {
+		t.Run(fmt.Sprintf("already-applied-%t", alreadyApplied), func(t *testing.T) {
+			db, err := repository.OpenDatabase(config.Config{SQLitePath: executionRecoveryDatabasePath(t)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sqlDB, _ := db.DB()
+			t.Cleanup(func() { _ = sqlDB.Close() })
+			versions := []string{pricingStorageStructureVersion, "20261009_remove_ranking"}
+			if !alreadyApplied {
+				versions = append(versions, executionRecoveryVersion)
+			}
+			if err := db.Exec("DELETE FROM schema_migrations WHERE version IN ?", versions).Error; err != nil {
+				t.Fatal(err)
+			}
+			for _, table := range []string{"usage_events", "usage_events_archive"} {
+				if err := db.Exec("INSERT INTO " + table + " (event_key, execution_id, cost_usd, cost_available) VALUES ('', 'phase-execution', 0.125, 1)").Error; err != nil {
+					t.Fatal(err)
+				}
+				// 数据更新发生时，前面的两项 v2 迁移必须已记录成功。
+				if err := db.Exec("CREATE TRIGGER require_next_phases_" + table + " BEFORE UPDATE OF event_key ON " + table + " WHEN (SELECT COUNT(*) FROM schema_migrations WHERE version IN ('20261009_pricing_storage_structure', '20261009_remove_ranking')) <> 2 BEGIN SELECT RAISE(ABORT, 'next migrations unfinished'); END").Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			inbox := recoveryInbox(1, `{"execution_id":"phase-inbox"}`)
+			if err := db.Create(&inbox).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := migration.RunPublished(db); err != nil {
+				t.Fatal(err)
+			}
+			assertExecutionRecoveryVersion(t, db, alreadyApplied)
+			if err := migration.RunPricingStorageStructure(db); err != nil {
+				t.Fatal(err)
+			}
+			assertExecutionRecoveryVersion(t, db, alreadyApplied)
+			for attempt := 0; attempt < 2; attempt++ {
+				if err := migration.Run(db); err != nil {
+					t.Fatal(err)
+				}
+				assertExecutionRecoveryVersion(t, db, true)
+				for _, table := range []string{"usage_events", "usage_events_archive"} {
+					var row struct {
+						EventKey      string
+						CostUSD       float64
+						CostAvailable bool
+					}
+					if err := db.Table(table).Take(&row).Error; err != nil {
+						t.Fatal(err)
+					}
+					want := "phase-execution"
+					if alreadyApplied {
+						want = ""
+					}
+					if row.EventKey != want || math.Abs(row.CostUSD-0.125) > 1e-9 || !row.CostAvailable {
+						t.Fatalf("phase recovery changed pricing or reran applied migration: %+v", row)
+					}
+				}
+				var got entities.RedisUsageInbox
+				if err := db.First(&got, inbox.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				want := repository.RedisUsageInboxStatusPending
+				if alreadyApplied {
+					want = repository.RedisUsageInboxStatusDecodeFailed
+				}
+				if got.Status != want {
+					t.Fatalf("inbox status=%s, want %s", got.Status, want)
+				}
+			}
+		})
 	}
 }

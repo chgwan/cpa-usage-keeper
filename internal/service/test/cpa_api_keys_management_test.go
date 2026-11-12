@@ -32,9 +32,19 @@ func (f *fakeCPAAPIKeys) handler(t *testing.T) http.HandlerFunc {
 	t.Helper()
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		// 读取走 v8 access/api-keys 的直接数组，写入仍走 v0 api-keys 的单键语义。
+		wantPath := "/v0/management/api-keys"
+		if r.Method == http.MethodGet {
+			wantPath = "/v8/management/config/access/api-keys"
+		}
+		if r.URL.Path != wantPath {
+			t.Errorf("unexpected CPA path for %s: %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		switch r.Method {
 		case http.MethodGet:
-			_ = json.NewEncoder(w).Encode(map[string]any{"api-keys": f.keys})
+			_ = json.NewEncoder(w).Encode(append([]string{}, f.keys...))
 		case http.MethodPut:
 			var body struct {
 				Items []string `json:"items"`
@@ -97,7 +107,7 @@ func newManagementTestEnv(t *testing.T) (service.CPAAPIKeyManagementProvider, *f
 	server := httptest.NewServer(fake.handler(t))
 	t.Cleanup(server.Close)
 	client := cpa.NewClient(server.URL, "mgmt", 5*time.Second, false)
-	return service.NewCPAAPIKeyManagementService(db, client, nil, nil), fake, db
+	return service.NewCPAAPIKeyManagementService(db, client, nil), fake, db
 }
 
 func TestCreateCPAAPIKeyAppendsToCPAAndLocal(t *testing.T) {
@@ -213,6 +223,32 @@ func TestDisableAndRestoreRoundTrip(t *testing.T) {
 	}
 	if len(fake.keys) != 2 || fake.keys[1] != fullKey {
 		t.Fatalf("expected key re-added to CPA, got %v", fake.keys)
+	}
+}
+
+func TestManagementRejectsPluginIdentityKeys(t *testing.T) {
+	provider, fake, db := newManagementTestEnv(t)
+	// 插件统计身份不在 CPA api-keys 列表中，所有生命周期与限额写入都必须拒绝且不触达 CPA。
+	plugin := entities.CPAAPIKey{APIKey: "plugin-principal", DisplayKey: "plugin", SourceType: entities.CPAAPIKeySourcePlugin, AccessProvider: "plugin:external"}
+	if err := db.Create(&plugin).Error; err != nil {
+		t.Fatalf("seed plugin key: %v", err)
+	}
+	ctx := context.Background()
+	limits := keypolicy.Limits{{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowDaily, Value: 1}}
+	checks := map[string]func() error{
+		"regenerate": func() error { _, _, err := provider.RegenerateCPAAPIKey(ctx, plugin.ID); return err },
+		"delete":     func() error { return provider.DeleteCPAAPIKey(ctx, plugin.ID) },
+		"disable":    func() error { return provider.DisableCPAAPIKey(ctx, plugin.ID) },
+		"restore":    func() error { return provider.RestoreCPAAPIKey(ctx, plugin.ID) },
+		"policy":     func() error { return provider.SaveCPAAPIKeyPolicy(ctx, plugin.ID, limits) },
+	}
+	for name, run := range checks {
+		if err := run(); !errors.Is(err, service.ErrInvalidInput) {
+			t.Fatalf("%s on plugin key: expected ErrInvalidInput, got %v", name, err)
+		}
+	}
+	if len(fake.keys) != 1 || fake.keys[0] != "sk-existing" {
+		t.Fatalf("plugin key actions must not touch CPA, got %v", fake.keys)
 	}
 }
 
@@ -355,7 +391,7 @@ func TestCPAWriteFailureSurfacesAsSentinelError(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	db := openManagementTestDB(t)
-	provider := service.NewCPAAPIKeyManagementService(db, cpa.NewClient(server.URL, "mgmt", 5*time.Second, false), nil, nil)
+	provider := service.NewCPAAPIKeyManagementService(db, cpa.NewClient(server.URL, "mgmt", 5*time.Second, false), nil)
 	if _, _, err := provider.CreateCPAAPIKey(context.Background(), "", ""); !errors.Is(err, service.ErrCPARequestFailed) {
 		t.Fatalf("expected ErrCPARequestFailed, got %v", err)
 	}
@@ -447,7 +483,7 @@ func TestResetCPAAPIKeyQuotasWritesScopedResetsLogsAndWakesRunner(t *testing.T) 
 		}
 	}
 	wakes := 0
-	provider := service.NewCPAAPIKeyManagementServiceWithWaker(db, nil, nil, nil, func() { wakes++ })
+	provider := service.NewCPAAPIKeyManagementServiceWithWaker(db, nil, nil, func() { wakes++ })
 
 	if err := provider.ResetCPAAPIKeyQuotas(context.Background(), nil, []keypolicy.LimitWindow{keypolicy.LimitWindowWeekly}); err != nil {
 		t.Fatalf("global reset: %v", err)
@@ -492,7 +528,7 @@ func TestUpdateCPAAPIKeyPoliciesMergesOnlyRequestedWindows(t *testing.T) {
 			t.Fatalf("seed key: %v", err)
 		}
 	}
-	provider := service.NewCPAAPIKeyManagementService(db, nil, nil, nil)
+	provider := service.NewCPAAPIKeyManagementService(db, nil, nil)
 	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), keys[0].ID, keypolicy.Limits{
 		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowWeekly, Value: 20},
 		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowMonthly, Value: 80},
@@ -541,7 +577,7 @@ func TestUpdateCPAAPIKeyPoliciesRejectsEmptyChanges(t *testing.T) {
 	if err := db.Create(&key).Error; err != nil {
 		t.Fatalf("seed key: %v", err)
 	}
-	provider := service.NewCPAAPIKeyManagementService(db, nil, nil, nil)
+	provider := service.NewCPAAPIKeyManagementService(db, nil, nil)
 	if err := provider.UpdateCPAAPIKeyPolicies(context.Background(), []int64{key.ID}, service.CPAAPIKeyPolicyChanges{}); !errors.Is(err, service.ErrInvalidInput) {
 		t.Fatalf("expected empty changes rejected, got %v", err)
 	}
@@ -558,7 +594,7 @@ func TestUpdateCPAAPIKeyPoliciesAlwaysForcesEnabled(t *testing.T) {
 	if err := repository.UpsertCPAAPIKeyPolicy(db, &legacy); err != nil {
 		t.Fatalf("seed legacy disabled policy: %v", err)
 	}
-	provider := service.NewCPAAPIKeyManagementService(db, nil, nil, nil)
+	provider := service.NewCPAAPIKeyManagementService(db, nil, nil)
 	daily := 5.0
 	if err := provider.UpdateCPAAPIKeyPolicies(context.Background(), []int64{key.ID}, service.CPAAPIKeyPolicyChanges{
 		Limits: map[keypolicy.LimitWindow]*float64{keypolicy.LimitWindowDaily: &daily},
@@ -583,7 +619,7 @@ func TestSetCPAAPIKeyQuotaAdjustmentsAppliesOnlyConfiguredWindowsAndWakesRunner(
 		t.Fatalf("seed key: %v", err)
 	}
 	wakes := 0
-	provider := service.NewCPAAPIKeyManagementServiceWithWaker(db, nil, nil, nil, func() { wakes++ })
+	provider := service.NewCPAAPIKeyManagementServiceWithWaker(db, nil, nil, func() { wakes++ })
 	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), key.ID, keypolicy.Limits{
 		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowWeekly, Value: 100},
 	}); err != nil {
@@ -639,7 +675,7 @@ func TestSetCPAAPIKeyQuotaAdjustmentsRejectsInvalidInput(t *testing.T) {
 	if err := db.Create(&key).Error; err != nil {
 		t.Fatalf("seed key: %v", err)
 	}
-	provider := service.NewCPAAPIKeyManagementService(db, nil, nil, nil)
+	provider := service.NewCPAAPIKeyManagementService(db, nil, nil)
 	if _, err := provider.SetCPAAPIKeyQuotaAdjustments(context.Background(), nil, []keypolicy.LimitWindow{keypolicy.LimitWindowWeekly}, 10); !errors.Is(err, service.ErrInvalidInput) {
 		t.Fatalf("expected empty ids rejected, got %v", err)
 	}
@@ -669,7 +705,7 @@ func TestListCPAAPIKeyPolicySummariesReportsEffectiveLimitWithBaseAndAdjustment(
 	if err := db.Create(&key).Error; err != nil {
 		t.Fatalf("seed key: %v", err)
 	}
-	provider := service.NewCPAAPIKeyManagementService(db, nil, nil, nil)
+	provider := service.NewCPAAPIKeyManagementService(db, nil, nil)
 	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), key.ID, keypolicy.Limits{
 		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowWeekly, Value: 100},
 	}); err != nil {
@@ -732,7 +768,7 @@ func TestClearCPAAPIKeyQuotaAdjustmentsWakesRunnerAndValidates(t *testing.T) {
 		t.Fatalf("seed key: %v", err)
 	}
 	wakes := 0
-	provider := service.NewCPAAPIKeyManagementServiceWithWaker(db, nil, nil, nil, func() { wakes++ })
+	provider := service.NewCPAAPIKeyManagementServiceWithWaker(db, nil, nil, func() { wakes++ })
 	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), key.ID, keypolicy.Limits{
 		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowWeekly, Value: 100},
 	}); err != nil {
@@ -780,7 +816,7 @@ func TestSaveCPAAPIKeyPolicyClearsAdjustmentWhenWindowLimitRemoved(t *testing.T)
 	if err := db.Create(&key).Error; err != nil {
 		t.Fatalf("seed key: %v", err)
 	}
-	provider := service.NewCPAAPIKeyManagementService(db, nil, nil, nil)
+	provider := service.NewCPAAPIKeyManagementService(db, nil, nil)
 	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), key.ID, keypolicy.Limits{
 		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowWeekly, Value: 100},
 	}); err != nil {
@@ -826,7 +862,7 @@ func TestUpdateCPAAPIKeyPoliciesClearsAdjustmentWhenWindowLimitRemoved(t *testin
 	if err := db.Create(&key).Error; err != nil {
 		t.Fatalf("seed key: %v", err)
 	}
-	provider := service.NewCPAAPIKeyManagementService(db, nil, nil, nil)
+	provider := service.NewCPAAPIKeyManagementService(db, nil, nil)
 	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), key.ID, keypolicy.Limits{
 		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowWeekly, Value: 100},
 	}); err != nil {
@@ -872,7 +908,7 @@ func TestSetCPAAPIKeyQuotaAdjustmentsRejectsDeltaAboveMagnitudeCap(t *testing.T)
 	if err := db.Create(&key).Error; err != nil {
 		t.Fatalf("seed key: %v", err)
 	}
-	provider := service.NewCPAAPIKeyManagementService(db, nil, nil, nil)
+	provider := service.NewCPAAPIKeyManagementService(db, nil, nil)
 	if err := provider.SaveCPAAPIKeyPolicy(context.Background(), key.ID, keypolicy.Limits{
 		{Type: keypolicy.LimitTypeCost, Window: keypolicy.LimitWindowWeekly, Value: 100},
 	}); err != nil {

@@ -98,10 +98,15 @@ func TestOrderedMigrationsPreservesExecutionOrder(t *testing.T) {
 		"20260922_normalize_usage_event_parent_session_null",
 		"20260925_limit_latency_sample_points",
 		"20261008_usage_event_trace_metadata",
+		"20261009_pricing_storage_structure",
+		"20261009_remove_ranking",
 		"20261018_recover_execution_usage_events",
 		"20261021_create_api_key_quota_resets",
 		"20261023_create_api_key_quota_adjustments",
 		"20261023_force_api_key_policy_enforcement",
+		"20261020_add_auth_session_oidc_identity",
+		"20261023_usage_event_effective_service_tier",
+		"20261028_plugin_api_key_sources",
 	}
 	assertStringSlicesEqual(t, want, got)
 }

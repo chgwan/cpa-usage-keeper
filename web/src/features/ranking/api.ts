@@ -3,24 +3,19 @@ import type {
   LocalRankingProfileRequest,
   LocalRankingProfileResponse,
   RankingLeaderboardResponse,
-  RankingMetadataResponse,
   RankingMetric,
   RankingPeriod,
-  RankingProfileRequest,
-  RankingStatusResponse,
 } from './types';
 
 export class RankingApiError extends Error {
   status: number;
   code: string;
-  retryAfter: string;
 
-  constructor(code: string, status: number, retryAfter = '') {
+  constructor(code: string, status: number) {
     super(code);
     this.name = 'RankingApiError';
     this.status = status;
     this.code = code;
-    this.retryAfter = retryAfter;
   }
 }
 
@@ -44,53 +39,9 @@ const requestRankingJSON = async <T>(path: string, init: RequestInit = {}): Prom
     } catch {
       // 非 JSON 错误仍保留稳定的本地错误码。
     }
-    throw new RankingApiError(code, response.status, response.headers.get('Retry-After') ?? '');
+    throw new RankingApiError(code, response.status);
   }
   return response.json() as Promise<T>;
-};
-
-export const fetchRankingStatus = (signal?: AbortSignal) => requestRankingJSON<RankingStatusResponse>(
-  '/ranking/status',
-  { signal },
-);
-
-export const joinRanking = (profile: RankingProfileRequest, signal?: AbortSignal) => requestRankingJSON<RankingStatusResponse>(
-  '/ranking/join',
-  {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(profile),
-    signal,
-  },
-);
-
-export const syncRanking = (signal?: AbortSignal) => requestRankingJSON<RankingStatusResponse>(
-  '/ranking/sync',
-  { method: 'POST', signal },
-);
-
-export const pauseRanking = (signal?: AbortSignal) => requestRankingJSON<RankingStatusResponse>(
-  '/ranking/pause',
-  { method: 'POST', signal },
-);
-
-export const resumeRanking = (signal?: AbortSignal) => requestRankingJSON<RankingStatusResponse>(
-  '/ranking/resume',
-  { method: 'POST', signal },
-);
-
-export const exitRanking = (signal?: AbortSignal) => requestRankingJSON<RankingStatusResponse>(
-  '/ranking',
-  { method: 'DELETE', signal },
-);
-
-export const fetchRankingLeaderboard = (
-  period: RankingPeriod,
-  metric: RankingMetric,
-  signal?: AbortSignal,
-) => {
-  const query = new URLSearchParams({ period, metric });
-  return requestRankingJSON<RankingLeaderboardResponse>(`/ranking/leaderboards?${query.toString()}`, { signal });
 };
 
 export const fetchLocalRankingLeaderboard = (
@@ -114,9 +65,4 @@ export const updateLocalRankingProfile = (
     body: JSON.stringify(profile),
     signal,
   },
-);
-
-export const fetchRankingMetadata = (signal?: AbortSignal) => requestRankingJSON<RankingMetadataResponse>(
-  '/ranking/leaderboards/metadata',
-  { signal },
 );

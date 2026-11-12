@@ -42,13 +42,13 @@ func TestOversizedStreamedBodyIsCutOffAtTheGeneralLimit(t *testing.T) {
 	sessions := keeperauth.NewSessionManager(time.Hour)
 	config := keeperapi.AuthConfig{Enabled: true, LoginPassword: "secret", SessionTTL: time.Hour}
 	handler := keeperapi.NewAuthHandler(config, sessions)
-	router := keeperapi.NewRouter(nil, nil, nil, nil, config, handler, "", keeperapi.OptionalProviders{AuthFiles: &authFilesManagementProvider{}})
+	router := keeperapi.NewRouter(nil, nil, nil, nil, config, handler, "", keeperapi.OptionalProviders{Credentials: &credentialsManagementProvider{}})
 	token, _, err := sessions.Create()
 	if err != nil {
 		t.Fatalf("create admin session: %v", err)
 	}
 
-	request := httptest.NewRequest(http.MethodPatch, "/api/v1/auth-files/status", strings.NewReader(`{"names":["`+strings.Repeat("x", 2<<20)+`"],"disabled":true}`))
+	request := httptest.NewRequest(http.MethodPatch, "/api/v1/credentials/status", strings.NewReader(`{"names":["`+strings.Repeat("x", 2<<20)+`"],"disabled":true}`))
 	request.ContentLength = -1
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set(requestIntentHeaderName, requestIntentHeaderValueFetch)
@@ -65,13 +65,13 @@ func TestModeratelyLargeAuthenticatedBodyStillSucceeds(t *testing.T) {
 	sessions := keeperauth.NewSessionManager(time.Hour)
 	config := keeperapi.AuthConfig{Enabled: true, LoginPassword: "secret", SessionTTL: time.Hour}
 	handler := keeperapi.NewAuthHandler(config, sessions)
-	router := keeperapi.NewRouter(nil, nil, nil, nil, config, handler, "", keeperapi.OptionalProviders{AuthFiles: &authFilesManagementProvider{}})
+	router := keeperapi.NewRouter(nil, nil, nil, nil, config, handler, "", keeperapi.OptionalProviders{Credentials: &credentialsManagementProvider{}})
 	token, _, err := sessions.Create()
 	if err != nil {
 		t.Fatalf("create admin session: %v", err)
 	}
 
-	request := httptest.NewRequest(http.MethodPatch, "/api/v1/auth-files/status", strings.NewReader(`{"names":["`+strings.Repeat("x", 256<<10)+`"],"disabled":true}`))
+	request := httptest.NewRequest(http.MethodPatch, "/api/v1/credentials/status", strings.NewReader(`{"names":["`+strings.Repeat("x", 256<<10)+`"],"disabled":true}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set(requestIntentHeaderName, requestIntentHeaderValueFetch)
 	request.AddCookie(&http.Cookie{Name: standardSessionCookieName, Value: token})

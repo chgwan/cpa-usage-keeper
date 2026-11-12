@@ -6,8 +6,6 @@ import (
 	"time"
 
 	"cpa-usage-keeper/internal/entities"
-	"cpa-usage-keeper/internal/helper"
-	"cpa-usage-keeper/internal/pricing"
 	"cpa-usage-keeper/internal/repository"
 	"cpa-usage-keeper/internal/timeutil"
 
@@ -15,26 +13,20 @@ import (
 	"gorm.io/plugin/dbresolver"
 )
 
-// Store 负责 keypolicy 需要的 per-key 用量聚合查询与计价。
+// Store 负责 keypolicy 需要的 per-key 费用聚合查询。
 type Store struct {
-	db      *gorm.DB
-	catalog *pricing.Catalog
+	db *gorm.DB
 }
 
-// NewStore 绑定数据库与价格目录；目录为 nil 时费用维度恒为 0。
-func NewStore(db *gorm.DB, catalog *pricing.Catalog) *Store {
-	return &Store{db: db, catalog: catalog}
+// NewStore 绑定数据库；费用直接汇总入库时按事件计好的 cost_usd。
+func NewStore(db *gorm.DB) *Store {
+	return &Store{db: db}
 }
 
-// usageModelRow 是按 (key, model) 分组的一行聚合结果；各 token 分量只用于计价。
-type usageModelRow struct {
-	APIKeyID            int64  `gorm:"column:api_key_id"`
-	APIGroupKey         string `gorm:"column:api_group_key"`
-	Model               string `gorm:"column:model"`
-	InputTokens         int64  `gorm:"column:input_tokens"`
-	OutputTokens        int64  `gorm:"column:output_tokens"`
-	CacheReadTokens     int64  `gorm:"column:cache_read_tokens"`
-	CacheCreationTokens int64  `gorm:"column:cache_creation_tokens"`
+// usageCostRow 是按 key 分组的一行费用聚合结果。
+type usageCostRow struct {
+	APIKeyID int64   `gorm:"column:api_key_id"`
+	CostUSD  float64 `gorm:"column:cost_usd"`
 }
 
 // windowPredicate 复刻 ranking.rankingTimeRangePredicate 的 DST 安全双条件：
@@ -48,42 +40,24 @@ func windowPredicate(start, end time.Time) (string, []any) {
 	}
 }
 
-// queryWindowRows 聚合单个窗口内按 (key, model) 分组的用量。
-func (s *Store) queryWindowRows(ctx context.Context, w Window) ([]usageModelRow, error) {
+// queryWindowRows 汇总单个窗口内每个 key 的已存事件费用，与看板费用口径一致；
+// 尚未回填费用（cost_usd 为 NULL）或缺价的事件按 0 计。
+func (s *Store) queryWindowRows(ctx context.Context, w Window) ([]usageCostRow, error) {
 	predicate, args := windowPredicate(w.Start, w.End)
 	query := fmt.Sprintf(`
 SELECT
 	keys.id AS api_key_id,
-	TRIM(events.api_group_key) AS api_group_key,
-	events.model AS model,
-	SUM(events.input_tokens) AS input_tokens,
-	SUM(events.output_tokens) AS output_tokens,
-	SUM(events.cache_read_tokens) AS cache_read_tokens,
-	SUM(events.cache_creation_tokens) AS cache_creation_tokens
+	COALESCE(SUM(events.cost_usd), 0) AS cost_usd
 FROM usage_events AS events
 JOIN cpa_api_keys AS keys ON keys.api_key = TRIM(events.api_group_key)
 WHERE %s
-GROUP BY keys.id, events.model
+GROUP BY keys.id
 ORDER BY keys.id ASC`, predicate)
-	var rows []usageModelRow
+	var rows []usageCostRow
 	if err := s.db.Clauses(dbresolver.Read).WithContext(ctx).Raw(query, args...).Scan(&rows).Error; err != nil {
 		return nil, fmt.Errorf("aggregate keypolicy usage window %s: %w", WindowKey(w), err)
 	}
 	return rows, nil
-}
-
-// priceRow 用固定的 Resolver 快照给一行 (key, model) 聚合计价。
-func (s *Store) priceRow(resolver pricing.Resolver, row usageModelRow) float64 {
-	subject := pricing.NewCostSubject(pricing.UsageDimensions{
-		APIGroupKey: row.APIGroupKey,
-		Model:       row.Model,
-	}, helper.UsageTokenCostInput{
-		InputTokens:         row.InputTokens,
-		OutputTokens:        row.OutputTokens,
-		CacheReadTokens:     row.CacheReadTokens,
-		CacheCreationTokens: row.CacheCreationTokens,
-	})
-	return resolver.Calculate(subject).Cost.TotalCostUSD
 }
 
 // windowResets 是单个窗口当前周期内的清零点：全局一条加若干 per-key。
@@ -131,17 +105,12 @@ func laterOf(base, candidate time.Time) time.Time {
 // usage_events 本身不被修改，排行等其他统计不受影响。
 func (s *Store) PerKeyUsage(ctx context.Context, daily, weekly, monthly Window) (map[int64]UsageByWindow, error) {
 	result := make(map[int64]UsageByWindow)
-	var resolver pricing.Resolver
-	if s.catalog != nil {
-		// 一次评估固定一个快照，避免中途换价。
-		resolver = s.catalog.NewResolver()
-	}
 	windows := []Window{daily, weekly, monthly}
 	resets, err := s.loadResets(windows)
 	if err != nil {
 		return nil, err
 	}
-	accumulate := func(kind LimitWindow, rows []usageModelRow, include func(int64) bool) {
+	accumulate := func(kind LimitWindow, rows []usageCostRow, include func(int64) bool) {
 		for _, row := range rows {
 			if !include(row.APIKeyID) {
 				continue
@@ -152,7 +121,7 @@ func (s *Store) PerKeyUsage(ctx context.Context, daily, weekly, monthly Window) 
 				result[row.APIKeyID] = usage
 			}
 			windowUsage := usage[kind]
-			windowUsage.CostUSD += s.priceRow(resolver, row)
+			windowUsage.CostUSD += row.CostUSD
 			usage[kind] = windowUsage
 		}
 	}

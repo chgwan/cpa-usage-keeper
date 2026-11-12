@@ -11,6 +11,7 @@ import (
 	"cpa-usage-keeper/internal/auth"
 	"cpa-usage-keeper/internal/entities"
 	"cpa-usage-keeper/internal/helper"
+	"cpa-usage-keeper/internal/oidc"
 	"cpa-usage-keeper/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -55,6 +56,7 @@ type AuthConfig struct {
 	FrameAncestorOrigins []string
 	TrustedProxyCIDRs    []string
 	TOTPReset            bool
+	OIDC                 *oidc.Client
 }
 
 // TOTPProvider 是登录与管理端点需要的管理员 TOTP 能力，由 auth.TOTPManager 实现。
@@ -91,12 +93,14 @@ type apiKeyLoginRequest struct {
 }
 
 type sessionResponse struct {
-	Authenticated bool                   `json:"authenticated"`
-	Role          auth.Role              `json:"role,omitempty"`
-	APIKey        *sessionAPIKeyResponse `json:"api_key,omitempty"`
+	Authenticated    bool                   `json:"authenticated"`
+	Role             auth.Role              `json:"role,omitempty"`
+	APIKey           *sessionAPIKeyResponse `json:"api_key,omitempty"`
+	OIDCLoginEnabled bool                   `json:"oidc_login_enabled"`
 }
 
 type sessionAPIKeyResponse struct {
+	ID         string `json:"id"`
 	DisplayKey string `json:"display_key"`
 	Alias      string `json:"alias,omitempty"`
 }
@@ -127,6 +131,14 @@ type resolvedSessionToken struct {
 }
 
 func NewAuthHandler(config AuthConfig, sessions *auth.SessionManager) *authHandler {
+	if sessions != nil {
+		policy := auth.OIDCSessionPolicy{}
+		if config.Enabled && config.OIDC != nil {
+			cfg := config.OIDC.Config()
+			policy = auth.OIDCSessionPolicy{Enabled: true, Issuer: cfg.Issuer, ClientID: cfg.ClientID, AllowedSubjects: cfg.AllowedSubjects}
+		}
+		sessions.SetOIDCPolicy(policy)
+	}
 	return &authHandler{
 		config:   config,
 		sessions: sessions,
@@ -162,6 +174,8 @@ func (h *authHandler) registerRoutes(router gin.IRoutes) {
 	router.POST("/login", h.login)
 	router.POST("/api-key-login", h.apiKeyLogin)
 	router.POST("/logout", h.logout)
+	router.POST("/oidc/login", h.oidcLogin)
+	router.GET("/oidc/callback", h.oidcCallback)
 }
 
 func (h *authHandler) middleware() gin.HandlerFunc {
@@ -252,7 +266,10 @@ func sessionRoleAllowed(role auth.Role, allowedRoles []auth.Role) bool {
 }
 
 func sessionMatchesResolvedSource(session auth.Session, resolved resolvedSessionToken) bool {
-	return auth.NormalizeSessionSource(session.Source) == resolved.Source
+	if resolved.CookieKind == sessionCookieKindEmbed {
+		return session.Source == auth.SessionSourceEmbed
+	}
+	return resolved.CookieKind == sessionCookieKindStandard && resolved.Transport == sessionTokenTransportCookie && (session.Source == auth.SessionSourceStandard || session.Source == auth.SessionSourceOIDC)
 }
 
 func (h *authHandler) resolveValidSession(c *gin.Context) (resolvedSessionToken, auth.Session, bool) {
@@ -309,12 +326,14 @@ func sessionLookupThrottled(c *gin.Context) (time.Duration, bool) {
 }
 
 func (h *authHandler) getSession(c *gin.Context) {
+	setNoStoreHeaders(c)
+	oidcEnabled := h != nil && h.config.Enabled && h.config.OIDC != nil && !isOIDCEmbedRequest(c)
 	if h == nil || !h.config.Enabled {
 		c.JSON(http.StatusOK, sessionResponse{Authenticated: true, Role: auth.RoleAdmin})
 		return
 	}
 	if h.sessions == nil {
-		c.JSON(http.StatusOK, sessionResponse{Authenticated: false})
+		c.JSON(http.StatusOK, sessionResponse{Authenticated: false, OIDCLoginEnabled: oidcEnabled})
 		return
 	}
 
@@ -324,17 +343,18 @@ func (h *authHandler) getSession(c *gin.Context) {
 			writeTooManyRequests(c, retryAfter, "too many session lookups")
 			return
 		}
-		c.JSON(http.StatusOK, sessionResponse{Authenticated: false})
+		c.JSON(http.StatusOK, sessionResponse{Authenticated: false, OIDCLoginEnabled: oidcEnabled})
 		return
 	}
-	response := sessionResponse{Authenticated: true, Role: session.Role}
+	response := sessionResponse{Authenticated: true, Role: session.Role, OIDCLoginEnabled: oidcEnabled}
 	if session.Role == auth.RoleAPIKeyViewer {
 		row, ok := h.activeViewerAPIKey(c, resolved, session)
 		if !ok {
-			c.JSON(http.StatusOK, sessionResponse{Authenticated: false})
+			c.JSON(http.StatusOK, sessionResponse{Authenticated: false, OIDCLoginEnabled: oidcEnabled})
 			return
 		}
 		response.APIKey = &sessionAPIKeyResponse{
+			ID:         strconv.FormatInt(row.ID, 10),
 			DisplayKey: helper.CPAAPIKeyMaskedDisplayKey(row),
 			Alias:      row.KeyAlias,
 		}
@@ -432,7 +452,7 @@ func (h *authHandler) apiKeyLogin(c *gin.Context) {
 		return
 	}
 	row, err := h.cpaAPIKeyProvider.FindActiveCPAAPIKeyByValue(c.Request.Context(), request.APIKey)
-	if err != nil {
+	if err != nil || row.SourceType == entities.CPAAPIKeySourcePlugin {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
@@ -454,7 +474,7 @@ func (h *authHandler) activeViewerAPIKey(c *gin.Context, resolved resolvedSessio
 		return entities.CPAAPIKey{}, false
 	}
 	row, err := h.cpaAPIKeyProvider.FindActiveCPAAPIKeyByID(c.Request.Context(), session.CPAAPIKeyID)
-	if err != nil {
+	if err != nil || row.SourceType == entities.CPAAPIKeySourcePlugin {
 		h.deleteSession(resolved.Token)
 		clearSessionCookie(c, h.config.BasePath, resolved.CookieKind)
 		return entities.CPAAPIKey{}, false
@@ -480,6 +500,10 @@ func (h *authHandler) logout(c *gin.Context) {
 
 func (h *authHandler) allowLoginAttempt(c *gin.Context, key string) bool {
 	allowed, retryAfter := h.loginAttempts.Allow(key)
+	return writeLoginAttemptResult(c, allowed, retryAfter)
+}
+
+func writeLoginAttemptResult(c *gin.Context, allowed bool, retryAfter time.Duration) bool {
 	if allowed {
 		return true
 	}

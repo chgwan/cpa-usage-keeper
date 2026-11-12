@@ -81,7 +81,7 @@ func TestRedisUsageTraceMetadataSurvivesInboxSyncArchiveAndReplay(t *testing.T) 
 	if err != nil {
 		t.Fatalf("insert inbox messages: %v", err)
 	}
-	result, err := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{}).ProcessRedisUsageInbox(context.Background())
+	result, err := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest()}).ProcessRedisUsageInbox(context.Background())
 	if err != nil {
 		t.Fatalf("process inbox messages: %v", err)
 	}
@@ -131,7 +131,32 @@ func TestRedisUsageTraceMetadataSurvivesInboxSyncArchiveAndReplay(t *testing.T) 
 		replayed = append(replayed, page...)
 		afterID = page[len(page)-1].ID
 	}
-	if !reflect.DeepEqual(replayed, original) {
-		t.Fatalf("hot/archive replay changed original event values: replay=%+v, original=%+v", replayed, original)
+	// v2 冻结了已发布旧迁移的读取列：旧聚合重放不依赖后续元数据与费用列。
+	legacyProjection := append([]entities.UsageEvent(nil), original...)
+	for index := range legacyProjection {
+		legacyProjection[index].ExecutionID = nil
+		legacyProjection[index].TraceID = nil
+		legacyProjection[index].NodeKind = nil
+		legacyProjection[index].IsFork = nil
+		legacyProjection[index].IsCompaction = nil
+		legacyProjection[index].CostUSD = nil
+		legacyProjection[index].CostAvailable = nil
+	}
+	if !reflect.DeepEqual(replayed, legacyProjection) {
+		t.Fatalf("legacy replay changed published event fields: replay=%+v, want=%+v", replayed, legacyProjection)
+	}
+	// 旧迁移只读投影不能影响 hot/archive 中保存的完整事件。
+	for _, event := range original {
+		table := "usage_events_archive"
+		if event.ID == original[len(original)-1].ID {
+			table = "usage_events"
+		}
+		var stored entities.UsageEvent
+		if err := db.Table(table).Where("id = ?", event.ID).Take(&stored).Error; err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(stored, event) {
+			t.Fatalf("legacy replay changed stored event: got=%+v, want=%+v", stored, event)
+		}
 	}
 }

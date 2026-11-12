@@ -84,7 +84,7 @@ func TestExecutionRecoveryLeavesFullValidationToConsumer(t *testing.T) {
 	if err := db.First(&inbox, rows[0].ID).Error; err != nil || inbox.Status != repository.RedisUsageInboxStatusPending {
 		t.Fatalf("minimal ID validation should requeue: %+v error=%v", inbox, err)
 	}
-	syncer := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{Now: executionIdentityNow})
+	syncer := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), Now: executionIdentityNow})
 	if _, err := syncer.ProcessRedisUsageInbox(context.Background()); err == nil {
 		t.Fatal("normal decoder must reject the invalid timestamp")
 	}
@@ -124,7 +124,7 @@ func assertExecutionMessagesProcessed(t *testing.T, db *gorm.DB, messages []stri
 			}
 		}
 	}
-	syncer := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{Now: executionIdentityNow})
+	syncer := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), Now: executionIdentityNow})
 	result, err := syncer.ProcessRedisUsageInbox(context.Background())
 	if err != nil || result.InsertedEvents != len(messages) || result.DedupedEvents != 0 {
 		t.Fatalf("normal consumer: result=%+v error=%v", result, err)
@@ -173,7 +173,7 @@ func TestProcessRedisExecutionIdentityRollsBackAndRetries(t *testing.T) {
 				t.Fatal(err)
 			}
 			notifier := &recordingUsageAggregationNotifier{}
-			syncer := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{UsageAggregationNotifier: notifier, Now: executionIdentityNow})
+			syncer := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), UsageAggregationNotifier: notifier, Now: executionIdentityNow})
 			if _, err := syncer.ProcessRedisUsageInbox(context.Background()); err == nil || !strings.Contains(err.Error(), "execution rollback") {
 				t.Fatalf("expected rollback: %v", err)
 			}

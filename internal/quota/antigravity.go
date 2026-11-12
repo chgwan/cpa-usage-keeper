@@ -21,18 +21,28 @@ func NewAntigravityProvider(caller ManagementAPICaller, quotaConfigs []APICallCo
 }
 
 func (p antigravityProvider) Check(ctx context.Context, input ProviderInput) (ProviderOutput, error) {
-	// Antigravity quota 依赖 project_id；缺少时阻断请求并提示用户补齐认证文件元数据。
+	// Antigravity quota 依赖 project_id；缺少时阻断请求并提示用户补齐凭证元数据。
 	if input.Identity.ProjectID == nil || *input.Identity.ProjectID == "" {
 		return ProviderOutput{}, fmt.Errorf("%w: missing project_id parameter", ErrProviderInput)
 	}
 	if len(p.quotaConfigs) == 0 {
 		return ProviderOutput{}, fmt.Errorf("%w: antigravity config is required", ErrProviderInput)
 	}
+	// 套餐查询与额度并发；额度失败时取消并等待套餐请求退出，避免刷新任务结束后仍留有请求。
+	subscriptionCtx, cancelSubscription := context.WithCancel(ctx)
+	defer cancelSubscription()
+	subscriptionDone := make(chan *AntigravitySubscriptionPayload, 1)
+	go func() {
+		subscriptionDone <- p.checkSubscription(subscriptionCtx, input)
+	}()
+
 	quota, err := p.checkQuota(ctx, input)
 	if err != nil {
+		cancelSubscription()
+		<-subscriptionDone
 		return ProviderOutput{}, err
 	}
-	subscription := p.checkSubscription(ctx, input)
+	subscription := <-subscriptionDone
 	return ProviderOutput{Provider: "antigravity", Result: AntigravityResult{Quota: quota, Subscription: subscription}}, nil
 }
 
@@ -40,7 +50,11 @@ func (p antigravityProvider) checkQuota(ctx context.Context, input ProviderInput
 	// 多个候选 endpoint 按配置顺序尝试，直到解析到可用 quota 为止。
 	var lastErr error
 	var emptyQuota *AntigravityQuotaPayload
+	var hasSeparateArgon bool
 	for _, config := range p.quotaConfigs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		response, err := p.caller.CallManagementAPI(ctx, apicall.Request{
 			AuthIndex: input.Identity.Identity,
 			Method:    config.Method,
@@ -57,6 +71,9 @@ func (p antigravityProvider) checkQuota(ctx context.Context, input ProviderInput
 			lastErr = err
 			continue
 		}
+		// 较早响应中不可展示的独立组证据仍用于后续 fallback 的统计归属。
+		hasSeparateArgon = hasSeparateArgon || quota.hasSeparateArgon
+		quota.hasSeparateArgon = hasSeparateArgon
 		if len(quota.Groups) == 0 {
 			// 空 groups 是成功响应，继续尝试 fallback；全部为空时再返回成功空结果。
 			emptyQuota = quota
@@ -71,10 +88,13 @@ func (p antigravityProvider) checkQuota(ctx context.Context, input ProviderInput
 }
 
 func (p antigravityProvider) checkSubscription(ctx context.Context, input ProviderInput) *AntigravitySubscriptionPayload {
-	// Subscription 是额度成功后的可选补充；daily 与 prod fallback 共用同一个 10 秒 Context。
+	// Subscription 是可选补充；daily 与 prod fallback 从并发启动起共用一个 10 秒 Context。
 	subscriptionCtx, cancel := context.WithTimeout(ctx, antigravitySubscriptionTimeout)
 	defer cancel()
 	for _, config := range p.subscriptionConfigs {
+		if subscriptionCtx.Err() != nil {
+			return nil
+		}
 		response, err := p.caller.CallManagementAPI(subscriptionCtx, apicall.Request{
 			AuthIndex: input.Identity.Identity,
 			Method:    config.Method,

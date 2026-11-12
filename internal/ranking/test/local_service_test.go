@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"cpa-usage-keeper/internal/entities"
-	"cpa-usage-keeper/internal/pricing"
 	"cpa-usage-keeper/internal/ranking"
 	"cpa-usage-keeper/internal/repository"
 	"gorm.io/gorm"
@@ -49,7 +48,7 @@ func TestLocalRankingServiceBuildsTodayWithoutBackfillingOlderPeriods(t *testing
 	}
 	cacheRate := loadLocalBoard(t, service, ranking.LeaderboardToday, ranking.MetricCacheReadRate)
 	if len(cacheRate.Entries) != 2 || cacheRate.Entries[1].Value != 83_333 {
-		t.Fatalf("local cache rate did not use Community fixed-point semantics: %+v", cacheRate)
+		t.Fatalf("local cache rate did not use fixed-point semantics: %+v", cacheRate)
 	}
 	currentMonth := loadLocalBoard(t, service, ranking.LeaderboardCurrentMonth, ranking.MetricRequestCount)
 	if len(currentMonth.Entries) != 2 || currentMonth.Entries[0].Value != 2 || currentMonth.Entries[1].Value != 2 {
@@ -70,13 +69,10 @@ func TestLocalRankingServiceBuildsTodayWithoutBackfillingOlderPeriods(t *testing
 		t.Fatalf("first activation should create only today and current month, got %d rows", alphaRows)
 	}
 
-	overall := loadLocalBoard(t, service, ranking.LeaderboardToday, ranking.MetricOverall)
-	if len(overall.Entries) != 2 || overall.Entries[0].ParticipantID != "1" || overall.ScoreExplanation == nil || overall.ScoreExplanation.Version != 2 {
-		t.Fatalf("unexpected local overall board: %+v", overall)
-	}
-	for _, entry := range overall.Entries {
-		if entry.Value < 0 || entry.Value > 100 || len(entry.Metrics) != 8 {
-			t.Fatalf("invalid local overall entry: %+v", entry)
+	// 每个条目都携带全部指标，前端据此展示所有列。
+	for _, entry := range today.Entries {
+		if len(entry.Metrics) != 8 || entry.Metrics[ranking.MetricTotalTokens] != entry.Value {
+			t.Fatalf("local entry is missing its metric columns: %+v", entry)
 		}
 	}
 }
@@ -108,10 +104,6 @@ func TestLocalRankingServiceComputesWeekBoardsFromUsageEvents(t *testing.T) {
 		previousWeek.Entries[0].ParticipantID != "2" || previousWeek.Entries[0].Value != 70 ||
 		previousWeek.Entries[1].ParticipantID != "1" || previousWeek.Entries[1].Value != 50 {
 		t.Fatalf("unexpected previous week board: %+v", previousWeek)
-	}
-	overall := loadLocalBoard(t, service, ranking.LeaderboardCurrentWeek, ranking.MetricOverall)
-	if overall.PeriodKey != "2026-W41" || overall.ScoreExplanation == nil {
-		t.Fatalf("unexpected current week overall board: %+v", overall)
 	}
 }
 
@@ -238,11 +230,13 @@ func TestLocalRankingServiceReplacesCompleteTodaySnapshotWithoutDoubleCounting(t
 		{EventKey: "base-2", APIGroupKey: keys[0].APIKey, Model: "gpt-5", Timestamp: now.Add(-3 * time.Minute), LatencyMS: 900, TTFTMS: &ttft, InputTokens: 100, CacheReadTokens: 50, TotalTokens: 200},
 	})
 	service := newLocalRankingService(t, serviceDB, func() time.Time { return now })
+	// 榜单读取会额外汇总已存费用，这里只统计每轮 AggregateOnce 自身的扫描次数。
+	readsBefore := usageEventReads()
 	if err := service.AggregateOnce(context.Background()); err != nil {
 		t.Fatalf("aggregate initial today snapshot: %v", err)
 	}
-	if usageEventReads() != 1 {
-		t.Fatalf("initial local ranking aggregation read usage_events %d times, want 1", usageEventReads())
+	if reads := usageEventReads() - readsBefore; reads != 1 {
+		t.Fatalf("initial local ranking aggregation read usage_events %d times, want 1", reads)
 	}
 
 	now = now.Add(5 * time.Minute)
@@ -250,11 +244,12 @@ func TestLocalRankingServiceReplacesCompleteTodaySnapshotWithoutDoubleCounting(t
 		EventKey: "base-3", APIGroupKey: keys[0].APIKey, Model: "gpt-5", Timestamp: now.Add(-7 * time.Minute),
 		LatencyMS: 900, TTFTMS: &ttft, InputTokens: 100, CacheReadTokens: 50, TotalTokens: 400,
 	}})
+	readsBefore = usageEventReads()
 	if err := service.AggregateOnce(context.Background()); err != nil {
 		t.Fatalf("replace today snapshot: %v", err)
 	}
-	if usageEventReads() != 2 {
-		t.Fatalf("changed local ranking aggregation read usage_events %d total times, want 2", usageEventReads())
+	if reads := usageEventReads() - readsBefore; reads != 1 {
+		t.Fatalf("changed local ranking aggregation read usage_events %d times, want 1", reads)
 	}
 	for _, period := range []ranking.LeaderboardPeriod{ranking.LeaderboardToday, ranking.LeaderboardCurrentMonth} {
 		board := loadLocalBoard(t, service, period, ranking.MetricTotalTokens)
@@ -272,11 +267,12 @@ func TestLocalRankingServiceReplacesCompleteTodaySnapshotWithoutDoubleCounting(t
 		t.Fatalf("load today row before unchanged run: %v", err)
 	}
 	now = now.Add(5 * time.Minute)
+	readsBefore = usageEventReads()
 	if err := service.AggregateOnce(context.Background()); err != nil {
 		t.Fatalf("repeat unchanged aggregation: %v", err)
 	}
-	if usageEventReads() != 3 {
-		t.Fatalf("unchanged local ranking aggregation read usage_events %d total times, want 3", usageEventReads())
+	if reads := usageEventReads() - readsBefore; reads != 1 {
+		t.Fatalf("unchanged local ranking aggregation read usage_events %d times, want 1", reads)
 	}
 	var after entities.LocalRankingPeriodStat
 	if err := db.First(&after, "period_kind = ? AND period_key = ? AND api_key_id = ?", entities.LocalRankingPeriodDay, "2026-07-31", keys[0].ID).Error; err != nil {
@@ -423,61 +419,23 @@ func TestLocalRankingServiceFutureEventNeverBlocksAnotherKey(t *testing.T) {
 	}
 }
 
-func TestLocalRankingOverallUsesCommunityDimensionQuantization(t *testing.T) {
-	location := localRankingLocation(t)
-	now := time.Date(2026, 7, 31, 12, 0, 0, 0, location)
-	db := openRankingDatabase(t)
-	keys := seedLocalRankingAPIKeys(t, db)
-	statsUpdatedAt := now.Add(-time.Minute)
-	rows := []entities.LocalRankingPeriodStat{
-		{
-			PeriodKind: entities.LocalRankingPeriodDay, PeriodKey: "2026-07-31", APIKeyID: keys[0].ID,
-			RequestCount: 236, SuccessCount: 226, FailureCount: 10, InputTokens: 2353, CacheReadTokens: 459, TotalTokens: 7911,
-			TTFTSumMS: 1713, TTFTSampleCount: 223, LatencySumMS: 8193, LatencySampleCount: 223,
-			Peak5MTotalTokens: 5328, Peak5MRequestCount: 228, UpdatedAt: statsUpdatedAt,
-		},
-		{
-			PeriodKind: entities.LocalRankingPeriodDay, PeriodKey: "2026-07-31", APIKeyID: keys[1].ID,
-			RequestCount: 355, SuccessCount: 175, FailureCount: 180, InputTokens: 4226, CacheReadTokens: 4205, TotalTokens: 9660,
-			TTFTSumMS: 2167, TTFTSampleCount: 143, LatencySumMS: 14381, LatencySampleCount: 143,
-			Peak5MTotalTokens: 7794, Peak5MRequestCount: 3, UpdatedAt: statsUpdatedAt,
-		},
-	}
-	if err := db.Create(&rows).Error; err != nil {
-		t.Fatalf("seed overall quantization rows: %v", err)
-	}
-	service := newLocalRankingService(t, db, func() time.Time { return now })
-	board := loadLocalBoard(t, service, ranking.LeaderboardToday, ranking.MetricOverall)
-	for _, entry := range board.Entries {
-		if entry.ParticipantID == "1" {
-			if entry.Value != 52 {
-				t.Fatalf("expected Community V2 quantized score 52, got %+v", entry)
-			}
-			return
-		}
-	}
-	t.Fatalf("missing first API key from overall board: %+v", board.Entries)
-}
-
-func TestLocalRankingCostMetricPricesWindowPerKey(t *testing.T) {
+func TestLocalRankingCostMetricSumsStoredEventCostPerKey(t *testing.T) {
 	location := localRankingLocation(t)
 	now := time.Date(2026, 8, 10, 12, 0, 0, 0, location)
 	db := openRankingDatabase(t)
 	keys := seedLocalRankingAPIKeys(t, db)
-	seedLocalRankingOverallStats(t, db, keys, "2026-08-10", now)
+	seedLocalRankingDayStats(t, db, keys, "2026-08-10", now)
 	insertLocalRankingEvents(t, db, []entities.UsageEvent{
-		// Alpha：已计价模型 100 tokens @ $1/M = $0.0001 → 100 micro-USD；未计价模型贡献 0。
-		{EventKey: "alpha-priced", APIGroupKey: keys[0].APIKey, Model: "gpt-5", Timestamp: now.Add(-2 * time.Minute), InputTokens: 100, TotalTokens: 100},
-		{EventKey: "alpha-unpriced", APIGroupKey: keys[0].APIKey, Model: "mystery-model", Timestamp: now.Add(-time.Minute), InputTokens: 500, TotalTokens: 500},
-		// Beta：250 tokens @ $1/M = 250 micro-USD，费用更高者排前。
-		{EventKey: "beta-priced", APIGroupKey: keys[1].APIKey, Model: "gpt-5", Timestamp: now.Add(-3 * time.Minute), InputTokens: 250, TotalTokens: 250},
+		// Alpha：入库费用 $0.0001 → 100 micro-USD；缺价事件费用为 0，尚未回填的事件按 0 计。
+		{EventKey: "alpha-priced", APIGroupKey: keys[0].APIKey, Model: "gpt-5", Timestamp: now.Add(-2 * time.Minute), InputTokens: 100, TotalTokens: 100, CostUSD: storedCost(0.0001)},
+		{EventKey: "alpha-unpriced", APIGroupKey: keys[0].APIKey, Model: "mystery-model", Timestamp: now.Add(-time.Minute), InputTokens: 500, TotalTokens: 500, CostUSD: storedCost(0)},
+		{EventKey: "alpha-unbackfilled", APIGroupKey: keys[0].APIKey, Model: "gpt-5", Timestamp: now.Add(-30 * time.Second), InputTokens: 10, TotalTokens: 10},
+		// Beta：入库费用 $0.00025 → 250 micro-USD，费用更高者排前。
+		{EventKey: "beta-priced", APIGroupKey: keys[1].APIKey, Model: "gpt-5", Timestamp: now.Add(-3 * time.Minute), InputTokens: 250, TotalTokens: 250, CostUSD: storedCost(0.00025)},
 		// 窗口外的昨日事件不得计入今日费用。
-		{EventKey: "alpha-outside", APIGroupKey: keys[0].APIKey, Model: "gpt-5", Timestamp: now.AddDate(0, 0, -1), InputTokens: 1_000_000, TotalTokens: 1_000_000},
+		{EventKey: "alpha-outside", APIGroupKey: keys[0].APIKey, Model: "gpt-5", Timestamp: now.AddDate(0, 0, -1), InputTokens: 1_000_000, TotalTokens: 1_000_000, CostUSD: storedCost(1)},
 	})
-	catalog := pricing.NewCatalog(newLocalRankingCostSnapshot(t, map[string]entities.ModelPriceSetting{
-		"gpt-5": {Model: "gpt-5", PromptPricePer1M: 1},
-	}))
-	service := newLocalRankingServiceWithCatalog(t, db, catalog, func() time.Time { return now })
+	service := newLocalRankingService(t, db, func() time.Time { return now })
 
 	board := loadLocalBoard(t, service, ranking.LeaderboardToday, ranking.MetricCost)
 	if len(board.Entries) != 2 {
@@ -487,30 +445,30 @@ func TestLocalRankingCostMetricPricesWindowPerKey(t *testing.T) {
 		t.Fatalf("unexpected higher-cost entry: %+v", board.Entries[0])
 	}
 	if board.Entries[1].ParticipantID != "1" || board.Entries[1].Value != 100 {
-		t.Fatalf("unpriced model or outside-window event leaked into cost: %+v", board.Entries[1])
+		t.Fatalf("unpriced, unbackfilled or outside-window event leaked into cost: %+v", board.Entries[1])
 	}
 
-	overall := loadLocalBoard(t, service, ranking.LeaderboardToday, ranking.MetricOverall)
-	if len(overall.Entries) != 2 {
-		t.Fatalf("local overall board should keep both keys eligible: %+v", overall)
+	tokens := loadLocalBoard(t, service, ranking.LeaderboardToday, ranking.MetricTotalTokens)
+	if len(tokens.Entries) != 2 {
+		t.Fatalf("local token board should list both keys: %+v", tokens)
 	}
-	for _, entry := range overall.Entries {
+	for _, entry := range tokens.Entries {
 		expected := int64(100)
 		if entry.ParticipantID == "2" {
 			expected = 250
 		}
 		if entry.Metrics[ranking.MetricCost] != expected {
-			t.Fatalf("overall entry missed the cost column: participant=%s metrics=%+v", entry.ParticipantID, entry.Metrics)
+			t.Fatalf("token board entry missed the cost column: participant=%s metrics=%+v", entry.ParticipantID, entry.Metrics)
 		}
 	}
 }
 
-func TestLocalRankingCostMetricWithoutCatalogKeepsZeroCostKeysListed(t *testing.T) {
+func TestLocalRankingCostMetricKeepsUnbackfilledKeysListedAtZero(t *testing.T) {
 	location := localRankingLocation(t)
 	now := time.Date(2026, 8, 10, 12, 0, 0, 0, location)
 	db := openRankingDatabase(t)
 	keys := seedLocalRankingAPIKeys(t, db)
-	seedLocalRankingOverallStats(t, db, keys, "2026-08-10", now)
+	seedLocalRankingDayStats(t, db, keys, "2026-08-10", now)
 	insertLocalRankingEvents(t, db, []entities.UsageEvent{
 		{EventKey: "alpha-only", APIGroupKey: keys[0].APIKey, Model: "gpt-5", Timestamp: now.Add(-time.Minute), InputTokens: 100, TotalTokens: 100},
 	})
@@ -518,21 +476,18 @@ func TestLocalRankingCostMetricWithoutCatalogKeepsZeroCostKeysListed(t *testing.
 
 	board := loadLocalBoard(t, service, ranking.LeaderboardToday, ranking.MetricCost)
 	if len(board.Entries) != 2 || board.Entries[0].Value != 0 || board.Entries[1].Value != 0 {
-		t.Fatalf("missing catalog should still list keys with zero cost: %+v", board)
+		t.Fatalf("keys without stored cost should still be listed at zero cost: %+v", board)
 	}
-	overall := loadLocalBoard(t, service, ranking.LeaderboardToday, ranking.MetricOverall)
-	if len(overall.Entries) != 2 {
-		t.Fatalf("local overall board should keep both keys eligible: %+v", overall)
-	}
-	for _, entry := range overall.Entries {
+	tokens := loadLocalBoard(t, service, ranking.LeaderboardToday, ranking.MetricTotalTokens)
+	for _, entry := range tokens.Entries {
 		if entry.Metrics[ranking.MetricCost] != 0 {
-			t.Fatalf("overall cost column should default to zero without a catalog: %+v", entry.Metrics)
+			t.Fatalf("cost column should default to zero without stored cost: %+v", entry.Metrics)
 		}
 	}
 }
 
-// seedLocalRankingOverallStats 直接写入满足 overall 资格的快照行，费用列由 usage_events 现算。
-func seedLocalRankingOverallStats(t *testing.T, db *gorm.DB, keys []entities.CPAAPIKey, dayKey string, updatedAt time.Time) {
+// seedLocalRankingDayStats 直接写入今日快照行，费用列由 usage_events 已存费用现算。
+func seedLocalRankingDayStats(t *testing.T, db *gorm.DB, keys []entities.CPAAPIKey, dayKey string, updatedAt time.Time) {
 	t.Helper()
 	rows := []entities.LocalRankingPeriodStat{
 		{
@@ -549,22 +504,13 @@ func seedLocalRankingOverallStats(t *testing.T, db *gorm.DB, keys []entities.CPA
 		},
 	}
 	if err := db.Create(&rows).Error; err != nil {
-		t.Fatalf("seed overall eligible stats: %v", err)
+		t.Fatalf("seed day stats: %v", err)
 	}
 }
 
-// newLocalRankingCostSnapshot 复用 keypolicy 测试的 CompileSnapshot 快照构建方式。
-func newLocalRankingCostSnapshot(t *testing.T, settings map[string]entities.ModelPriceSetting) *pricing.Snapshot {
-	t.Helper()
-	configs := make([]pricing.ModelConfig, 0, len(settings))
-	for _, setting := range settings {
-		configs = append(configs, pricing.ModelConfig{Pricing: setting})
-	}
-	snapshot, err := pricing.CompileSnapshot(configs)
-	if err != nil {
-		t.Fatalf("compile pricing snapshot: %v", err)
-	}
-	return snapshot
+// storedCost 构造入库时已计价的事件费用。
+func storedCost(value float64) *float64 {
+	return &value
 }
 
 func seedLocalRankingAPIKeys(t *testing.T, db *gorm.DB) []entities.CPAAPIKey {
@@ -588,12 +534,7 @@ func insertLocalRankingEvents(t *testing.T, db *gorm.DB, events []entities.Usage
 
 func newLocalRankingService(t *testing.T, db *gorm.DB, now func() time.Time) *ranking.LocalRankingService {
 	t.Helper()
-	return newLocalRankingServiceWithCatalog(t, db, nil, now)
-}
-
-func newLocalRankingServiceWithCatalog(t *testing.T, db *gorm.DB, catalog *pricing.Catalog, now func() time.Time) *ranking.LocalRankingService {
-	t.Helper()
-	service, err := ranking.NewLocalRankingService(db, catalog, ranking.LocalRankingServiceOptions{Now: now})
+	service, err := ranking.NewLocalRankingService(db, ranking.LocalRankingServiceOptions{Now: now})
 	if err != nil {
 		t.Fatalf("create local ranking service: %v", err)
 	}

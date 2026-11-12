@@ -19,30 +19,17 @@ func buildLocalLeaderboardEntries(rows []localRankingPopulationRow, metric Leade
 		entry    LeaderboardEntry
 	}
 	candidates := make([]candidate, 0, len(rows))
-	if metric == MetricOverall {
-		eligibleRows := make([]localRankingPopulationRow, 0, len(rows))
-		for _, row := range rows {
-			if localOverallEligible(row) {
-				eligibleRows = append(eligibleRows, row)
-			}
+	for _, row := range rows {
+		value, numerator, denominator, eligible := localMetricValue(row, metric)
+		if !eligible {
+			continue
 		}
-		scores := scoreLocalOverallPopulation(eligibleRows)
-		for index, row := range eligibleRows {
-			entry := localLeaderboardEntry(row, scores[index])
-			entry.Metrics = localLeaderboardMetricsMap(row)
-			candidates = append(candidates, candidate{apiKeyID: row.APIKeyID, entry: entry})
-		}
-	} else {
-		for _, row := range rows {
-			value, numerator, denominator, eligible := localMetricValue(row, metric)
-			if !eligible {
-				continue
-			}
-			entry := localLeaderboardEntry(row, value)
-			entry.RateNumerator = numerator
-			entry.RateDenominator = denominator
-			candidates = append(candidates, candidate{apiKeyID: row.APIKeyID, entry: entry})
-		}
+		entry := localLeaderboardEntry(row, value)
+		entry.RateNumerator = numerator
+		entry.RateDenominator = denominator
+		// 每个条目都携带全部指标，前端表格据此展示所有列并在本地切换排序。
+		entry.Metrics = localLeaderboardMetricsMap(row)
+		candidates = append(candidates, candidate{apiKeyID: row.APIKeyID, entry: entry})
 	}
 	lowerIsBetter := metric == MetricTTFTAverage || metric == MetricLatencyAverage
 	sort.Slice(candidates, func(left, right int) bool {
@@ -134,18 +121,8 @@ func localCostMicroUSD(cost float64) int64 {
 	return int64(math.Round(scaled))
 }
 
-// validLocalLeaderboardPeriod 在 Community 周期集之外额外接受本地独有的自然周周期。
-func validLocalLeaderboardPeriod(period LeaderboardPeriod) bool {
-	return localRankingWeekPeriod(period) || validLeaderboardPeriod(period)
-}
-
 func localRankingWeekPeriod(period LeaderboardPeriod) bool {
 	return period == LeaderboardCurrentWeek || period == LeaderboardPreviousWeek
-}
-
-// validLocalLeaderboardMetric 在 Community 指标集之外额外接受本地独有的 cost 维度。
-func validLocalLeaderboardMetric(metric LeaderboardMetric) bool {
-	return metric == MetricCost || validLeaderboardMetric(metric)
 }
 
 func scaledRatio(numerator, denominator, scale int64) int64 {

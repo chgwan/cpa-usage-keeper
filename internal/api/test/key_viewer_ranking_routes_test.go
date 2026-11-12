@@ -11,8 +11,23 @@ import (
 	. "cpa-usage-keeper/internal/api"
 	"cpa-usage-keeper/internal/auth"
 	"cpa-usage-keeper/internal/entities"
+	"cpa-usage-keeper/internal/ranking"
 	"cpa-usage-keeper/internal/service"
 )
+
+type adminLocalRankingProviderStub struct {
+	calls int
+}
+
+func (s *adminLocalRankingProviderStub) Leaderboard(context.Context, ranking.LeaderboardPeriod, ranking.LeaderboardMetric) (ranking.Leaderboard, error) {
+	s.calls++
+	return ranking.Leaderboard{Entries: []ranking.LeaderboardEntry{}}, nil
+}
+
+func (s *adminLocalRankingProviderStub) UpdateProfile(_ context.Context, id int64, keyAlias string, avatarID uint8) (ranking.LocalProfile, error) {
+	s.calls++
+	return ranking.LocalProfile{ParticipantID: "42", KeyAlias: keyAlias, DisplayName: keyAlias, AvatarID: avatarID}, nil
+}
 
 type keyViewerRankingKeyStub struct {
 	row entities.CPAAPIKey
@@ -37,14 +52,13 @@ func (s *keyViewerRankingKeyStub) UpdateCPAAPIKeyAlias(context.Context, int64, s
 	return s.row, nil
 }
 
-func newKeyViewerRankingRouter(t *testing.T) (*auth.SessionManager, string, *rankingRouteProviderStub, *adminLocalRankingProviderStub, http.Handler) {
+func newKeyViewerRankingRouter(t *testing.T) (*auth.SessionManager, string, *adminLocalRankingProviderStub, http.Handler) {
 	t.Helper()
 	sessions := auth.NewSessionManager(time.Hour)
 	viewerToken, _, err := sessions.CreateAPIKeyViewer(42)
 	if err != nil {
 		t.Fatalf("create viewer session: %v", err)
 	}
-	community := &rankingRouteProviderStub{}
 	local := &adminLocalRankingProviderStub{}
 	keyProvider := &keyViewerRankingKeyStub{row: entities.CPAAPIKey{ID: 42, APIKey: "sk-viewer123456", KeyAlias: "Viewer"}}
 	config := AuthConfig{
@@ -54,10 +68,9 @@ func newKeyViewerRankingRouter(t *testing.T) (*auth.SessionManager, string, *ran
 	}
 	router := NewRouter(nil, nil, nil, nil, config, NewAuthHandler(config, sessions), "", OptionalProviders{
 		CPAAPIKeys:   keyProvider,
-		Ranking:      community,
 		LocalRanking: local,
 	})
-	return sessions, viewerToken, community, local, router
+	return sessions, viewerToken, local, router
 }
 
 func viewerRankingRequest(method, target, token string) *http.Request {
@@ -72,29 +85,27 @@ func TestKeyViewerRankingRoutesAreUnavailable(t *testing.T) {
 		path   string
 		status int
 	}{
-		{http.MethodGet, "/key-ranking/leaderboards?period=today&metric=overall", http.StatusNotFound},
-		{http.MethodGet, "/key-ranking/local/leaderboards?period=today&metric=overall", http.StatusNotFound},
-		{http.MethodPost, "/key-ranking/join", http.StatusNotFound},
+		{http.MethodGet, "/key-ranking/local/leaderboards?period=today&metric=total_tokens", http.StatusNotFound},
 		{http.MethodPatch, "/key-ranking/local/profiles/42", http.StatusNotFound},
-		{http.MethodGet, "/ranking/leaderboards?period=today&metric=overall", http.StatusForbidden},
-		{http.MethodGet, "/ranking/local/leaderboards?period=today&metric=overall", http.StatusForbidden},
+		{http.MethodGet, "/ranking/local/leaderboards?period=today&metric=total_tokens", http.StatusForbidden},
+		{http.MethodPatch, "/ranking/local/profiles/42", http.StatusForbidden},
 	} {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
-			_, viewerToken, community, local, router := newKeyViewerRankingRouter(t)
+			_, viewerToken, local, router := newKeyViewerRankingRouter(t)
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, viewerRankingRequest(tc.method, "/api/v1"+tc.path, viewerToken))
 			if response.Code != tc.status {
 				t.Fatalf("expected %d, got %d %s", tc.status, response.Code, response.Body.String())
 			}
-			if community.leaderboardCalls != 0 || local.calls != 0 {
-				t.Fatalf("viewer reached a ranking provider: community=%d local=%d", community.leaderboardCalls, local.calls)
+			if local.calls != 0 {
+				t.Fatalf("viewer reached the local ranking provider: calls=%d", local.calls)
 			}
 		})
 	}
 }
 
 func TestKeyViewerSessionOmitsRankingCapability(t *testing.T) {
-	_, viewerToken, _, _, router := newKeyViewerRankingRouter(t)
+	_, viewerToken, _, router := newKeyViewerRankingRouter(t)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, viewerRankingRequest(http.MethodGet, "/api/v1/auth/session", viewerToken))
 	if response.Code != http.StatusOK {

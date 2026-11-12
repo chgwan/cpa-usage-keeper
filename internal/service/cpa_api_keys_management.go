@@ -16,7 +16,6 @@ import (
 	"cpa-usage-keeper/internal/cpa"
 	"cpa-usage-keeper/internal/entities"
 	"cpa-usage-keeper/internal/keypolicy"
-	"cpa-usage-keeper/internal/pricing"
 	"cpa-usage-keeper/internal/repository"
 
 	"github.com/sirupsen/logrus"
@@ -73,7 +72,7 @@ type QuotaAdjustmentTarget struct {
 }
 
 // QuotaAdjustmentResult 是批量设置临时调整的结果：Skipped 的原因固定是 "no_limit"
-//（该 key 在这个窗口本来就没有正常限额，调整无意义）。
+// （该 key 在这个窗口本来就没有正常限额，调整无意义）。
 type QuotaAdjustmentResult struct {
 	Applied []QuotaAdjustmentTarget
 	Skipped []QuotaAdjustmentTarget
@@ -121,21 +120,21 @@ type cpaAPIKeyManagementService struct {
 	wakeRunner func()
 }
 
-// NewCPAAPIKeyManagementService 组装生命周期服务；catalog 允许为 nil（费用恒 0）。
+// NewCPAAPIKeyManagementService 组装生命周期服务；费用来自入库时已计价的 usage 事件。
 // keyMutations 为 nil 时使用独享锁；生产 App 必须与 runner 共享同一实例。
-func NewCPAAPIKeyManagementService(db *gorm.DB, client *cpa.Client, catalog *pricing.Catalog, keyMutations sync.Locker) CPAAPIKeyManagementProvider {
-	return NewCPAAPIKeyManagementServiceWithWaker(db, client, catalog, keyMutations, nil)
+func NewCPAAPIKeyManagementService(db *gorm.DB, client *cpa.Client, keyMutations sync.Locker) CPAAPIKeyManagementProvider {
+	return NewCPAAPIKeyManagementServiceWithWaker(db, client, keyMutations, nil)
 }
 
 // NewCPAAPIKeyManagementServiceWithWaker 额外注入限额 runner 的唤醒函数，生产 App 使用。
-func NewCPAAPIKeyManagementServiceWithWaker(db *gorm.DB, client *cpa.Client, catalog *pricing.Catalog, keyMutations sync.Locker, wakeRunner func()) CPAAPIKeyManagementProvider {
+func NewCPAAPIKeyManagementServiceWithWaker(db *gorm.DB, client *cpa.Client, keyMutations sync.Locker, wakeRunner func()) CPAAPIKeyManagementProvider {
 	if keyMutations == nil {
 		keyMutations = &sync.Mutex{}
 	}
 	return &cpaAPIKeyManagementService{
 		db:           db,
 		client:       client,
-		store:        keypolicy.NewStore(db, catalog),
+		store:        keypolicy.NewStore(db),
 		keyMutations: keyMutations,
 		logger:       logrus.StandardLogger(),
 		now:          time.Now,
@@ -168,6 +167,19 @@ func validateCustomKey(value string) error {
 }
 
 // fetchCPAKeyList 读取 CPA 当前 key 列表，失败统一包装为 ErrCPARequestFailed。
+// findManageableKey 只放行 CPA 原生 key：插件统计身份不在 CPA api-keys 列表里，
+// 无法重新生成、删除、停用或按限额移出，因此一律按无效输入拒绝。
+func (s *cpaAPIKeyManagementService) findManageableKey(id int64) (entities.CPAAPIKey, error) {
+	row, err := repository.FindActiveCPAAPIKeyByID(s.db, id)
+	if err != nil {
+		return row, err
+	}
+	if row.SourceType == entities.CPAAPIKeySourcePlugin {
+		return entities.CPAAPIKey{}, ErrInvalidInput
+	}
+	return row, nil
+}
+
 func (s *cpaAPIKeyManagementService) fetchCPAKeyList(ctx context.Context) ([]string, error) {
 	result, err := s.client.FetchManagementAPIKeys(ctx)
 	if err != nil {
@@ -272,7 +284,7 @@ func (s *cpaAPIKeyManagementService) CreateCPAAPIKey(ctx context.Context, keyAli
 func (s *cpaAPIKeyManagementService) RegenerateCPAAPIKey(ctx context.Context, id int64) (entities.CPAAPIKey, string, error) {
 	s.keyMutations.Lock()
 	defer s.keyMutations.Unlock()
-	row, err := repository.FindActiveCPAAPIKeyByID(s.db, id)
+	row, err := s.findManageableKey(id)
 	if err != nil {
 		return entities.CPAAPIKey{}, "", err
 	}
@@ -304,7 +316,7 @@ func (s *cpaAPIKeyManagementService) RegenerateCPAAPIKey(ctx context.Context, id
 func (s *cpaAPIKeyManagementService) DeleteCPAAPIKey(ctx context.Context, id int64) error {
 	s.keyMutations.Lock()
 	defer s.keyMutations.Unlock()
-	row, err := repository.FindActiveCPAAPIKeyByID(s.db, id)
+	row, err := s.findManageableKey(id)
 	if err != nil {
 		return err
 	}
@@ -339,7 +351,7 @@ func (s *cpaAPIKeyManagementService) DeleteCPAAPIKey(ctx context.Context, id int
 func (s *cpaAPIKeyManagementService) DisableCPAAPIKey(ctx context.Context, id int64) error {
 	s.keyMutations.Lock()
 	defer s.keyMutations.Unlock()
-	row, err := repository.FindActiveCPAAPIKeyByID(s.db, id)
+	row, err := s.findManageableKey(id)
 	if err != nil {
 		return err
 	}
@@ -370,7 +382,7 @@ func (s *cpaAPIKeyManagementService) DisableCPAAPIKey(ctx context.Context, id in
 func (s *cpaAPIKeyManagementService) RestoreCPAAPIKey(ctx context.Context, id int64) error {
 	s.keyMutations.Lock()
 	defer s.keyMutations.Unlock()
-	row, err := repository.FindActiveCPAAPIKeyByID(s.db, id)
+	row, err := s.findManageableKey(id)
 	if err != nil {
 		return err
 	}
@@ -428,7 +440,7 @@ func (s *cpaAPIKeyManagementService) GetCPAAPIKeyPolicy(ctx context.Context, id 
 func (s *cpaAPIKeyManagementService) SaveCPAAPIKeyPolicy(ctx context.Context, id int64, limits keypolicy.Limits) error {
 	s.keyMutations.Lock()
 	defer s.keyMutations.Unlock()
-	if _, err := repository.FindActiveCPAAPIKeyByID(s.db, id); err != nil {
+	if _, err := s.findManageableKey(id); err != nil {
 		return err
 	}
 	if err := limits.Validate(); err != nil {
@@ -616,7 +628,7 @@ func (s *cpaAPIKeyManagementService) ResetCPAAPIKeyQuotas(_ context.Context, ids
 			if id <= 0 {
 				return ErrInvalidID
 			}
-			if _, err := repository.FindActiveCPAAPIKeyByID(s.db, id); err != nil {
+			if _, err := s.findManageableKey(id); err != nil {
 				return err
 			}
 		}
@@ -695,7 +707,7 @@ func (s *cpaAPIKeyManagementService) UpdateCPAAPIKeyPolicies(_ context.Context, 
 		if id <= 0 {
 			return ErrInvalidID
 		}
-		if _, err := repository.FindActiveCPAAPIKeyByID(s.db, id); err != nil {
+		if _, err := s.findManageableKey(id); err != nil {
 			return err
 		}
 		policy, err := s.ensurePolicyRow(id)
@@ -792,7 +804,7 @@ func (s *cpaAPIKeyManagementService) SetCPAAPIKeyQuotaAdjustments(_ context.Cont
 		if id <= 0 {
 			return QuotaAdjustmentResult{}, ErrInvalidID
 		}
-		if _, err := repository.FindActiveCPAAPIKeyByID(s.db, id); err != nil {
+		if _, err := s.findManageableKey(id); err != nil {
 			return QuotaAdjustmentResult{}, err
 		}
 		policy, err := s.ensurePolicyRow(id)
@@ -853,7 +865,7 @@ func (s *cpaAPIKeyManagementService) ClearCPAAPIKeyQuotaAdjustments(_ context.Co
 		if id <= 0 {
 			return ErrInvalidID
 		}
-		if _, err := repository.FindActiveCPAAPIKeyByID(s.db, id); err != nil {
+		if _, err := s.findManageableKey(id); err != nil {
 			return err
 		}
 	}

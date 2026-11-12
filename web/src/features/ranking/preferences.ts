@@ -1,84 +1,40 @@
-import { RANKING_METRICS, RANKING_PERIODS, type RankingMetric, type RankingPeriod } from './types';
+import { RANKING_PERIODS, type RankingPeriod } from './types';
 
-export const RANKING_PREFERENCES_STORAGE_KEY = 'cli-proxy-usage-ranking-preferences-v1';
-export const RANKING_PREFERENCES_VERSION = 1;
-
+// v2 只保存周期：综合分移除后指标改为表头排序，不再持久化。
+export const RANKING_PERIOD_STORAGE_KEY = 'cli-proxy-usage-ranking-period-v2';
 export const DEFAULT_RANKING_PERIOD: RankingPeriod = 'today';
-export const DEFAULT_RANKING_METRIC: RankingMetric = 'overall';
 
-export interface RankingPreferences {
-  period: RankingPeriod;
-  metric: RankingMetric;
-}
-
-interface RankingPreferencesStorage {
+interface RankingPeriodStorage {
   getItem: (key: string) => string | null;
   setItem: (key: string, value: string) => void;
 }
 
-const defaultStorage = (): RankingPreferencesStorage | undefined => (
+const defaultStorage = (): RankingPeriodStorage | undefined => (
   typeof localStorage === 'undefined' ? undefined : localStorage
 );
 
-export const defaultRankingPreferences = (): RankingPreferences => ({
-  period: DEFAULT_RANKING_PERIOD,
-  metric: DEFAULT_RANKING_METRIC,
-});
-
+// 周期会直接拼进榜单请求，读回来必须按白名单校验。
 export const normalizeRankingPeriod = (value: unknown): RankingPeriod | null => (
   typeof value === 'string' && RANKING_PERIODS.includes(value as RankingPeriod)
     ? value as RankingPeriod
     : null
 );
 
-export const normalizeRankingMetric = (value: unknown): RankingMetric | null => (
-  typeof value === 'string' && RANKING_METRICS.includes(value as RankingMetric)
-    ? value as RankingMetric
-    : null
-);
-
-export const normalizeRankingPreferences = (value: unknown): RankingPreferences => {
-  // period/metric 会直接拼进排行榜请求，读回来必须按枚举白名单校验。
-  const stored = typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
-  if (stored.version !== RANKING_PREFERENCES_VERSION) {
-    return defaultRankingPreferences();
-  }
-  return {
-    period: normalizeRankingPeriod(stored.period) ?? DEFAULT_RANKING_PERIOD,
-    metric: normalizeRankingMetric(stored.metric) ?? DEFAULT_RANKING_METRIC,
-  };
-};
-
-export const loadRankingPreferences = (
-  storage: RankingPreferencesStorage | undefined = defaultStorage(),
-): RankingPreferences => {
+export const loadRankingPeriod = (storage: RankingPeriodStorage | undefined = defaultStorage()): RankingPeriod => {
   try {
-    const raw = storage?.getItem(RANKING_PREFERENCES_STORAGE_KEY);
-    if (!raw) {
-      return defaultRankingPreferences();
-    }
-    return normalizeRankingPreferences(JSON.parse(raw));
+    return normalizeRankingPeriod(storage?.getItem(RANKING_PERIOD_STORAGE_KEY)) ?? DEFAULT_RANKING_PERIOD;
   } catch {
-    return defaultRankingPreferences();
+    return DEFAULT_RANKING_PERIOD;
   }
 };
 
-export const persistRankingPreferences = (
-  patch: Partial<RankingPreferences>,
-  storage: RankingPreferencesStorage | undefined = defaultStorage(),
+export const persistRankingPeriod = (
+  period: RankingPeriod,
+  storage: RankingPeriodStorage | undefined = defaultStorage(),
 ): boolean => {
   try {
-    if (!storage) {
-      return false;
-    }
-    // period 与 metric 分开切换，先读回当前值再合并，避免互相覆盖。
-    const next = { ...loadRankingPreferences(storage), ...patch };
-    storage.setItem(RANKING_PREFERENCES_STORAGE_KEY, JSON.stringify({
-      version: RANKING_PREFERENCES_VERSION,
-      ...normalizeRankingPreferences({ version: RANKING_PREFERENCES_VERSION, ...next }),
-    }));
+    if (!storage) return false;
+    storage.setItem(RANKING_PERIOD_STORAGE_KEY, period);
     return true;
   } catch {
     return false;

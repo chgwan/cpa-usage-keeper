@@ -8,8 +8,8 @@ import type { UsageIdentity, UsageQuotaCacheResponse, UsageQuotaCheckResponse, U
 import { useQuotaCache } from '../useQuotaCache'
 import { useQuotaRefreshTasks } from '../useQuotaRefreshTasks'
 import { buildCredentialQuotaStateMap } from '../useCredentialsTabData'
-import { AuthFileQuotaPanel } from '../AuthFileCredentialsSection'
-import { buildAuthFileCredentialRows } from '../credentialViewModels'
+import { CredentialQuotaPanel } from '../CredentialsSection'
+import { buildCredentialRows } from '../credentialViewModels'
 
 vi.mock('@/lib/api', async (original) => ({
   ...await original<typeof import('@/lib/api')>(),
@@ -30,9 +30,9 @@ const failedCache: UsageQuotaCacheResponse = { items: [{ auth_index: id, status:
 const recoveredCache: UsageQuotaCacheResponse = { items: [{ auth_index: id, status: 'completed', quota: newQuota }] }
 
 let latest: { cache: ReturnType<typeof useQuotaCache>; tasks: ReturnType<typeof useQuotaRefreshTasks> }
-function Harness({ authIndexes = [id] }: { authIndexes?: string[] }) {
-  const cache = useQuotaCache({ enabled: true, authIndexes })
-  const tasks = useQuotaRefreshTasks({ enabled: true, currentAuthIndexes: authIndexes, quotaStateByAuthIndex: cache.quotaStateByAuthIndex, applyRefreshUpdates: cache.applyRefreshUpdates })
+function Harness({ authIndexes = [id], enabled = true }: { authIndexes?: string[]; enabled?: boolean }) {
+  const cache = useQuotaCache({ enabled, authIndexes })
+  const tasks = useQuotaRefreshTasks({ enabled, currentAuthIndexes: authIndexes, quotaStateByAuthIndex: cache.quotaStateByAuthIndex, applyRefreshUpdates: cache.applyRefreshUpdates })
   const states = buildCredentialQuotaStateMap(cache.quotaStateByAuthIndex)
   const identities: UsageIdentity[] = authIndexes.map((authIndex) => ({
     id: authIndex, identity: authIndex, name: 'Codex', type: 'codex', provider: 'codex', auth_type: 1,
@@ -41,9 +41,9 @@ function Harness({ authIndexes = [id] }: { authIndexes?: string[] }) {
     output_tokens: 0, reasoning_tokens: 0, cache_read_tokens: 0, total_tokens: 0,
     last_aggregated_usage_event_id: '', created_at: '', updated_at: '',
   }))
-  const rows = buildAuthFileCredentialRows(identities, new Map(Object.entries(cache.quotaResponseByAuthIndex)), states)
+  const rows = buildCredentialRows(identities, new Map(Object.entries(cache.quotaResponseByAuthIndex)), states)
   useEffect(() => { latest = { cache, tasks } }, [cache, tasks])
-  return <>{rows.map((row) => <AuthFileQuotaPanel key={row.identity.id} row={row} quotaUsageMode="remaining" />)}</>
+  return <>{rows.map((row) => <CredentialQuotaPanel key={row.identity.id} row={row} quotaUsageMode="remaining" />)}</>
 }
 
 let root: Root
@@ -159,7 +159,7 @@ it('ignores a cache response begun during a task but returned after its failure'
 it('shows a rejected batch refresh over old quota', async () => {
   await act(async () => root.render(<Harness />))
   vi.mocked(refreshUsageQuotas).mockResolvedValue({ tasks: [], rejected: [{ authIndex: id, error: 'not_found' }], accepted: 0, skipped: 1, limit: 1 })
-  await act(async () => latest.tasks.refreshQuotaForCurrentAuthFilePage())
+  await act(async () => latest.tasks.refreshQuotaForCurrentCredentialPage())
   expect(latest.cache.quotaStateByAuthIndex[id].refreshStatus).toBe('failed')
   expect(latest.cache.quotaResponseByAuthIndex[id]).toBeUndefined()
   expect(container.textContent).not.toContain('75%')
@@ -338,4 +338,35 @@ it('ignores a late cache response from a departed page instead of restoring its 
   await act(async () => root.render(<Harness />))
   expect(latest.cache.quotaStateByAuthIndex[id]).toBeUndefined()
   expect(container.textContent).not.toContain('Your session has ended')
+})
+
+
+it('retains a manual error while the credentials page is hidden and cache reread fails on return', async () => {
+  await act(async () => root.render(<Harness />))
+  await act(async () => latest.tasks.refreshQuotaForAuthIndex(id))
+  expectFailure()
+  await act(async () => root.render(<Harness enabled={false} />))
+  expectFailure()
+  expect(vi.getTimerCount()).toBe(0)
+  vi.mocked(fetchUsageQuotaCache).mockRejectedValue(new Error('Cache read failed'))
+  await act(async () => root.render(<Harness />))
+  expectFailure()
+})
+
+it('pauses a manual task while hidden and resumes polling on return without resubmitting', async () => {
+  vi.mocked(fetchUsageQuotaRefreshTask).mockResolvedValue({ authIndex: id, status: 'running' })
+  await act(async () => root.render(<Harness />))
+  await act(async () => latest.tasks.refreshQuotaForAuthIndex(id))
+  await act(async () => root.render(<Harness enabled={false} />))
+  expect(latest.cache.quotaStateByAuthIndex[id].refreshStatus).toBe('running')
+  expect(vi.getTimerCount()).toBe(0)
+  const reads = vi.mocked(fetchUsageQuotaRefreshTask).mock.calls.length
+  await act(async () => vi.advanceTimersByTimeAsync(60_000))
+  expect(fetchUsageQuotaRefreshTask).toHaveBeenCalledTimes(reads)
+  vi.mocked(fetchUsageQuotaCache).mockResolvedValue({ items: [] })
+  vi.mocked(fetchUsageQuotaRefreshTask).mockResolvedValue({ authIndex: id, status: 'completed', quota: newQuota })
+  await act(async () => root.render(<Harness />))
+  expect(refreshUsageQuotas).toHaveBeenCalledOnce()
+  expect(container.textContent).toContain('20%')
+  expect(latest.cache.quotaStateByAuthIndex[id].refreshStatus).toBe('completed')
 })

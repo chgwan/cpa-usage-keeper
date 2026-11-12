@@ -54,9 +54,9 @@ func TestUsageAnalysisReturnsAggregatedRows(t *testing.T) {
 			CostUSD:       1.23,
 			CostAvailable: true,
 		}},
-		AuthFilesComposition: []servicedto.AnalysisCompositionItem{{
-			Key:           "auth-file-1",
-			Label:         "Auth File One",
+		CredentialsComposition: []servicedto.AnalysisCompositionItem{{
+			Key:           "credential-1",
+			Label:         "Credential One",
 			TotalTokens:   30,
 			Requests:      1,
 			CostUSD:       0.8,
@@ -83,13 +83,9 @@ func TestUsageAnalysisReturnsAggregatedRows(t *testing.T) {
 			CostUSD:             1.23,
 			CostAvailable:       true,
 		}},
-		CostBreakdown: servicedto.AnalysisCostBreakdown{
-			UncachedInputCostUSD: 0.3,
-			CacheReadCostUSD:     0.03,
-			CacheWriteCostUSD:    0.10,
-			OutputCostUSD:        0.8,
-			TotalCostUSD:         1.23,
-			CostAvailable:        true,
+		CostSummary: servicedto.AnalysisCostSummary{
+			TotalCostUSD:  1.23,
+			CostAvailable: true,
 		},
 		ModelEfficiency: []servicedto.AnalysisModelEfficiencyItem{{
 			Model:                  "claude-sonnet",
@@ -120,14 +116,14 @@ func TestUsageAnalysisReturnsAggregatedRows(t *testing.T) {
 	if !strings.Contains(body, `"cost_usd":1.23`) || !strings.Contains(body, `"cost_available":true`) {
 		t.Fatalf("expected token/composition cost fields in response body: %s", body)
 	}
-	if !strings.Contains(body, `"api_key_composition":[`) || !strings.Contains(body, `"model_composition":[`) || !strings.Contains(body, `"auth_files_composition":[`) || !strings.Contains(body, `"ai_provider_composition":[`) {
+	if !strings.Contains(body, `"api_key_composition":[`) || !strings.Contains(body, `"model_composition":[`) || !strings.Contains(body, `"credentials_composition":[`) || !strings.Contains(body, `"ai_provider_composition":[`) {
 		t.Fatalf("expected composition payloads in response body: %s", body)
 	}
 	if !strings.Contains(body, `"key":"sk-*********123456"`) || !strings.Contains(body, `"label":"sk-*********123456"`) {
 		t.Fatalf("expected redacted api key composition in response body: %s", body)
 	}
-	if !strings.Contains(body, `"key":"aut*********file-1"`) || !strings.Contains(body, `"label":"Auth File One"`) || !strings.Contains(body, `"percent":100`) {
-		t.Fatalf("expected auth file composition in response body: %s", body)
+	if !strings.Contains(body, `"key":"cre*********tial-1"`) || !strings.Contains(body, `"label":"Credential One"`) || !strings.Contains(body, `"percent":100`) {
+		t.Fatalf("expected credential composition in response body: %s", body)
 	}
 	if !strings.Contains(body, `"key":"pro*********ider-1"`) || !strings.Contains(body, `"label":"Provider One"`) {
 		t.Fatalf("expected ai provider composition in response body: %s", body)
@@ -135,8 +131,27 @@ func TestUsageAnalysisReturnsAggregatedRows(t *testing.T) {
 	if !strings.Contains(body, `"model":"claude-sonnet"`) || !strings.Contains(body, `"intensity":1`) || !strings.Contains(body, `"input_tokens":30`) || !strings.Contains(body, `"reasoning_tokens":2`) {
 		t.Fatalf("expected heatmap cell in response body: %s", body)
 	}
-	if !strings.Contains(body, `"cost_breakdown":`) || !strings.Contains(body, `"uncached_input_cost_usd":0.3`) || !strings.Contains(body, `"cache_read_cost_usd":0.03`) || !strings.Contains(body, `"cache_write_cost_usd":0.1`) || !strings.Contains(body, `"total_cost_usd":1.23`) {
-		t.Fatalf("expected cost breakdown in response body: %s", body)
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode Analysis response: %v", err)
+	}
+	var costSummary map[string]json.RawMessage
+	if err := json.Unmarshal(payload["cost_summary"], &costSummary); err != nil {
+		t.Fatalf("decode cost summary: %v", err)
+	}
+	var totalCost float64
+	if err := json.Unmarshal(costSummary["total_cost_usd"], &totalCost); err != nil {
+		t.Fatalf("decode total cost: %v", err)
+	}
+	var costAvailable bool
+	if err := json.Unmarshal(costSummary["cost_available"], &costAvailable); err != nil {
+		t.Fatalf("decode cost availability: %v", err)
+	}
+	if len(costSummary) != 2 || !overviewAPICostClose(totalCost, 1.23) || !costAvailable {
+		t.Fatalf("unexpected cost summary: %s", payload["cost_summary"])
+	}
+	if _, exists := payload["cost_breakdown"]; exists {
+		t.Fatalf("legacy cost breakdown leaked into Analysis response: %s", resp.Body.String())
 	}
 	if !strings.Contains(body, `"model_efficiency":`) || !strings.Contains(body, `"cost_per_request_usd":0.615`) || !strings.Contains(body, `"output_tokens_per_request":5.5`) || !strings.Contains(body, `"cache_read_rate":0.03333333333333333`) {
 		t.Fatalf("expected model efficiency in response body: %s", body)

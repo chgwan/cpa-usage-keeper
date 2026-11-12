@@ -13,7 +13,6 @@ import (
 	"cpa-usage-keeper/internal/cpa"
 	"cpa-usage-keeper/internal/entities"
 	"cpa-usage-keeper/internal/keypolicy"
-	"cpa-usage-keeper/internal/pricing"
 	"cpa-usage-keeper/internal/repository"
 
 	"github.com/sirupsen/logrus"
@@ -36,9 +35,19 @@ func (f *fakeCPAAPIKeys) handler(t *testing.T) http.HandlerFunc {
 	t.Helper()
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		// 读取走 v8 access/api-keys 的直接数组，写入仍走 v0 api-keys 的单键语义。
+		wantPath := "/v0/management/api-keys"
+		if r.Method == http.MethodGet {
+			wantPath = "/v8/management/config/access/api-keys"
+		}
+		if r.URL.Path != wantPath {
+			t.Errorf("unexpected CPA path for %s: %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		switch r.Method {
 		case http.MethodGet:
-			serve := func() { _ = json.NewEncoder(w).Encode(map[string]any{"api-keys": f.keys}) }
+			serve := func() { _ = json.NewEncoder(w).Encode(append([]string{}, f.keys...)) }
 			if f.aroundGet != nil {
 				f.aroundGet(serve)
 				return
@@ -101,16 +110,7 @@ func fmt64(value float64) string {
 	return strconv.FormatFloat(value, 'f', -1, 64)
 }
 
-// newRunnerCatalog 给 runner 测试造一个「1 token = 1 美元」的价格目录：
-// 费用是唯一限额维度后，runner 必须持有目录才能算出非零费用。
-func newRunnerCatalog(t *testing.T) *pricing.Catalog {
-	t.Helper()
-	return pricing.NewCatalog(newSnapshotForTest(t, map[string]entities.ModelPriceSetting{
-		"m": {Model: "m", PromptPricePer1M: 1_000_000},
-	}))
-}
-
-// seedLimitedKey 建一个带日费用上限的 key，并灌入一条当日事件（1 token = 1 美元）。
+// seedLimitedKey 建一个带日费用上限的 key，并灌入一条当日事件（入库费用 1 token = 1 美元）。
 func seedLimitedKey(t *testing.T, db *gorm.DB, key string, limitValue float64, tokens int64) int64 {
 	t.Helper()
 	row := entities.CPAAPIKey{APIKey: key, DisplayKey: key}
@@ -126,7 +126,7 @@ func seedLimitedKey(t *testing.T, db *gorm.DB, key string, limitValue float64, t
 	// 事件固定在当日正午：临近零点运行测试时 time.Now() 可能先一步落到昨天的日窗口。
 	now := time.Now()
 	noon := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, now.Location())
-	event := entities.UsageEvent{APIGroupKey: key, Model: "m", InputTokens: tokens, TotalTokens: tokens, Timestamp: noon}
+	event := entities.UsageEvent{APIGroupKey: key, Model: "m", InputTokens: tokens, TotalTokens: tokens, CostUSD: storedCost(float64(tokens)), Timestamp: noon}
 	if err := db.Create(&event).Error; err != nil {
 		t.Fatalf("seed event: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestRunnerDisablesKeyOnBreachAndRestoresAfterWindowFlip(t *testing.T) {
 	if err := db.Create(&other).Error; err != nil {
 		t.Fatalf("seed other key: %v", err)
 	}
-	runner := keypolicy.NewRunner(db, client, newRunnerCatalog(t), time.Minute, logrus.New(), nil)
+	runner := keypolicy.NewRunner(db, client, time.Minute, logrus.New(), nil)
 	if err := runner.EvaluateOnce(context.Background()); err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestRunnerDisablesKeyOnBreachAndRestoresAfterWindowFlip(t *testing.T) {
 	}
 	yesterday := time.Now().AddDate(0, 0, -1)
 	aged := entities.UsageEvent{
-		APIGroupKey: "sk-limit", Model: "m", InputTokens: 150, TotalTokens: 150,
+		APIGroupKey: "sk-limit", Model: "m", InputTokens: 150, TotalTokens: 150, CostUSD: storedCost(150),
 		Timestamp: time.Date(yesterday.Year(), yesterday.Month(), yesterday.Day(), 12, 0, 0, 0, yesterday.Location()),
 	}
 	if err := db.Create(&aged).Error; err != nil {
@@ -190,7 +190,7 @@ func TestRunnerNeverDisablesLastKey(t *testing.T) {
 	server := startFakeCPA(t, fake)
 	client := newCPAClient(t, server)
 	seedLimitedKey(t, db, "sk-only", 100, 500)
-	runner := keypolicy.NewRunner(db, client, newRunnerCatalog(t), time.Minute, logrus.New(), nil)
+	runner := keypolicy.NewRunner(db, client, time.Minute, logrus.New(), nil)
 	if err := runner.EvaluateOnce(context.Background()); err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestRunnerKeepsLastKeyWhenTwoKeysBreachInSameRound(t *testing.T) {
 	client := newCPAClient(t, server)
 	idA := seedLimitedKey(t, db, "sk-round-a", 100, 150)
 	idB := seedLimitedKey(t, db, "sk-round-b", 100, 150)
-	runner := keypolicy.NewRunner(db, client, newRunnerCatalog(t), time.Minute, logrus.New(), nil)
+	runner := keypolicy.NewRunner(db, client, time.Minute, logrus.New(), nil)
 	if err := runner.EvaluateOnce(context.Background()); err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -252,7 +252,7 @@ func TestRunnerReDisableSkipsWhenKeyIsLastRemaining(t *testing.T) {
 		string(keypolicy.StateDisabledByQuota), keypolicy.WindowKey(keypolicy.DailyWindow(time.Now())), time.Now()); err != nil {
 		t.Fatalf("seed disabled state: %v", err)
 	}
-	runner := keypolicy.NewRunner(db, client, newRunnerCatalog(t), time.Minute, logrus.New(), nil)
+	runner := keypolicy.NewRunner(db, client, time.Minute, logrus.New(), nil)
 	if err := runner.EvaluateOnce(context.Background()); err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestRunnerKeepsManualDisableAcrossEvaluations(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("set manual state: %v", err)
 	}
-	runner := keypolicy.NewRunner(db, client, newRunnerCatalog(t), time.Minute, logrus.New(), nil)
+	runner := keypolicy.NewRunner(db, client, time.Minute, logrus.New(), nil)
 	if err := runner.EvaluateOnce(context.Background()); err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestRunnerWritesDisabledStateBeforeCPADeleteAndRetriesAfterFailure(t *testi
 		statesAtDelete = append(statesAtDelete, policy.EnforcementState)
 	}
 	fake.deleteFail = true
-	runner := keypolicy.NewRunner(db, client, newRunnerCatalog(t), time.Minute, logrus.New(), nil)
+	runner := keypolicy.NewRunner(db, client, time.Minute, logrus.New(), nil)
 	if err := runner.EvaluateOnce(context.Background()); err != nil {
 		t.Fatalf("evaluate with failing delete: %v", err)
 	}
@@ -364,7 +364,7 @@ func TestRunnerReDisablesKeyStillPresentInCPA(t *testing.T) {
 		string(keypolicy.StateDisabledByQuota), keypolicy.WindowKey(keypolicy.DailyWindow(time.Now())), time.Now()); err != nil {
 		t.Fatalf("seed disabled state: %v", err)
 	}
-	runner := keypolicy.NewRunner(db, client, newRunnerCatalog(t), time.Minute, logrus.New(), nil)
+	runner := keypolicy.NewRunner(db, client, time.Minute, logrus.New(), nil)
 	if err := runner.EvaluateOnce(context.Background()); err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -395,7 +395,7 @@ func TestRunnerRestoreWaitsForSharedKeyMutationLock(t *testing.T) {
 		t.Fatalf("seed disabled state: %v", err)
 	}
 	shared := &sync.Mutex{}
-	runner := keypolicy.NewRunner(db, client, newRunnerCatalog(t), time.Minute, logrus.New(), shared)
+	runner := keypolicy.NewRunner(db, client, time.Minute, logrus.New(), shared)
 
 	// 模拟管理员 Create/Restore 正在进行（整个 GET→PUT 序列持锁）。
 	shared.Lock()
@@ -438,11 +438,11 @@ func TestRunnerRecordsWeeklyWindowKeyOnWeeklyBreach(t *testing.T) {
 	}
 	now := time.Now()
 	noon := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, now.Location())
-	event := entities.UsageEvent{APIGroupKey: "sk-weekly", Model: "m", InputTokens: 150, TotalTokens: 150, Timestamp: noon}
+	event := entities.UsageEvent{APIGroupKey: "sk-weekly", Model: "m", InputTokens: 150, TotalTokens: 150, CostUSD: storedCost(150), Timestamp: noon}
 	if err := db.Create(&event).Error; err != nil {
 		t.Fatalf("seed event: %v", err)
 	}
-	runner := keypolicy.NewRunner(db, client, newRunnerCatalog(t), time.Minute, logrus.New(), nil)
+	runner := keypolicy.NewRunner(db, client, time.Minute, logrus.New(), nil)
 	if err := runner.EvaluateOnce(context.Background()); err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -468,7 +468,7 @@ func TestRunnerEvaluateOnceIsSingleFlight(t *testing.T) {
 	server := startFakeCPA(t, fake)
 	client := newCPAClient(t, server)
 	seedLimitedKey(t, db, "sk-sf", 100, 10)
-	runner := keypolicy.NewRunner(db, client, newRunnerCatalog(t), time.Minute, logrus.New(), nil)
+	runner := keypolicy.NewRunner(db, client, time.Minute, logrus.New(), nil)
 
 	gate := make(chan struct{})
 	var mu sync.Mutex
@@ -517,7 +517,7 @@ func TestRunnerRestoresQuotaDisabledKeyAfterQuotaReset(t *testing.T) {
 	if err := db.Create(&other).Error; err != nil {
 		t.Fatalf("seed other key: %v", err)
 	}
-	runner := keypolicy.NewRunner(db, client, newRunnerCatalog(t), time.Minute, logrus.New(), nil)
+	runner := keypolicy.NewRunner(db, client, time.Minute, logrus.New(), nil)
 	if err := runner.EvaluateOnce(context.Background()); err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -565,7 +565,7 @@ func seedWeeklyAdjustableKey(t *testing.T, db *gorm.DB, apiKey string, limitValu
 	}
 	now := time.Now()
 	noon := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, now.Location())
-	event := entities.UsageEvent{APIGroupKey: apiKey, Model: "m", InputTokens: tokens, TotalTokens: tokens, Timestamp: noon}
+	event := entities.UsageEvent{APIGroupKey: apiKey, Model: "m", InputTokens: tokens, TotalTokens: tokens, CostUSD: storedCost(float64(tokens)), Timestamp: noon}
 	if err := db.Create(&event).Error; err != nil {
 		t.Fatalf("seed event: %v", err)
 	}
@@ -585,7 +585,7 @@ func TestRunnerAppliesActiveAdjustmentAndRestoresAfterDelete(t *testing.T) {
 	if err := db.Create(&other).Error; err != nil {
 		t.Fatalf("seed peer key: %v", err)
 	}
-	runner := keypolicy.NewRunner(db, client, newRunnerCatalog(t), time.Minute, logrus.New(), nil)
+	runner := keypolicy.NewRunner(db, client, time.Minute, logrus.New(), nil)
 	if err := runner.EvaluateOnce(context.Background()); err != nil {
 		t.Fatalf("evaluate without adjustment: %v", err)
 	}
@@ -646,7 +646,7 @@ func TestRunnerIgnoresAdjustmentWithStaleWindowKey(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("seed stale adjustment: %v", err)
 	}
-	runner := keypolicy.NewRunner(db, client, newRunnerCatalog(t), time.Minute, logrus.New(), nil)
+	runner := keypolicy.NewRunner(db, client, time.Minute, logrus.New(), nil)
 	if err := runner.EvaluateOnce(context.Background()); err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -673,7 +673,7 @@ func TestRunnerLastKeyGuardAppliesWithActiveAdjustment(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("seed adjustment: %v", err)
 	}
-	runner := keypolicy.NewRunner(db, client, newRunnerCatalog(t), time.Minute, logrus.New(), nil)
+	runner := keypolicy.NewRunner(db, client, time.Minute, logrus.New(), nil)
 	if err := runner.EvaluateOnce(context.Background()); err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -707,7 +707,7 @@ func TestRunnerRestoresAdjustmentDisabledKeyAfterWeekRolloverWithWindowResetReas
 	}
 
 	clock := time.Now()
-	runner := keypolicy.NewRunnerWithClock(db, client, newRunnerCatalog(t), time.Minute, logrus.New(), nil, func() time.Time { return clock })
+	runner := keypolicy.NewRunnerWithClock(db, client, time.Minute, logrus.New(), nil, func() time.Time { return clock })
 
 	// 当周灌入 -50 调整：周限额 100 叠加调整收紧到 50，用量 60 立即超限触发禁用。
 	weekKey := keypolicy.WindowKey(keypolicy.WeeklyWindow(clock))

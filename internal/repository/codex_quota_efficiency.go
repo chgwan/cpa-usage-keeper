@@ -3,13 +3,12 @@ package repository
 import (
 	"context"
 	"fmt"
-	"slices"
+	"math"
 	"sort"
 	"strings"
 	"time"
 
 	"cpa-usage-keeper/internal/entities"
-	"cpa-usage-keeper/internal/pricing"
 	repositorydto "cpa-usage-keeper/internal/repository/dto"
 	"cpa-usage-keeper/internal/timeutil"
 
@@ -34,16 +33,18 @@ type codexQuotaEfficiencyCyclePeriod struct {
 	current bool
 }
 
-// codexQuotaEfficiencyUsageEventRow 只流式读取动态聚合必需的 UsageEvent 字段。
+// codexQuotaEfficiencySegmentRow 仅保留百分比摘要和下降区间所需的持久字段。
+type codexQuotaEfficiencySegmentRow struct {
+	ID               int64
+	CycleID          int64
+	RemainingPercent int
+	FirstObservedAt  codexQuotaEfficiencyObservedTime
+	LastObservedAt   codexQuotaEfficiencyObservedTime
+	ObservationCount int64
+}
+
+// codexQuotaEfficiencyUsageEventRow 只保存周期和区间累计所需的已存请求事实。
 type codexQuotaEfficiencyUsageEventRow struct {
-	APIGroupKey         string
-	Model               string
-	ModelAlias          string
-	ServiceTier         string
-	ResponseServiceTier string
-	ReasoningEffort     string
-	Endpoint            string
-	ExecutorType        string
 	Timestamp           time.Time
 	Failed              bool
 	InputTokens         int64
@@ -52,37 +53,12 @@ type codexQuotaEfficiencyUsageEventRow struct {
 	CacheReadTokens     int64
 	CacheCreationTokens int64
 	TotalTokens         int64
+	CostUSD             float64
+	CostAvailable       bool
 }
 
-// codexQuotaEfficiencyPricingKey 使每个周期或变化区间只对唯一 pricing 维度组合计价一次。
-type codexQuotaEfficiencyPricingKey struct {
-	APIGroupKey         string
-	Model               string
-	ModelAlias          string
-	ServiceTier         string
-	ResponseServiceTier string
-	ReasoningEffort     string
-	Endpoint            string
-	ExecutorType        string
-}
-
-// codexQuotaEfficiencyPricingTokens 保留动态计价必需 Token，TotalTokens 仅用于识别旧数据缺价。
-type codexQuotaEfficiencyPricingTokens struct {
-	InputTokens         int64
-	OutputTokens        int64
-	CacheReadTokens     int64
-	CacheCreationTokens int64
-	TotalTokens         int64
-}
-
-// codexQuotaEfficiencyUsageAccumulator 把逐事件事实与少量 pricing 分组聚合到同一个目标。
-type codexQuotaEfficiencyUsageAccumulator struct {
-	target        *repositorydto.CodexQuotaEfficiencyUsage
-	pricingTokens map[codexQuotaEfficiencyPricingKey]codexQuotaEfficiencyPricingTokens
-}
-
-// BuildCodexQuotaEfficiencyHistory 动态连接额度历史与 UsageEvent；它只读数据，绝不把 Token 或 Cost 写入历史表。
-func BuildCodexQuotaEfficiencyHistory(ctx context.Context, db *gorm.DB, query repositorydto.CodexQuotaEfficiencyQuery, costResolver pricing.Resolver) (repositorydto.CodexQuotaEfficiencyHistory, error) {
+// BuildCodexQuotaEfficiencyHistory 将额度历史与已存 UsageEvent 费用按真实周期和下降区间关联，不改写历史表。
+func BuildCodexQuotaEfficiencyHistory(ctx context.Context, db *gorm.DB, query repositorydto.CodexQuotaEfficiencyQuery) (repositorydto.CodexQuotaEfficiencyHistory, error) {
 	// 先构造空响应，使“账号暂时没有历史”仍返回稳定的时间口径。
 	result := repositorydto.CodexQuotaEfficiencyHistory{GeneratedAt: query.Now, RangeStart: query.RangeStart}
 	if db == nil {
@@ -136,14 +112,12 @@ func BuildCodexQuotaEfficiencyHistory(ctx context.Context, db *gorm.DB, query re
 
 	// 角色是稳定选择身份；同一个 Primary/Secondary 的 5h、Weekly、Monthly 周期共同进入完整历史。
 	selectedCycles := make([]entities.QuotaCycle, 0, len(cycles))
-	cycleIDs := make([]int64, 0, len(cycles))
 	for _, cycle := range cycles {
 		windowRole, ok := repositorydto.QuotaWindowRole(query.Provider, cycle.QuotaKey)
 		if !ok || windowRole != selected.WindowRole {
 			continue
 		}
 		selectedCycles = append(selectedCycles, cycle)
-		cycleIDs = append(cycleIDs, cycle.ID)
 	}
 	if len(selectedCycles) == 0 {
 		return result, nil
@@ -154,36 +128,54 @@ func BuildCodexQuotaEfficiencyHistory(ctx context.Context, db *gorm.DB, query re
 	}
 	periods := buildCodexQuotaEfficiencyCyclePeriods(selectedCycles, currentCycleID, query.Now)
 
-	// 所有子段用一次 IN 查询读出；每周期最多 101 个整数桶，不允许对父周期逐条 Preload。
-	var segments []entities.QuotaPercentSegment
+	// 完整父周期先决定窗口及相邻切分，随后只为最终可返回的周期读取子段。
+	returnedCycles := selectedCycles[:0]
+	cycleIDs := make([]int64, 0, len(selectedCycles))
+	for _, cycle := range selectedCycles {
+		period := periods[cycle.ID]
+		if !period.start.Before(period.end) || period.end.Before(query.RangeStart) {
+			continue
+		}
+		if !period.current && period.end.After(query.Now) {
+			continue
+		}
+		returnedCycles = append(returnedCycles, cycle)
+		cycleIDs = append(cycleIDs, cycle.ID)
+	}
+	if len(returnedCycles) == 0 {
+		// 有父历史但无有效周期时，原响应保留非 nil 的空周期列表。
+		result.Cycles = make([]repositorydto.CodexQuotaEfficiencyCycle, 0)
+		return result, nil
+	}
+
+	// 所有子段用一次轻量 IN 查询读出，不允许对父周期逐条 Preload。
+	// 一元 + 只绕过 DATETIME 声明解析，保留原值类型；排序限定原列，避免 alias 触发额外排序。
+	var segments []codexQuotaEfficiencySegmentRow
 	if err := db.WithContext(ctx).Clauses(dbresolver.Read).
+		Table("quota_percent_segments").
+		Select("id, cycle_id, remaining_percent, +first_observed_at AS first_observed_at, +last_observed_at AS last_observed_at, observation_count").
 		Where("cycle_id IN ?", cycleIDs).
-		Order("cycle_id ASC, first_observed_at ASC, id ASC").
+		Order("quota_percent_segments.cycle_id ASC, quota_percent_segments.first_observed_at ASC, quota_percent_segments.id ASC").
 		Find(&segments).Error; err != nil {
 		return result, fmt.Errorf("list codex quota efficiency segments: %w", err)
 	}
-	segmentsByCycle := make(map[int64][]entities.QuotaPercentSegment, len(selectedCycles))
-	for _, segment := range segments {
-		segmentsByCycle[segment.CycleID] = append(segmentsByCycle[segment.CycleID], segment)
+	segmentsByCycle := make(map[int64][]codexQuotaEfficiencySegmentRow, len(returnedCycles))
+	for start := 0; start < len(segments); {
+		end := start + 1
+		for end < len(segments) && segments[end].CycleID == segments[start].CycleID {
+			end++
+		}
+		// SQL 已按周期及观察顺序排列；只读视图共享底层数组并限制容量，避免复制或跨组追加。
+		segmentsByCycle[segments[start].CycleID] = segments[start:end:end]
+		start = end
 	}
 
 	// 先建立全部指针对象再聚合；统一列表状态完全由本次固定的 now 判定。
-	works := make([]codexQuotaEfficiencyCycleWork, 0, len(selectedCycles))
-	records := make([]*repositorydto.CodexQuotaEfficiencyCycle, 0, len(selectedCycles))
-	for _, cycle := range selectedCycles {
+	works := make([]codexQuotaEfficiencyCycleWork, 0, len(returnedCycles))
+	records := make([]*repositorydto.CodexQuotaEfficiencyCycle, 0, len(returnedCycles))
+	for _, cycle := range returnedCycles {
 		period := periods[cycle.ID]
-		// 新周期的理论起点可能完全覆盖较短的旧周期；此时旧周期没有可展示、可归属的有效区间。
-		if !period.start.Before(period.end) {
-			continue
-		}
-		if period.end.Before(query.RangeStart) {
-			continue
-		}
 		active := period.current
-		ended := !period.end.After(query.Now)
-		if !active && !ended {
-			continue
-		}
 		status := "completed"
 		if active {
 			status = "current"
@@ -213,11 +205,11 @@ func BuildCodexQuotaEfficiencyHistory(ctx context.Context, db *gorm.DB, query re
 		works = append(works, codexQuotaEfficiencyCycleWork{record: record, queryStart: period.start, queryEnd: queryEnd})
 	}
 
-	// 单次有序流只从 SQLite 逐行读取必需字段；Go 线性归类后仅保留少量 pricing 分组。
-	if err := streamCodexQuotaEfficiencyUsage(ctx, db, query.Provider, query.AuthIndex, works, costResolver, false); err != nil {
+	// 按时区段流式读取已存费用，首个额度观察前的请求仍计入周期。
+	if err := streamCodexQuotaEfficiencyUsage(ctx, db, query.Provider, query.AuthIndex, works); err != nil {
 		return result, err
 	}
-	// 流式聚合结束后再计算每百分点值，保证 CostAvailable 已吸收所有 pricing 分组。
+	// 流式聚合结束后再计算每百分点值，保证可用性已吸收区间内所有事件。
 	for _, work := range works {
 		finalizeCodexQuotaEfficiencyTransitions(work.record)
 	}
@@ -261,7 +253,7 @@ func codexQuotaEfficiencyWindowKind(windowSeconds int64) *string {
 	return &kind
 }
 
-func quotaCyclePercentSummary(segments []entities.QuotaPercentSegment) (*int, *int, int64) {
+func quotaCyclePercentSummary(segments []codexQuotaEfficiencySegmentRow) (*int, *int, int64) {
 	if len(segments) == 0 {
 		return nil, nil, 0
 	}
@@ -383,7 +375,7 @@ func buildCodexQuotaEfficiencyCyclePeriods(cycles []entities.QuotaCycle, current
 	return periods
 }
 
-func buildCodexQuotaEfficiencyTransitions(segments []entities.QuotaPercentSegment) []repositorydto.CodexQuotaEfficiencyTransition {
+func buildCodexQuotaEfficiencyTransitions(segments []codexQuotaEfficiencySegmentRow) []repositorydto.CodexQuotaEfficiencyTransition {
 	transitions := make([]repositorydto.CodexQuotaEfficiencyTransition, 0, max(0, len(segments)-1))
 	for index := 1; index < len(segments); index++ {
 		previous := segments[index-1]
@@ -399,8 +391,8 @@ func buildCodexQuotaEfficiencyTransitions(segments []entities.QuotaPercentSegmen
 			PercentagePoints:     points,
 			IsDirect:             points == 1,
 			// 前一百分比首次出现后的请求共同消耗这一档额度；重复观察不能把区间起点向后推。
-			IntervalStartedAt:     previous.FirstObservedAt,
-			IntervalEndedAt:       current.FirstObservedAt,
+			IntervalStartedAt:     previous.FirstObservedAt.Time,
+			IntervalEndedAt:       current.FirstObservedAt.Time,
 			Usage:                 repositorydto.CodexQuotaEfficiencyUsage{CostAvailable: true},
 			CostPerPointAvailable: true,
 		}
@@ -409,11 +401,12 @@ func buildCodexQuotaEfficiencyTransitions(segments []entities.QuotaPercentSegmen
 	return transitions
 }
 
-func streamCodexQuotaEfficiencyUsage(ctx context.Context, db *gorm.DB, provider string, authIndex string, works []codexQuotaEfficiencyCycleWork, costResolver pricing.Resolver, keepAllPricingFields bool) error {
+// streamCodexQuotaEfficiencyUsage 按时间索引流式归属周期与区间，费用仅取事件持久列。
+func streamCodexQuotaEfficiencyUsage(ctx context.Context, db *gorm.DB, provider string, authIndex string, works []codexQuotaEfficiencyCycleWork) error {
 	if len(works) == 0 {
 		return nil
 	}
-	// 有序事件流与周期时间线同向前进，每条事件无需遍历全部周期或变化区间。
+	// 周期边界保持真实时间有序，正常事件沿时间线前进，文本倒序事件可二分重新定位。
 	sort.Slice(works, func(left, right int) bool {
 		if !works[left].queryStart.Equal(works[right].queryStart) {
 			return works[left].queryStart.Before(works[right].queryStart)
@@ -434,183 +427,37 @@ func streamCodexQuotaEfficiencyUsage(ctx context.Context, db *gorm.DB, provider 
 		}
 	}
 
-	// 同一 auth_index 热更新后可能换 provider，事件统计与额度周期必须同源。
-	// SQLite 只做索引范围扫描和时间排序；Rows 迭代器避免把整个月的事件装入 Go 切片。
-	rows, err := db.WithContext(ctx).Clauses(dbresolver.Read).Raw(`SELECT
-		`+codexQuotaEfficiencyPricingProjection(costResolver.ActiveFields(), keepAllPricingFields)+`,
-		timestamp, COALESCE(failed, 0), COALESCE(input_tokens, 0), COALESCE(output_tokens, 0), COALESCE(reasoning_tokens, 0),
-		cache_read_tokens, cache_creation_tokens, COALESCE(total_tokens, 0)
-	FROM usage_events INDEXED BY idx_usage_events_auth_index_timestamp_id
-	WHERE auth_type = ? AND auth_index = ? AND provider = ? AND timestamp >= ? AND timestamp < ?
-	ORDER BY timestamp ASC, id ASC`,
-		"oauth", authIndex, provider, timeutil.FormatStorageTime(globalStart), timeutil.FormatStorageTime(globalEnd)).Rows()
-	if err != nil {
-		return fmt.Errorf("stream codex quota efficiency usage: %w", err)
-	}
-	defer rows.Close()
-
-	cycleAccumulators := make([]codexQuotaEfficiencyUsageAccumulator, len(works))
-	transitionAccumulators := make([][]codexQuotaEfficiencyUsageAccumulator, len(works))
-	for workIndex := range works {
-		cycleAccumulators[workIndex] = newCodexQuotaEfficiencyUsageAccumulator(&works[workIndex].record.Usage)
-		transitionAccumulators[workIndex] = make([]codexQuotaEfficiencyUsageAccumulator, len(works[workIndex].record.Transitions))
-		for transitionIndex := range works[workIndex].record.Transitions {
-			transitionAccumulators[workIndex][transitionIndex] = newCodexQuotaEfficiencyUsageAccumulator(&works[workIndex].record.Transitions[transitionIndex].Usage)
-		}
-	}
-
-	workIndex := 0
-	transitionIndex := 0
-	// 投影列固定，直接读取并复用行对象，避免为每条请求重复执行 GORM 结构体映射。
-	var event codexQuotaEfficiencyUsageEventRow
-	for rows.Next() {
-		if err := rows.Scan(
-			&event.APIGroupKey, &event.Model, &event.ModelAlias,
-			&event.ServiceTier, &event.ResponseServiceTier, &event.ReasoningEffort, &event.Endpoint, &event.ExecutorType,
-			&event.Timestamp, &event.Failed, &event.InputTokens, &event.OutputTokens, &event.ReasoningTokens,
-			&event.CacheReadTokens, &event.CacheCreationTokens, &event.TotalTokens,
-		); err != nil {
-			return fmt.Errorf("scan codex quota efficiency usage: %w", err)
-		}
-		event.Timestamp = timeutil.NormalizeStorageTime(event.Timestamp)
-		// 右边界属于下一周期；跨过任意历史空洞时指针仍只向前移动。
-		for workIndex < len(works) && !event.Timestamp.Before(works[workIndex].queryEnd) {
-			workIndex++
-			transitionIndex = 0
-		}
-		if workIndex >= len(works) {
-			break
-		}
-		work := &works[workIndex]
-		if event.Timestamp.Before(work.queryStart) {
-			continue
-		}
-		cycleAccumulators[workIndex].add(event)
-		if !keepAllPricingFields && (!codexQuotaEfficiencyTokensAreAdditive(event.InputTokens, event.OutputTokens, event.CacheReadTokens, event.CacheCreationTokens, event.TotalTokens) ||
-			!codexQuotaEfficiencyTokensAreAdditive(work.record.Usage.InputTokens, work.record.Usage.OutputTokens, work.record.Usage.CacheReadTokens, work.record.Usage.CacheCreationTokens, work.record.Usage.TotalTokens)) {
-			// 负 Token、缓存超出输入或累计溢出时，原分组的归零处理不再满足可加性。
-			// 关闭当前流并清除部分结果，只重读一次完整维度，保留旧数据的费用口径。
-			if err := rows.Close(); err != nil {
-				return fmt.Errorf("close codex quota efficiency usage before full pricing scan: %w", err)
-			}
-			for _, work := range works {
-				work.record.Usage = repositorydto.CodexQuotaEfficiencyUsage{CostAvailable: true}
-				for index := range work.record.Transitions {
-					work.record.Transitions[index].Usage = repositorydto.CodexQuotaEfficiencyUsage{CostAvailable: true}
-				}
-			}
-			return streamCodexQuotaEfficiencyUsage(ctx, db, provider, authIndex, works, costResolver, true)
-		}
-
-		transitions := work.record.Transitions
-		// 只在事件真正越过右边界时才前进，边界同时刻的所有事件都归前一次下降。
-		for transitionIndex < len(transitions) && event.Timestamp.After(transitions[transitionIndex].IntervalEndedAt) {
-			transitionIndex++
-		}
-		if transitionIndex >= len(transitions) {
-			continue
-		}
-		transition := &transitions[transitionIndex]
-		if event.Timestamp.After(transition.IntervalStartedAt) && !event.Timestamp.After(transition.IntervalEndedAt) {
-			transitionAccumulators[workIndex][transitionIndex].add(event)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate codex quota efficiency usage: %w", err)
-	}
-
-	// 事件流结束后再按 pricing 分组计价，避免对每条请求重复匹配价格规则。
-	for workIndex := range works {
-		cycleAccumulators[workIndex].finalize(authIndex, costResolver)
-		for transitionIndex := range transitionAccumulators[workIndex] {
-			transitionAccumulators[workIndex][transitionIndex].finalize(authIndex, costResolver)
+	cursor := codexQuotaEfficiencyUsageCursor{works: works}
+	for _, read := range usageEventTimeReads(globalStart, globalEnd, false) {
+		if err := streamCodexQuotaEfficiencyUsageRead(ctx, db, provider, authIndex, read, &cursor); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-func codexQuotaEfficiencyPricingProjection(active pricing.ActiveFields, keepAll bool) string {
-	columns := []string{"api_group_key", "model", "model_alias", "service_tier", "response_service_tier", "reasoning_effort", "endpoint", "executor_type"}
-	activeColumns := UsagePricingDimensionColumns(active)
-	for index, column := range columns {
-		// 固定列位置供直接 Scan；未参与本次价格规则的维度不读取，也不拆分计价组。
-		if keepAll || slices.Contains(activeColumns, column) {
-			columns[index] = "COALESCE(" + column + ", '')"
-		} else {
-			columns[index] = "''"
-		}
-	}
-	return strings.Join(columns, ", ")
-}
-
-func codexQuotaEfficiencyTokensAreAdditive(input, output, cacheRead, cacheCreation, total int64) bool {
-	return input >= 0 && output >= 0 && cacheRead >= 0 && cacheCreation >= 0 && total >= 0 &&
-		cacheRead <= input && cacheCreation <= input-cacheRead
-}
-
-func newCodexQuotaEfficiencyUsageAccumulator(target *repositorydto.CodexQuotaEfficiencyUsage) codexQuotaEfficiencyUsageAccumulator {
-	return codexQuotaEfficiencyUsageAccumulator{target: target}
-}
-
-func (a *codexQuotaEfficiencyUsageAccumulator) add(event codexQuotaEfficiencyUsageEventRow) {
-	if a == nil || a.target == nil {
-		return
-	}
-	a.target.Requests++
+// addCodexQuotaEfficiencyUsage 只累计已存费用与原 Token，并使不可用状态逐事件传播。
+func addCodexQuotaEfficiencyUsage(target *repositorydto.CodexQuotaEfficiencyUsage, event codexQuotaEfficiencyUsageEventRow) error {
+	target.Requests++
 	if event.Failed {
-		a.target.FailedRequests++
+		target.FailedRequests++
 	} else {
-		a.target.SuccessfulRequests++
+		target.SuccessfulRequests++
 	}
-	a.target.InputTokens += event.InputTokens
-	a.target.OutputTokens += event.OutputTokens
-	a.target.ReasoningTokens += event.ReasoningTokens
-	a.target.CacheReadTokens += event.CacheReadTokens
-	a.target.CacheCreationTokens += event.CacheCreationTokens
-	a.target.TotalTokens += event.TotalTokens
-
-	// 没有事件的百分比区间不分配 map，短周期历史多时仍保持小内存占用。
-	if a.pricingTokens == nil {
-		a.pricingTokens = make(map[codexQuotaEfficiencyPricingKey]codexQuotaEfficiencyPricingTokens)
+	target.InputTokens += event.InputTokens
+	target.OutputTokens += event.OutputTokens
+	target.ReasoningTokens += event.ReasoningTokens
+	target.CacheReadTokens += event.CacheReadTokens
+	target.CacheCreationTokens += event.CacheCreationTokens
+	target.TotalTokens += event.TotalTokens
+	target.TotalCostUSD += event.CostUSD
+	if math.IsInf(target.TotalCostUSD, 0) {
+		return fmt.Errorf("stored cost overflow")
 	}
-	key := codexQuotaEfficiencyPricingKey{
-		APIGroupKey:         event.APIGroupKey,
-		Model:               event.Model,
-		ModelAlias:          event.ModelAlias,
-		ServiceTier:         event.ServiceTier,
-		ResponseServiceTier: event.ResponseServiceTier,
-		ReasoningEffort:     event.ReasoningEffort,
-		Endpoint:            event.Endpoint,
-		ExecutorType:        event.ExecutorType,
+	if !event.CostAvailable {
+		target.CostAvailable = false
 	}
-	tokens := a.pricingTokens[key]
-	tokens.InputTokens += event.InputTokens
-	tokens.OutputTokens += event.OutputTokens
-	tokens.CacheReadTokens += event.CacheReadTokens
-	tokens.CacheCreationTokens += event.CacheCreationTokens
-	tokens.TotalTokens += event.TotalTokens
-	a.pricingTokens[key] = tokens
-}
-
-func (a *codexQuotaEfficiencyUsageAccumulator) finalize(authIndex string, costResolver pricing.Resolver) {
-	if a == nil || a.target == nil {
-		return
-	}
-	for key, tokens := range a.pricingTokens {
-		cost := costResolver.Calculate(newUsagePricingCostSubject(
-			key.APIGroupKey, key.Model, authIndex, key.ModelAlias, key.ServiceTier, key.ResponseServiceTier,
-			key.ReasoningEffort, key.Endpoint, key.ExecutorType,
-			tokens.InputTokens, tokens.OutputTokens, tokens.CacheReadTokens, tokens.CacheCreationTokens,
-		))
-		// 极少数旧事件可能只有 total_tokens 而没有计价分项；有 Token 但模型未匹配时仍必须标记缺价。
-		if tokens.TotalTokens > 0 && cost.MatchedModel == "" {
-			cost.Available = false
-		}
-		a.target.TotalCostUSD += cost.Cost.TotalCostUSD
-		if !cost.Available {
-			a.target.CostAvailable = false
-		}
-	}
+	return nil
 }
 
 func finalizeCodexQuotaEfficiencyTransitions(cycle *repositorydto.CodexQuotaEfficiencyCycle) {

@@ -20,6 +20,8 @@ const (
 	claudeFableQuotaKey                  = "seven_day_fable"
 	claudeWeeklyScopedLimitKind          = "weekly_scoped"
 	claudeFableModelPrefix               = "fable"
+	antigravityArgonGroupKey             = "antigravity-gemini-4-argon"
+	antigravityArgonWeeklyBucketID       = "gemini-argon-wtu-weekly"
 )
 
 func NormalizeQuotaRows(output ProviderOutput) []QuotaRow {
@@ -328,13 +330,24 @@ func appendGeminiCLICredits(rows []QuotaRow, keyPrefix string, tier *GeminiCliUs
 	return rows
 }
 
+func antigravitySeparateArgonObserved(output ProviderOutput) bool {
+	var result *AntigravityResult
+	switch value := output.Result.(type) {
+	case AntigravityResult:
+		result = &value
+	case *AntigravityResult:
+		result = value
+	}
+	return result != nil && result.Quota != nil && result.Quota.hasSeparateArgon
+}
+
 func normalizeAntigravityQuotaRows(result AntigravityResult) []QuotaRow {
 	if result.Quota == nil {
 		return nil
 	}
 	rows := make([]QuotaRow, 0)
 	for groupIndex, group := range result.Quota.Groups {
-		groupKey := antigravityQuotaGroupKey(group.DisplayName, groupIndex)
+		groupKey := antigravityQuotaGroupKey(group, groupIndex)
 		groupLabel := firstNonEmpty(group.DisplayName, fmt.Sprintf("Quota Group %d", groupIndex+1))
 		groupRows := make([]QuotaRow, 0, len(group.Buckets))
 		for bucketIndex, bucket := range group.Buckets {
@@ -364,7 +377,14 @@ func normalizeAntigravityQuotaRows(result AntigravityResult) []QuotaRow {
 	return rows
 }
 
-func antigravityQuotaGroupKey(displayName string, groupIndex int) string {
+func antigravityQuotaGroupKey(group AntigravityQuotaGroup, groupIndex int) string {
+	// 具体 bucket ID 比可变显示名更能证明是独立 Argon 额度组。
+	for _, bucket := range group.Buckets {
+		if strings.EqualFold(strings.TrimSpace(bucket.BucketID), antigravityArgonWeeklyBucketID) {
+			return antigravityArgonGroupKey
+		}
+	}
+	displayName := group.DisplayName
 	if knownKey, ok := knownAntigravityQuotaGroupKey(displayName); ok {
 		return knownKey
 	}
@@ -393,6 +413,10 @@ func knownAntigravityQuotaGroupKey(displayName string) (string, bool) {
 	words := strings.FieldsFunc(strings.ToLower(strings.TrimSpace(displayName)), func(value rune) bool {
 		return (value < 'a' || value > 'z') && (value < '0' || value > '9')
 	})
+	// 已确认的 Argon 名称先于旧的宽松词匹配，避免并进 Gemini 组。
+	if strings.Join(words, " ") == "gemini 4 argon" {
+		return antigravityArgonGroupKey, true
+	}
 	hasGemini := false
 	hasClaude := false
 	hasGPT := false

@@ -25,11 +25,11 @@ func TestCodexRefreshWritesOfficialSubscriptionExpiry(t *testing.T) {
 			if source == quota.RefreshSourceScheduled {
 				oldExpiry = time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)
 			}
-			seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "codex-auth", Provider: "codex", Type: "codex", AuthType: entities.UsageIdentityAuthTypeAuthFile, AccountID: &accountID, ActiveUntil: &oldExpiry})
+			seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "codex-auth", Provider: "codex", Type: "codex", AuthType: entities.UsageIdentityAuthTypeCredential, AccountID: &accountID, ActiveUntil: &oldExpiry})
 			caller := newCodexSubscriptionRouteCaller(
 				quotaAPIResponse(200, `{"plan_type":"plus","rate_limit":{"allowed":true},"rate_limit_reset_credits":{"available_count":0}}`),
 				quotaAPIResponse(200, `{"active_until":"2026-11-01T00:00:00Z"}`), nil)
-			service := quota.NewServiceWithOptions(db, caller, quota.ServiceOptions{PricingCatalog: emptyPricingCatalogForTest()})
+			service := quota.NewServiceWithOptions(db, caller, quota.ServiceOptions{})
 			t.Cleanup(service.StopRefreshTasks)
 			setRefreshCooldown(service, func(time.Duration) {})
 			refresh, err := service.Refresh(context.Background(), quota.RefreshRequest{AuthIndexes: []string{"codex-auth"}, Source: source})
@@ -72,11 +72,11 @@ func TestCodexSubscriptionFailureKeepsQuotaAndStoredExpiry(t *testing.T) {
 			db := openQuotaTestDatabase(t)
 			accountID := "acct_123"
 			expiry := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
-			seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "codex-auth", Provider: "codex", Type: "codex", AuthType: entities.UsageIdentityAuthTypeAuthFile, AccountID: &accountID, ActiveUntil: &expiry})
+			seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "codex-auth", Provider: "codex", Type: "codex", AuthType: entities.UsageIdentityAuthTypeCredential, AccountID: &accountID, ActiveUntil: &expiry})
 			caller := newCodexSubscriptionRouteCaller(
 				quotaAPIResponse(200, `{"plan_type":"plus","rate_limit":{"allowed":true},"rate_limit_reset_credits":{"available_count":0}}`),
 				tc.response, nil)
-			service := quota.NewServiceWithOptions(db, caller, quota.ServiceOptions{PricingCatalog: emptyPricingCatalogForTest()})
+			service := quota.NewServiceWithOptions(db, caller, quota.ServiceOptions{})
 			t.Cleanup(service.StopRefreshTasks)
 			setRefreshCooldown(service, func(time.Duration) {})
 			if _, err := service.Refresh(context.Background(), quota.RefreshRequest{AuthIndexes: []string{"codex-auth"}, Source: quota.RefreshSourceManual}); err != nil {
@@ -94,9 +94,9 @@ func TestCodexSubscriptionTransportFailureDoesNotFailQuota(t *testing.T) {
 	db := openQuotaTestDatabase(t)
 	accountID := "acct_123"
 	expiry := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
-	seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "codex-auth", Type: "codex", AuthType: entities.UsageIdentityAuthTypeAuthFile, AccountID: &accountID, ActiveUntil: &expiry})
+	seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "codex-auth", Type: "codex", AuthType: entities.UsageIdentityAuthTypeCredential, AccountID: &accountID, ActiveUntil: &expiry})
 	caller := newCodexSubscriptionRouteCaller(quotaAPIResponse(200, `{"rate_limit":{"allowed":true},"rate_limit_reset_credits":{"available_count":0}}`), nil, errors.New("subscription transport unavailable"))
-	service := quota.NewServiceWithOptions(db, caller, quota.ServiceOptions{PricingCatalog: emptyPricingCatalogForTest()})
+	service := quota.NewServiceWithOptions(db, caller, quota.ServiceOptions{})
 	t.Cleanup(service.StopRefreshTasks)
 	setRefreshCooldown(service, func(time.Duration) {})
 	if _, err := service.Refresh(context.Background(), quota.RefreshRequest{AuthIndexes: []string{"codex-auth"}, Source: quota.RefreshSourceManual}); err != nil {
@@ -119,9 +119,9 @@ func TestCodexSubscriptionOnlyFollowsManualOrScheduledRefreshWithAccount(t *test
 	} {
 		t.Run(string(tc.source)+"/account="+stringAccountID(tc.accountID), func(t *testing.T) {
 			db := openQuotaTestDatabase(t)
-			seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "codex-auth", Type: "codex", AuthType: entities.UsageIdentityAuthTypeAuthFile, AccountID: tc.accountID})
+			seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "codex-auth", Type: "codex", AuthType: entities.UsageIdentityAuthTypeCredential, AccountID: tc.accountID})
 			caller := newCodexSubscriptionRouteCaller(quotaAPIResponse(200, `{"rate_limit":{"allowed":true},"rate_limit_reset_credits":{"available_count":0}}`), nil, nil)
-			service := quota.NewServiceWithOptions(db, caller, quota.ServiceOptions{PricingCatalog: emptyPricingCatalogForTest()})
+			service := quota.NewServiceWithOptions(db, caller, quota.ServiceOptions{})
 			t.Cleanup(service.StopRefreshTasks)
 			if _, err := service.Check(context.Background(), quota.CheckRequest{AuthIndex: "codex-auth", Source: tc.source}); err != nil {
 				t.Fatal(err)
@@ -157,8 +157,8 @@ func TestCodexOfficialExpiryWriteRejectsChangedAccount(t *testing.T) {
 	db := openQuotaTestDatabase(t)
 	oldAccount := "old"
 	newAccount := "new"
-	seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "codex-auth", Provider: "codex", Type: "codex", AuthType: entities.UsageIdentityAuthTypeAuthFile, AccountID: &oldAccount})
-	identity, err := repository.GetActiveAuthFileUsageIdentityByAuthIndex(context.Background(), db, "codex-auth")
+	seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "codex-auth", Provider: "codex", Type: "codex", AuthType: entities.UsageIdentityAuthTypeCredential, AccountID: &oldAccount})
+	identity, err := repository.GetActiveCredentialUsageIdentityByAuthIndex(context.Background(), db, "codex-auth")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestCodexOfficialExpiryWriteRejectsChangedAccount(t *testing.T) {
 
 func readCodexExpiry(t *testing.T, db *gorm.DB) time.Time {
 	t.Helper()
-	identity, err := repository.GetActiveAuthFileUsageIdentityByAuthIndex(context.Background(), db, "codex-auth")
+	identity, err := repository.GetActiveCredentialUsageIdentityByAuthIndex(context.Background(), db, "codex-auth")
 	if err != nil || identity.ActiveUntil == nil {
 		t.Fatalf("read codex expiry: %+v, %v", identity, err)
 	}

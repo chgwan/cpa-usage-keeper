@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
@@ -7,6 +7,7 @@ import { LanguageSwitcher } from '@/components/ui/LanguageSwitcher';
 import { useThemeStore } from '@/stores';
 import type { Theme } from '@/types';
 import { BrandLink } from '@/components/BrandLink';
+import { mountLoginBackdrop } from './loginBackdrop';
 import styles from './LoginPage.module.scss';
 
 type LoginMode = 'admin' | 'api_key';
@@ -25,6 +26,8 @@ type LoginErrors = {
 interface LoginPageProps extends LoginErrors {
   loading?: boolean;
   totpRequired?: boolean;
+  oidcEnabled?: boolean;
+  onOIDCLogin?: () => Promise<void>;
   onPasswordSubmit: (password: string, totpCode: string) => Promise<void>;
   onAPIKeySubmit: (apiKey: string) => Promise<void>;
 }
@@ -41,7 +44,28 @@ export const getLoginErrorForMode = (mode: LoginMode, { adminError = '', apiKeyE
   mode === 'api_key' ? apiKeyError : adminError
 );
 
-export function LoginPage({ loading = false, totpRequired = false, adminError = '', apiKeyError = '', onPasswordSubmit, onAPIKeySubmit }: LoginPageProps) {
+export function LoginBackdrop() {
+  const backdropRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const backdrop = backdropRef.current;
+    const canvas = canvasRef.current;
+    if (!backdrop || !canvas) return;
+    return mountLoginBackdrop(backdrop, canvas);
+  }, []);
+
+  return (
+    <div ref={backdropRef} className={styles.backdrop} aria-hidden="true">
+      <span className={styles.coolGlow} />
+      <span className={styles.greenGlow} />
+      <span className={styles.warmGlow} />
+      <canvas ref={canvasRef} className={styles.flowCanvas} />
+    </div>
+  );
+}
+
+export function LoginPage({ loading = false, totpRequired = false, oidcEnabled = false, onOIDCLogin, adminError = '', apiKeyError = '', onPasswordSubmit, onAPIKeySubmit }: LoginPageProps) {
   const { t } = useTranslation();
   const theme = useThemeStore((state) => state.theme);
   const setTheme = useThemeStore((state) => state.setTheme);
@@ -70,7 +94,7 @@ export function LoginPage({ loading = false, totpRequired = false, adminError = 
     <div className={styles.pageShell} data-keeper-page="login">
       <div className={styles.frame}>
         <div className={styles.utilityDock}>
-          <LanguageSwitcher />
+          <LanguageSwitcher className={styles.languageSwitcher} />
           <div className={styles.themeSwitcher} role="tablist" aria-label={t('usage_stats.theme_switch')}>
             {themeOptions.map((option) => {
               const active = theme === option.value;
@@ -95,7 +119,7 @@ export function LoginPage({ loading = false, totpRequired = false, adminError = 
           <p className={styles.subtitle}>{t('auth.login_subtitle')}</p>
         </div>
 
-        <Card className={styles.loginCard}>
+        <Card className={`${styles.loginCard} ${mode === 'api_key' && oidcEnabled && onOIDCLogin ? styles.loginCardOIDCSpace : ''}`.trim()}>
           <div className={styles.cardHeader}>
             <span className={styles.cardKicker}>{t('auth.console_kicker')}</span>
             <h2 className={styles.cardTitle}>{t('auth.console_title')}</h2>
@@ -166,6 +190,11 @@ export function LoginPage({ loading = false, totpRequired = false, adminError = 
             <Button type="submit" fullWidth loading={loading} disabled={!canSubmit}>
               {mode === 'api_key' ? t('auth.api_key_login_submit') : t('auth.login_submit')}
             </Button>
+            {mode === 'admin' && oidcEnabled && onOIDCLogin && (
+              <Button type="button" variant="secondary" fullWidth loading={loading} onClick={() => void onOIDCLogin()}>
+                {t('auth.oidc_login_submit')}
+              </Button>
+            )}
           </form>
         </Card>
       </div>

@@ -254,7 +254,7 @@ func TestCPAAPIKeyListRouteAttachesPolicySummaries(t *testing.T) {
 	registerCPAAPIKeyRoutes(group, stubCPAAPIKeyListProvider{rows: []entities.CPAAPIKey{
 		{ID: 1, APIKey: "sk-alpha123456"},
 		{ID: 2, APIKey: "sk-beta654321"},
-	}}, &stubManagementProvider{summaries: map[int64]service.CPAAPIKeyPolicySummary{
+	}}, nil, &stubManagementProvider{summaries: map[int64]service.CPAAPIKeyPolicySummary{
 		1: {
 			EnforcementState: "active",
 			Tightest: &keypolicy.TightestLimit{
@@ -311,7 +311,7 @@ func TestCPAAPIKeyListRouteOmitsPolicyWhenSummaryFails(t *testing.T) {
 	group := router.Group("/api/v1")
 	registerCPAAPIKeyRoutes(group, stubCPAAPIKeyListProvider{rows: []entities.CPAAPIKey{
 		{ID: 1, APIKey: "sk-alpha123456"},
-	}}, &stubManagementProvider{summariesErr: errors.New("summary boom")})
+	}}, nil, &stubManagementProvider{summariesErr: errors.New("summary boom")})
 
 	for _, path := range []string{"/api/v1/usage/api-keys", "/api/v1/usage/api-keys/settings"} {
 		response := httptest.NewRecorder()
@@ -401,7 +401,7 @@ func TestBulkPolicyRouteRejectsEnabledOnlyRequest(t *testing.T) {
 	if err := db.Create(&key).Error; err != nil {
 		t.Fatalf("seed key: %v", err)
 	}
-	provider := service.NewCPAAPIKeyManagementService(db, nil, nil, nil)
+	provider := service.NewCPAAPIKeyManagementService(db, nil, nil)
 	response := httptest.NewRecorder()
 	body := fmt.Sprintf(`{"apiKeyIds":["%d"],"enabled":false}`, key.ID)
 	newManagementTestRouter(provider).ServeHTTP(response, httptest.NewRequest(http.MethodPatch, "/api/v1/usage/api-keys/policies", strings.NewReader(body)))
@@ -423,7 +423,7 @@ func TestBulkPolicyRouteIgnoresEnabledAndForcesRowOn(t *testing.T) {
 	if err := repository.UpsertCPAAPIKeyPolicy(db, &legacy); err != nil {
 		t.Fatalf("seed legacy disabled policy: %v", err)
 	}
-	provider := service.NewCPAAPIKeyManagementService(db, nil, nil, nil)
+	provider := service.NewCPAAPIKeyManagementService(db, nil, nil)
 	response := httptest.NewRecorder()
 	body := fmt.Sprintf(`{"apiKeyIds":["%d"],"limits":{"daily":5},"enabled":false}`, key.ID)
 	newManagementTestRouter(provider).ServeHTTP(response, httptest.NewRequest(http.MethodPatch, "/api/v1/usage/api-keys/policies", strings.NewReader(body)))
@@ -451,7 +451,7 @@ func TestSinglePolicyRouteIgnoresEnabledAndForcesRowOn(t *testing.T) {
 	if err := repository.UpsertCPAAPIKeyPolicy(db, &legacy); err != nil {
 		t.Fatalf("seed legacy disabled policy: %v", err)
 	}
-	provider := service.NewCPAAPIKeyManagementService(db, nil, nil, nil)
+	provider := service.NewCPAAPIKeyManagementService(db, nil, nil)
 	response := httptest.NewRecorder()
 	body := fmt.Sprintf(`{"enabled":false,"limits":[{"type":"cost","window":"daily","value":5}]}`)
 	request := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/v1/usage/api-keys/%d/policy", key.ID), strings.NewReader(body))
@@ -542,7 +542,7 @@ func TestCPAAPIKeyListRouteIncludesBaseValueAndAdjustmentUsd(t *testing.T) {
 	group := router.Group("/api/v1")
 	registerCPAAPIKeyRoutes(group, stubCPAAPIKeyListProvider{rows: []entities.CPAAPIKey{
 		{ID: 1, APIKey: "sk-alpha123456"},
-	}}, &stubManagementProvider{summaries: map[int64]service.CPAAPIKeyPolicySummary{
+	}}, nil, &stubManagementProvider{summaries: map[int64]service.CPAAPIKeyPolicySummary{
 		1: {
 			EnforcementState: "active",
 			Limits: []keypolicy.TightestLimit{
@@ -588,7 +588,7 @@ func TestCPAAPIKeyListRouteOmitsAdjustmentUsdWhenNoAdjustment(t *testing.T) {
 	group := router.Group("/api/v1")
 	registerCPAAPIKeyRoutes(group, stubCPAAPIKeyListProvider{rows: []entities.CPAAPIKey{
 		{ID: 1, APIKey: "sk-alpha123456"},
-	}}, &stubManagementProvider{summaries: map[int64]service.CPAAPIKeyPolicySummary{
+	}}, nil, &stubManagementProvider{summaries: map[int64]service.CPAAPIKeyPolicySummary{
 		1: {
 			EnforcementState: "active",
 			Limits: []keypolicy.TightestLimit{

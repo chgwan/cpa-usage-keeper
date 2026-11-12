@@ -1,53 +1,29 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { formatLeaderboardValue, formatOverallMetricValue } from '../format';
-import type {
-  RankingDetailMetric,
-  RankingLeaderboardEntry,
-  RankingMetric,
-  RankingScope,
-} from '../types';
+import { formatEntryMetric, metricValue } from '../format';
+import { DEFAULT_RANKING_METRIC, RANKING_METRICS, type RankingLeaderboardEntry, type RankingMetric } from '../types';
 import styles from '../RankingPage.module.scss';
 import { RankingAvatar } from './RankingAvatar';
 
-const OVERALL_METRICS: RankingDetailMetric[] = [
-  'total_tokens',
-  'request_count',
-  'cache_read_rate',
-  'ttft_average',
-  'latency_average',
-  'peak_tpm',
-  'peak_rpm',
-];
-
-// 费用是本地榜单独有列，Community 综合分面板保持原列集。
-const overallMetricsForScope = (scope: RankingScope): RankingDetailMetric[] => (
-  scope === 'local' ? [...OVERALL_METRICS, 'cost'] : OVERALL_METRICS
-);
-
-// score 指当前榜单主值列：综合视图下是综合分，单指标视图下是该指标本身。
-type RankingSortColumn = 'score' | RankingDetailMetric;
 type RankingSortDirection = 'descending' | 'ascending';
-interface RankingSort {
-  column: RankingSortColumn;
+export interface RankingSort {
+  column: RankingMetric;
   direction: RankingSortDirection;
 }
 
-const sortValue = (entry: RankingLeaderboardEntry, column: RankingSortColumn): number | undefined => (
-  column === 'score' ? entry.value : entry.metrics?.[column]
-);
+// 默认按 Token 总量降序，与后端榜单原序一致。
+export const DEFAULT_RANKING_SORT: RankingSort = { column: DEFAULT_RANKING_METRIC, direction: 'descending' };
 
 // 排序只重排表格行，缺值的行不论方向都沉底；领奖台和名次徽标仍按榜单原序。
-const sortEntries = (
+export const sortEntries = (
   entries: readonly RankingLeaderboardEntry[],
-  sort: RankingSort | null,
+  sort: RankingSort,
 ): Array<{ entry: RankingLeaderboardEntry; position: number }> => {
   const rows = entries.map((entry, index) => ({ entry, position: index + 1 }));
-  if (!sort) return rows;
   const factor = sort.direction === 'descending' ? -1 : 1;
   return rows.sort((left, right) => {
-    const leftValue = sortValue(left.entry, sort.column);
-    const rightValue = sortValue(right.entry, sort.column);
+    const leftValue = metricValue(left.entry, sort.column);
+    const rightValue = metricValue(right.entry, sort.column);
     if (leftValue === undefined || rightValue === undefined) {
       if (leftValue === rightValue) return left.position - right.position;
       return leftValue === undefined ? 1 : -1;
@@ -56,33 +32,23 @@ const sortEntries = (
   });
 };
 
-// 点击依次为降序、升序、恢复榜单原序；换列时从降序重新开始。
-const nextSort = (current: RankingSort | null, column: RankingSortColumn): RankingSort | null => {
-  if (current?.column !== column) return { column, direction: 'descending' };
-  return current.direction === 'descending' ? { column, direction: 'ascending' } : null;
+// 同一列在降序与升序间切换；换列时从降序重新开始。
+export const nextSort = (current: RankingSort, column: RankingMetric): RankingSort => {
+  if (current.column !== column) return { column, direction: 'descending' };
+  return { column, direction: current.direction === 'descending' ? 'ascending' : 'descending' };
 };
 
 export interface RankingLeaderboardResultsProps {
-  scope: RankingScope;
-  metric: RankingMetric;
   entries: readonly RankingLeaderboardEntry[];
   onEditLocalProfile?: (entry: RankingLeaderboardEntry) => void;
 }
 
-export function RankingLeaderboardResults({
-  scope,
-  metric,
-  entries,
-  onEditLocalProfile,
-}: RankingLeaderboardResultsProps) {
+export function RankingLeaderboardResults({ entries, onEditLocalProfile }: RankingLeaderboardResultsProps) {
   const { t } = useTranslation();
   const podium = entries.slice(0, 3);
-  const overallMetrics = overallMetricsForScope(scope);
-  const [selectedSort, setSort] = useState<RankingSort | null>(null);
-  // 切到单指标视图后原来的指标列已不在表头，此时不再沿用它的排序。
-  const sort = selectedSort && (metric === 'overall' || selectedSort.column === 'score') ? selectedSort : null;
+  const [sort, setSort] = useState<RankingSort>(DEFAULT_RANKING_SORT);
   const rows = useMemo(() => sortEntries(entries, sort), [entries, sort]);
-  const toggleSort = (column: RankingSortColumn) => setSort((current) => nextSort(current, column));
+  const toggleSort = (column: RankingMetric) => setSort((current) => nextSort(current, column));
 
   return (
     <div className={styles.leaderboardResults} data-ranking-results>
@@ -92,8 +58,6 @@ export function RankingLeaderboardResults({
             key={entry.participant_id}
             entry={entry}
             position={index + 1}
-            metric={metric}
-            scope={scope}
             onEditLocalProfile={onEditLocalProfile}
           />
         ))}
@@ -103,17 +67,10 @@ export function RankingLeaderboardResults({
           <thead>
             <tr>
               <th className={styles.rankColumn} data-ranking-rank-column>{t('ranking.rank')}</th>
-              <th className={styles.participantColumn} data-ranking-participant-column>
-                {t(scope === 'local' ? 'ranking.api_key' : 'ranking.participant')}
-              </th>
-              {metric === 'overall' ? (
-                <>
-                  <SortableHeader column="score" label={t('ranking.score')} sort={sort} onSort={toggleSort} />
-                  {overallMetrics.map((item) => (
-                    <SortableHeader key={item} column={item} label={t(`ranking.metric_short_${item}`)} sort={sort} onSort={toggleSort} />
-                  ))}
-                </>
-              ) : <SortableHeader column="score" label={t(`ranking.metric_${metric}`)} sort={sort} onSort={toggleSort} />}
+              <th className={styles.participantColumn} data-ranking-participant-column>{t('ranking.api_key')}</th>
+              {RANKING_METRICS.map((metric) => (
+                <SortableHeader key={metric} column={metric} label={t(`ranking.metric_short_${metric}`)} sort={sort} onSort={toggleSort} />
+              ))}
             </tr>
           </thead>
           <tbody>
@@ -124,23 +81,13 @@ export function RankingLeaderboardResults({
                 </td>
                 <td className={styles.participantColumn} data-ranking-participant-column>
                   <div className={styles.participantCell}>
-                    <LeaderboardEntryAvatar
-                      entry={entry}
-                      scope={scope}
-                      className={styles.tableAvatar}
-                      onEditLocalProfile={onEditLocalProfile}
-                    />
+                    <LeaderboardEntryAvatar entry={entry} className={styles.tableAvatar} onEditLocalProfile={onEditLocalProfile} />
                     <strong>{entry.display_name}</strong>
                   </div>
                 </td>
-                {metric === 'overall' ? (
-                  <>
-                    <td className={`${styles.numberCell} ${styles.scoreCell}`.trim()}>{formatLeaderboardValue(metric, entry, scope)}</td>
-                    {overallMetrics.map((item) => (
-                      <td key={item} className={styles.numberCell}>{formatOverallMetricValue(item, entry)}</td>
-                    ))}
-                  </>
-                ) : <td className={`${styles.numberCell} ${styles.scoreCell}`.trim()}>{formatLeaderboardValue(metric, entry, scope)}</td>}
+                {RANKING_METRICS.map((metric) => (
+                  <td key={metric} className={styles.numberCell} data-ranking-metric-cell={metric}>{formatEntryMetric(entry, metric)}</td>
+                ))}
               </tr>
             ))}
           </tbody>
@@ -151,12 +98,12 @@ export function RankingLeaderboardResults({
 }
 
 function SortableHeader({ column, label, sort, onSort }: {
-  column: RankingSortColumn;
+  column: RankingMetric;
   label: string;
-  sort: RankingSort | null;
-  onSort: (column: RankingSortColumn) => void;
+  sort: RankingSort;
+  onSort: (column: RankingMetric) => void;
 }) {
-  const direction = sort?.column === column ? sort.direction : null;
+  const direction = sort.column === column ? sort.direction : null;
   return (
     <th className={styles.numberCell} aria-sort={direction ?? 'none'}>
       <button
@@ -174,15 +121,13 @@ function SortableHeader({ column, label, sort, onSort }: {
   );
 }
 
-function PodiumCard({ entry, position, metric, scope, onEditLocalProfile }: {
+function PodiumCard({ entry, position, onEditLocalProfile }: {
   entry: RankingLeaderboardEntry;
   position: number;
-  metric: RankingMetric;
-  scope: RankingScope;
   onEditLocalProfile?: (entry: RankingLeaderboardEntry) => void;
 }) {
   const { t } = useTranslation();
-  const value = formatLeaderboardValue(metric, entry, scope);
+  const value = formatEntryMetric(entry, DEFAULT_RANKING_METRIC);
   const valueSizeClass = value.length >= 11
     ? styles.podiumValueCompact
     : value.length >= 8
@@ -198,26 +143,20 @@ function PodiumCard({ entry, position, metric, scope, onEditLocalProfile }: {
         <span>{t('ranking.rank')}</span>
         <strong>{String(position).padStart(2, '0')}</strong>
       </div>
-      <LeaderboardEntryAvatar
-        entry={entry}
-        scope={scope}
-        className={styles.podiumAvatar}
-        onEditLocalProfile={onEditLocalProfile}
-      />
+      <LeaderboardEntryAvatar entry={entry} className={styles.podiumAvatar} onEditLocalProfile={onEditLocalProfile} />
       <strong className={styles.podiumName}>{entry.display_name}</strong>
       <span className={`${styles.podiumValue} ${valueSizeClass}`.trim()}>{value}</span>
     </article>
   );
 }
 
-function LeaderboardEntryAvatar({ entry, scope, className, onEditLocalProfile }: {
+function LeaderboardEntryAvatar({ entry, className, onEditLocalProfile }: {
   entry: RankingLeaderboardEntry;
-  scope: RankingScope;
   className: string;
   onEditLocalProfile?: (entry: RankingLeaderboardEntry) => void;
 }) {
   const { t } = useTranslation();
-  if (scope !== 'local' || !onEditLocalProfile) {
+  if (!onEditLocalProfile) {
     return <RankingAvatar avatarID={entry.avatar_id} name={entry.display_name} className={className} decorative />;
   }
   return (

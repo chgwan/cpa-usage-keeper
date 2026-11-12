@@ -1,55 +1,24 @@
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Select } from '@/components/ui/Select';
-import { rankingMetricsForScope, rankingPeriodsForScope, type RankingMetric, type RankingPeriod, type RankingScope } from '../types';
+import { RANKING_PERIODS, type RankingPeriod } from '../types';
 import styles from '../RankingPage.module.scss';
-
-const PERIODS: ReadonlyArray<{ value: RankingPeriod; labelKey: string; triggerLabelKey: string }> = [
-  { value: 'today', labelKey: 'ranking.period_today', triggerLabelKey: 'ranking.period_trigger_today' },
-  { value: 'yesterday', labelKey: 'ranking.period_yesterday', triggerLabelKey: 'ranking.period_trigger_yesterday' },
-  { value: 'current_week', labelKey: 'ranking.period_current_week', triggerLabelKey: 'ranking.period_trigger_current_week' },
-  { value: 'previous_week', labelKey: 'ranking.period_previous_week', triggerLabelKey: 'ranking.period_trigger_previous_week' },
-  { value: 'current_month', labelKey: 'ranking.period_current_month', triggerLabelKey: 'ranking.period_trigger_current_month' },
-  { value: 'previous_month', labelKey: 'ranking.period_previous_month', triggerLabelKey: 'ranking.period_trigger_previous_month' },
-];
-
-// 触发器保持短名称，展开菜单保留完整指标语义；费用只在本地榜单范围出现。
-const METRICS: ReadonlyArray<{ value: RankingMetric; labelKey: string; triggerLabelKey: string }> = [
-  { value: 'overall', labelKey: 'ranking.metric_overall', triggerLabelKey: 'ranking.metric_short_overall' },
-  { value: 'total_tokens', labelKey: 'ranking.metric_total_tokens', triggerLabelKey: 'ranking.metric_short_total_tokens' },
-  { value: 'request_count', labelKey: 'ranking.metric_request_count', triggerLabelKey: 'ranking.metric_short_request_count' },
-  { value: 'cache_read_rate', labelKey: 'ranking.metric_cache_read_rate', triggerLabelKey: 'ranking.metric_short_cache_read_rate' },
-  { value: 'ttft_average', labelKey: 'ranking.metric_ttft_average', triggerLabelKey: 'ranking.metric_short_ttft_average' },
-  { value: 'latency_average', labelKey: 'ranking.metric_latency_average', triggerLabelKey: 'ranking.metric_short_latency_average' },
-  { value: 'peak_tpm', labelKey: 'ranking.metric_peak_tpm', triggerLabelKey: 'ranking.metric_short_peak_tpm' },
-  { value: 'peak_rpm', labelKey: 'ranking.metric_peak_rpm', triggerLabelKey: 'ranking.metric_short_peak_rpm' },
-  { value: 'cost', labelKey: 'ranking.metric_cost', triggerLabelKey: 'ranking.metric_short_cost' },
-];
 
 export interface RankingToolbarProps {
   period: RankingPeriod;
   onPeriodChange: (period: RankingPeriod) => void;
-  /** 自然周是本地榜单独有周期，只有 local 范围会出现在选项里。 */
-  scope?: RankingScope;
 }
 
-export function RankingToolbar({
-  period,
-  onPeriodChange,
-  scope = 'community',
-}: RankingToolbarProps) {
+// 触发器保持短名称，展开菜单保留完整周期语义。
+export function RankingToolbar({ period, onPeriodChange }: RankingToolbarProps) {
   const { t } = useTranslation();
   const periodOptions = useMemo(
-    () => rankingPeriodsForScope(scope).map((value) => {
-      const option = PERIODS.find((item) => item.value === value);
-      if (!option) throw new Error(`unknown ranking period option: ${value}`);
-      return {
-        value: option.value,
-        label: t(option.labelKey),
-        triggerLabel: t(option.triggerLabelKey),
-      };
-    }),
-    [scope, t],
+    () => RANKING_PERIODS.map((value) => ({
+      value,
+      label: t(`ranking.period_${value}`),
+      triggerLabel: t(`ranking.period_trigger_${value}`),
+    })),
+    [t],
   );
   const currentPeriodLabel = periodOptions.find((option) => option.value === period)?.triggerLabel ?? period;
 
@@ -67,42 +36,5 @@ export function RankingToolbar({
         />
       </div>
     </div>
-  );
-}
-
-export interface RankingMetricSelectProps {
-  metric: RankingMetric;
-  onMetricChange: (metric: RankingMetric) => void;
-  /** cost 是本地榜单独有维度，只有 local 范围会出现在选项里。 */
-  scope?: RankingScope;
-}
-
-export function RankingMetricSelect({ metric, onMetricChange, scope = 'community' }: RankingMetricSelectProps) {
-  const { t } = useTranslation();
-  const metricOptions = useMemo(
-    () => rankingMetricsForScope(scope).map((value) => {
-      const option = METRICS.find((item) => item.value === value);
-      if (!option) throw new Error(`unknown ranking metric option: ${value}`);
-      return {
-        value: option.value,
-        label: t(option.labelKey),
-        triggerLabel: t(option.triggerLabelKey),
-      };
-    }),
-    [scope, t],
-  );
-  const currentMetricLabel = metricOptions.find((option) => option.value === metric)?.triggerLabel ?? metric;
-
-  return (
-    <Select
-      value={metric}
-      options={metricOptions}
-      onChange={(value) => onMetricChange(value as RankingMetric)}
-      className={styles.titleMetricSelect}
-      ariaLabel={`${t('ranking.metric_label')}: ${currentMetricLabel}`}
-      dropdownMinWidth={260}
-      fullWidth={false}
-      id="ranking-metric-title"
-    />
   );
 }

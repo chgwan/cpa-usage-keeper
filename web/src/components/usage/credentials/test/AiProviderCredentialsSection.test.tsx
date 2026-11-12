@@ -7,25 +7,12 @@ import type { AiProviderCredentialRow } from '../credentialViewModels'
 vi.mock('react-i18next', () => ({
   initReactI18next: { type: '3rdParty', init: () => undefined },
   useTranslation: () => ({
-    t: (key: string, params?: { count?: number }) => (key === 'usage_stats.credentials_count' ? `${params?.count ?? 0}` : key),
+    t: (key: string) => key,
   }),
 }))
 
 describe('AiProviderCredentialsSection', () => {
-  it('renders the AI Provider title without the Credentials eyebrow', () => {
-    const html = renderToStaticMarkup(
-      <AiProviderCredentialsSection
-        {...createAiProviderSectionProps()}
-        rows={[]}
-        total={0}
-      />,
-    )
-
-    expect(html).toContain('usage_stats.credentials_ai_providers_title')
-    expect(html).not.toContain('usage_stats.credentials_ai_providers_eyebrow')
-  })
-
-  it('renders the shared provider logo before the name without the type badge', () => {
+  it('renders provider health metrics, status and priority controls', () => {
     const row = {
       identity: {
         id: '1',
@@ -64,10 +51,7 @@ describe('AiProviderCredentialsSection', () => {
       windowCacheReadRate: 61.75,
       lastUsedText: '2026-05-10T10:00:00Z',
       statsUpdatedText: '2026-05-10T10:02:00Z',
-      remainingDaysLabel: '25d',
-      primaryQuota: { label: '5h' },
-      secondaryQuota: { label: 'Weekly' },
-    } satisfies AiProviderCredentialRow & Record<string, unknown>
+    } satisfies AiProviderCredentialRow
 
     const html = renderToStaticMarkup(
       <AiProviderCredentialsSection
@@ -77,38 +61,28 @@ describe('AiProviderCredentialsSection', () => {
       />,
     )
 
-    expect(html.match(/usage_stats\.total_requests/g)).toHaveLength(1)
-    expect(html.match(/usage_stats\.success_rate/g)).toHaveLength(1)
-    expect(html.match(/usage_stats\.total_tokens/g)).toHaveLength(1)
-    expect(html.match(/usage_stats\.cache_rate/g)).toHaveLength(1)
-    expect(html).toContain('usage_stats.credentials_column_name')
-    expect(html).toContain('usage_stats.credentials_column_health')
-    expect(html).toContain('usage_stats.credentials_health_last_5h')
+    expect(html).toContain('data-credential-card="true"')
+    expect(html).toContain('data-credential-health-variant="compact"')
     // 5h 缓存率只是健康面板 meta 区的一行文字，不再额外画一条柱状图。
-    expect(html).toContain('usage_stats.credentials_health_cache_rate_5h')
+    expect(html).toContain('usage_stats.credentials_health_cache_short')
     expect(html).toContain('61.75%')
     expect(html).toContain('usage_stats.credentials_last_used')
-    expect(html).toContain('usage_stats.credentials_stats_updated')
-    expect(html).toContain('05/10 10:00')
-    expect(html).toContain('05/10 10:02')
+    expect(html).toContain('05-10 10:00')
+    expect(html).not.toContain('05/10 10:02')
     expect(html).toContain('data-provider-brand-icon="claude"')
-    expect(html.indexOf('data-provider-brand-icon="claude"')).toBeLessThan(html.lastIndexOf('Provider Key'))
-    // 图标本身交给按钮承载语义，按钮名称使用凭证 displayName，状态由 aria-pressed 表达。
+    // 品牌图标只展示供应商，卡片开关单独表达 enabled 状态。
     expect(html).toContain('data-credential-status-toggle="true"')
     expect(html).toContain('data-credential-status-disabled="false"')
-    expect(html).toContain('aria-pressed="true"')
+    expect(html).toContain('role="switch"')
+    expect(html).toContain('aria-checked="true"')
     expect(html).toContain('aria-label="Provider Key"')
-    expect(html).not.toContain('>claude</span>')
     expect(html).toContain('P5')
     expect(html).toContain('usage_stats.credentials_sort_priority')
     expect(html).toContain('aria-label="usage_stats.credentials_sort_label: usage_stats.credentials_sort_priority"')
     expect(html).toContain('usage_stats.credentials_sort_last_used')
-    expect(html).not.toContain('Team')
-    expect(html).not.toContain('25d')
-    expect(html).not.toContain('Weekly')
     expect(html).not.toContain('usage_stats.credentials_column_quota')
-    expect(html).not.toContain('usage_stats.credentials_auth_files_display_mode_quota')
-    expect(html).not.toContain('usage_stats.credentials_auth_files_display_mode_health')
+    expect(html).not.toContain('usage_stats.credentials_display_mode_quota')
+    expect(html).not.toContain('usage_stats.credentials_display_mode_health')
   })
 
   it('marks OpenAI-compatible icons as unavailable and keeps them keyboard reachable', () => {

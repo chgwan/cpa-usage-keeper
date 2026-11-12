@@ -3,7 +3,7 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { RankingMetricSelect, RankingToolbar } from '../RankingToolbar';
+import { RankingToolbar } from '../RankingToolbar';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -51,29 +51,18 @@ describe('RankingToolbar', () => {
     expect(onPeriodChange).toHaveBeenCalledWith('yesterday');
   });
 
-  it('offers week periods only for the local scope', () => {
-    const periodLabels = () => {
-      act(() => container.querySelector<HTMLButtonElement>('[data-ranking-period] button')!.click());
-      const labels = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="listbox"] button'))
-        .map((button) => button.textContent ?? '');
-      act(() => container.querySelector<HTMLButtonElement>('[data-ranking-period] button')!.click());
-      return labels;
-    };
-
-    act(() => root.render(<RankingToolbar period="today" onPeriodChange={vi.fn()} scope="local" />));
-    expect(periodLabels().some((label) => label.includes('ranking.period_current_week'))).toBe(true);
-    expect(periodLabels().some((label) => label.includes('ranking.period_previous_week'))).toBe(true);
-
-    act(() => root.render(<RankingToolbar period="today" onPeriodChange={vi.fn()} scope="community" />));
-    expect(periodLabels().some((label) => label.includes('week'))).toBe(false);
-  });
-
-  it('includes the current metric in the collapsed select accessible name', () => {
-    act(() => root.render(
-      <RankingMetricSelect metric="overall" onMetricChange={vi.fn()} />,
-    ));
-
-    const metricTrigger = container.querySelector<HTMLButtonElement>('#ranking-metric-title');
-    expect(metricTrigger?.getAttribute('aria-label')).toBe('ranking.metric_label: ranking.metric_short_overall');
+  it('offers the day, week and month periods', () => {
+    act(() => root.render(<RankingToolbar period="today" onPeriodChange={vi.fn()} />));
+    act(() => container.querySelector<HTMLButtonElement>('[data-ranking-period] button')!.click());
+    const labels = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="listbox"] button'))
+      .map((button) => button.textContent ?? '');
+    expect(labels).toEqual([
+      'ranking.period_today',
+      'ranking.period_yesterday',
+      'ranking.period_current_week',
+      'ranking.period_previous_week',
+      'ranking.period_current_month',
+      'ranking.period_previous_month',
+    ].map((label) => expect.stringContaining(label)));
   });
 });

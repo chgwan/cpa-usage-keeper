@@ -7,24 +7,18 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	keeperapp "cpa-usage-keeper/internal/app"
 )
 
 // TestAppWiresAuthTOTPResetIntoSetupGuard 锁定 config 到 authConfig 的完整传递：
 // 若 App 构造漏传 TOTPReset，409 setup 守卫会在生产 wiring 中悄悄失效。
 func TestAppWiresAuthTOTPResetIntoSetupGuard(t *testing.T) {
-	// 准备：启用登录保护并打开 AUTH_TOTP_RESET，走真实 NewWithConfig 与路由。
+	// 准备：启用登录保护并打开 AUTH_TOTP_RESET，走真实启动流程与路由。
 	cfg := databasePoolTestConfig(filepath.Join(t.TempDir(), "totp-reset-wiring.db"))
 	cfg.AuthEnabled = true
 	cfg.LoginPassword = "secret"
 	cfg.AuthSessionTTL = time.Hour
 	cfg.AuthTOTPReset = true
-	application, err := keeperapp.NewWithConfig(cfg)
-	if err != nil {
-		t.Fatalf("NewWithConfig returned error: %v", err)
-	}
-	defer application.Close()
+	application := newDatabasePoolTestApp(t, cfg)
 
 	// 执行：通过真实路由登录管理员，再请求 TOTP setup。
 	loginResp := httptest.NewRecorder()

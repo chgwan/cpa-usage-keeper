@@ -162,11 +162,12 @@ const formatQuotaUsd = (value: number) => `$${value.toFixed(4)}`;
 const noopAdjustQuotas = async (): Promise<QuotaAdjustmentResult | null> => null;
 const noopClearQuotaAdjustments = async (): Promise<boolean> => false;
 
+// 插件统计身份没有可展示或复制的完整 key，始终只显示脱敏值。
 export function getApiKeySettingsVisibleKey(item: CpaApiKeySettingsItem, showFullApiKeys: boolean) {
-  return showFullApiKeys && item.apiKey ? item.apiKey : item.displayKey;
+  return item.sourceType !== 'plugin' && showFullApiKeys && item.apiKey ? item.apiKey : item.displayKey;
 }
 
-export async function copyApiKeyToClipboard(apiKey: string, context: CopyContext = {}) {
+export async function copyApiKeyToClipboard(apiKey: string | undefined, context: CopyContext = {}) {
   if (!apiKey) {
     return;
   }
@@ -306,6 +307,8 @@ export function ApiKeySettingsCard({
   // 展开态把同一张卡片挂到 body 上的全屏遮罩里；状态都在本组件内，切换时草稿不丢。
   const [expanded, setExpanded] = useState(false);
   const sortedApiKeys = useMemo(() => sortApiKeySettingsItems(apiKeys, sortKey), [apiKeys, sortKey]);
+  // 插件统计身份不在 CPA api-keys 里，生命周期与限额操作只面向原生 key。
+  const manageableApiKeys = useMemo(() => sortedApiKeys.filter((item) => item.sourceType !== 'plugin'), [sortedApiKeys]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const apiKeySettingsBodyRef = useRef<HTMLDivElement | null>(null);
@@ -339,6 +342,7 @@ export function ApiKeySettingsCard({
   }, []);
 
   const handleCopyApiKey = useCallback(async (item: CpaApiKeySettingsItem) => {
+    if (item.sourceType === 'plugin') return;
     try {
       await copyApiKeyToClipboard(item.apiKey);
       setCopiedId(item.id);
@@ -445,7 +449,7 @@ export function ApiKeySettingsCard({
               size="sm"
               appearance="action"
               onClick={() => setQuotaDialog('settings')}
-              disabled={apiKeys.length === 0}
+              disabled={manageableApiKeys.length === 0}
               data-api-key-quota-settings-open
             >
               {t('usage_stats.api_key_quota_settings_button')}
@@ -458,7 +462,7 @@ export function ApiKeySettingsCard({
               size="sm"
               appearance="action"
               onClick={() => setQuotaDialog('reset')}
-              disabled={apiKeys.length === 0}
+              disabled={manageableApiKeys.length === 0}
               data-api-key-quota-reset-open
             >
               {t('usage_stats.api_key_quota_reset_button')}
@@ -508,7 +512,10 @@ export function ApiKeySettingsCard({
             {sortedApiKeys.map((item) => {
               const draftAlias = draftAliases[item.id] ?? '';
               const disabled = savingId === item.id;
-              const apiKey = getApiKeySettingsVisibleKey(item, showFullApiKeys);
+              const plugin = item.sourceType === 'plugin';
+              const apiKey = plugin
+                ? t('usage_stats.api_key_settings_plugin_identity', { id: item.id })
+                : getApiKeySettingsVisibleKey(item, showFullApiKeys);
               const copyLabel = copiedId === item.id ? t('usage_stats.api_key_settings_copied') : t('usage_stats.api_key_settings_copy');
               const enforcementState = item.policy?.enforcementState;
               const stateBadge = enforcementState === 'disabled_by_quota'
@@ -524,17 +531,21 @@ export function ApiKeySettingsCard({
                   <div className={styles.apiKeySettingsSummary}>
                     <span className={styles.apiKeyFieldLabel}>{t('usage_stats.api_key_settings_display_key')}</span>
                     <div className={styles.apiKeySettingsNameRow}>
-                      <button
-                        type="button"
-                        className={styles.apiKeySettingsManageOpen}
-                        onClick={() => setManageDialogId(item.id)}
-                        aria-haspopup="dialog"
-                        aria-label={t('usage_stats.api_key_settings_manage_aria', { key: apiKey })}
-                        data-api-key-manage-open={item.id}
-                      >
+                      {plugin ? (
                         <span className={styles.apiKeySettingsName} title={apiKey}>{apiKey}</span>
-                      </button>
-                      <button
+                      ) : (
+                        <button
+                          type="button"
+                          className={styles.apiKeySettingsManageOpen}
+                          onClick={() => setManageDialogId(item.id)}
+                          aria-haspopup="dialog"
+                          aria-label={t('usage_stats.api_key_settings_manage_aria', { key: apiKey })}
+                          data-api-key-manage-open={item.id}
+                        >
+                          <span className={styles.apiKeySettingsName} title={apiKey}>{apiKey}</span>
+                        </button>
+                      )}
+                      {!plugin && <button
                         type="button"
                         className={`${styles.apiKeySettingsCopyIconButton} ${copiedId === item.id ? styles.apiKeySettingsCopyIconButtonCopied : ''}`.trim()}
                         onClick={() => void handleCopyApiKey(item)}
@@ -543,8 +554,13 @@ export function ApiKeySettingsCard({
                         title={copyLabel}
                       >
                         {copiedId === item.id ? <IconCheck size={14} /> : <IconCopy size={14} />}
-                      </button>
+                      </button>}
                     </div>
+                    {plugin && (
+                      <span className={styles.apiKeyBadge} data-api-key-plugin-source={item.id}>
+                        {`${t('usage_stats.api_key_settings_plugin')} · ${t('usage_stats.api_key_settings_source')}: ${item.accessProvider.replace(/^plugin:/, '')}`}
+                      </span>
+                    )}
                     {stateBadge && (
                       <span
                         className={`${styles.apiKeyBadge} ${enforcementState === 'disabled_by_quota' ? styles.apiKeyBadgeBreached : ''}`.trim()}
@@ -616,7 +632,8 @@ export function ApiKeySettingsCard({
                         size="sm"
                         appearance="action"
                         className={styles.apiKeySettingsSaveButton}
-                        onClick={() => onSaveAlias(item.id, draftAlias)}
+                        // 页面层已负责错误提示；这里只吞掉 rejection，避免未处理的 Promise 错误。
+                        onClick={() => void Promise.resolve(onSaveAlias(item.id, draftAlias)).catch(() => undefined)}
                         disabled={disabled}
                       >
                         {disabled ? t('usage_stats.api_key_settings_saving') : t('common.save')}
@@ -632,7 +649,7 @@ export function ApiKeySettingsCard({
 
       {quotaDialog === 'settings' && onSavePolicies && (
         <ApiKeyQuotaSettingsModal
-          apiKeys={sortedApiKeys}
+          apiKeys={manageableApiKeys}
           onClose={() => setQuotaDialog(null)}
           onSubmit={onSavePolicies}
           onAdjust={onAdjustQuotas ?? noopAdjustQuotas}
@@ -640,7 +657,7 @@ export function ApiKeySettingsCard({
         />
       )}
       {quotaDialog === 'reset' && onResetQuotas && (
-        <ApiKeyQuotaResetModal apiKeys={sortedApiKeys} onClose={() => setQuotaDialog(null)} onSubmit={onResetQuotas} />
+        <ApiKeyQuotaResetModal apiKeys={manageableApiKeys} onClose={() => setQuotaDialog(null)} onSubmit={onResetQuotas} />
       )}
 
       {manageDialogItem && (

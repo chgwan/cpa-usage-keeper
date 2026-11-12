@@ -15,7 +15,7 @@ type LocalRankingAggregator interface {
 	AggregateOnce(context.Context) error
 }
 
-// LocalRankingRunner 每五分钟独立触发一次本地排行完整日快照，不接入 Community 上报调度。
+// LocalRankingRunner 每五分钟独立触发一次本地排行完整日快照。
 type LocalRankingRunner struct {
 	aggregator LocalRankingAggregator
 	interval   time.Duration
