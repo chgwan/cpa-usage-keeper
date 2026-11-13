@@ -55,6 +55,29 @@ describe('ApiKeySettingsCard', () => {
     expect(items.map((value) => value.id)).toEqual(['1', '2', '3', '4', '5', '6']);
   });
 
+  it('sorts by the set quota using the normal limit and ignores temporary adjustments', () => {
+    const limited = (id: string, keyAlias: string, value: number, baseValue?: number): CpaApiKeySettingsItem => ({
+      id, apiKey: '', keyAlias, displayKey: `sk-***${id}`, label: keyAlias, lastSyncedAt: null,
+      policy: { enabled: true, enforcementState: 'active', tightest: { type: 'cost', window: 'weekly', value, used: 1, ratio: 1 / value, baseValue } },
+    });
+    const unlimited = (id: string, keyAlias: string): CpaApiKeySettingsItem => ({
+      id, apiKey: '', keyAlias, displayKey: `sk-***${id}`, label: keyAlias, lastSyncedAt: null,
+    });
+    const items = [
+      limited('1', 'small', 20),
+      unlimited('2', 'none'),
+      // 临时调整把生效限额抬到 500，但设定的常规限额仍是 50。
+      limited('3', 'adjusted', 500, 50),
+      limited('4', 'large', 200),
+      limited('5', 'tie', 20),
+    ];
+    const ids = sortApiKeySettingsItems(items, 'quota_limit').map((value) => value.id);
+
+    // 设定限额从大到小，同额按名称兜底，未设限额的 key 排在最后。
+    expect(ids).toEqual(['4', '3', '1', '5', '2']);
+    expect(resolveStoredApiKeySort('quota_limit', null)).toBe('quota_limit');
+  });
+
   it('sorts Chinese names by pinyin after the other names', () => {
     const item = (id: string, keyAlias: string): CpaApiKeySettingsItem => ({
       id, apiKey: '', keyAlias, displayKey: `sk-***${id}`, label: keyAlias, lastSyncedAt: null,

@@ -52,9 +52,9 @@ type CopyContext = {
   document?: CopyDocument;
 };
 
-export type ApiKeySortKey = 'name_asc' | 'name_desc' | 'status' | 'quota_ratio' | 'quota_spend';
+export type ApiKeySortKey = 'name_asc' | 'name_desc' | 'status' | 'quota_ratio' | 'quota_spend' | 'quota_limit';
 
-export const API_KEY_SORT_KEYS: readonly ApiKeySortKey[] = ['name_asc', 'name_desc', 'status', 'quota_ratio', 'quota_spend'];
+export const API_KEY_SORT_KEYS: readonly ApiKeySortKey[] = ['name_asc', 'name_desc', 'status', 'quota_ratio', 'quota_spend', 'quota_limit'];
 
 export const DEFAULT_API_KEY_SORT: ApiKeySortKey = 'name_asc';
 
@@ -129,6 +129,11 @@ const compareApiKeyNames = (left: CpaApiKeySettingsItem, right: CpaApiKeySetting
 const apiKeyQuotaMetric = (sortKey: ApiKeySortKey) => {
   if (sortKey === 'quota_ratio') return (item: CpaApiKeySettingsItem) => item.policy?.tightest?.ratio;
   if (sortKey === 'quota_spend') return (item: CpaApiKeySettingsItem) => item.policy?.tightest?.used;
+  // 设定限额取常规值（baseValue），临时调整不影响排序。
+  if (sortKey === 'quota_limit') return (item: CpaApiKeySettingsItem) => {
+    const tightest = item.policy?.tightest;
+    return tightest ? tightest.baseValue ?? tightest.value : undefined;
+  };
   return null;
 };
 

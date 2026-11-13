@@ -42,6 +42,7 @@ const translations: Record<string, string> = {
   'usage_stats.api_key_settings_sort_status': 'Status',
   'usage_stats.api_key_settings_sort_quota_ratio': 'Quota used %',
   'usage_stats.api_key_settings_sort_quota_spend': 'Quota spend',
+  'usage_stats.api_key_settings_sort_quota_limit': 'Quota limit',
   'usage_stats.api_key_settings_manage_aria': 'Manage {{key}}',
   'usage_stats.api_key_manage_actions_title': 'Key actions',
 }
@@ -544,7 +545,7 @@ describe('ApiKeySettingsCard row actions', () => {
     act(() => { trigger.click() })
     expect(trigger.getAttribute('aria-expanded')).toBe('true')
     const options = Array.from(container.querySelectorAll('[data-api-key-sort-option]')).map((option) => option.getAttribute('data-api-key-sort-option'))
-    expect(options).toEqual(['name_asc', 'name_desc', 'status', 'quota_ratio', 'quota_spend'])
+    expect(options).toEqual(['name_asc', 'name_desc', 'status', 'quota_ratio', 'quota_spend', 'quota_limit'])
     expect(container.querySelector('[data-api-key-sort-option="name_asc"]')!.getAttribute('aria-checked')).toBe('true')
 
     act(() => { container.querySelector<HTMLButtonElement>('[data-api-key-sort-option="quota_spend"]')!.click() })
