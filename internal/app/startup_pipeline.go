@@ -101,6 +101,8 @@ func (a *App) installReadyApp(ready *App) {
 	a.Poller, a.RedisIngest, a.RedisProcess = ready.Poller, ready.RedisIngest, ready.RedisProcess
 	a.CPAErrors, a.UsageAggregation = ready.CPAErrors, ready.UsageAggregation
 	a.PluginAPIKeys = ready.PluginAPIKeys
+	// fork 独有的限额执行与本地排行 runner 同样必须移交，否则 startReadyBackgroundTasks 看到 nil 而不启动。
+	a.KeyPolicyEnforcement, a.LocalRanking = ready.KeyPolicyEnforcement, ready.LocalRanking
 	a.Maintenance = ready.Maintenance
 	a.MetadataSync, a.QuotaService, a.QuotaAutoRefresh = ready.MetadataSync, ready.QuotaService, ready.QuotaAutoRefresh
 	a.BackupMaintenance, a.RecentUsageCache = ready.BackupMaintenance, ready.RecentUsageCache
