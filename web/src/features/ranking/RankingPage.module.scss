@@ -734,11 +734,13 @@
   text-align: center !important;
 }
 
+// API Key 列只取约五分之一宽度，剩余空间由八个指标列均分，避免名称列独占富余宽度。
 .participantColumn {
   position: sticky;
   left: var(--ranking-rank-column-width);
   z-index: 1;
-  min-width: 200px;
+  width: 18%;
+  min-width: 170px;
   background: var(--bg-primary);
 }
 
@@ -758,6 +760,7 @@
 }
 
 .numberCell {
+  width: 10%;
   text-align: right !important;
   font-variant-numeric: tabular-nums;
 }
@@ -810,8 +813,9 @@
 .participantCell {
   min-width: 170px;
 
+  // 名称过长时截断，避免 API Key 列挤占指标列；完整名称见悬停提示。
   strong {
-    max-width: 230px;
+    max-width: 160px;
     overflow: hidden;
     text-overflow: ellipsis;
   }
@@ -1000,6 +1004,16 @@
   .participantColumn,
   .participantCell {
     min-width: 0;
+  }
+
+  // 手机表格横向滚动，按内容取宽；百分比宽度会让固定的名称列占满屏幕。
+  .participantColumn,
+  .numberCell {
+    width: auto;
+  }
+
+  .participantCell strong {
+    max-width: 110px;
   }
 
   .profileModal :global(.modal-body) {

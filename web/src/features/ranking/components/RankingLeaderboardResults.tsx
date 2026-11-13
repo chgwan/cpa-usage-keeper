@@ -82,7 +82,7 @@ export function RankingLeaderboardResults({ entries, onEditLocalProfile }: Ranki
                 <td className={styles.participantColumn} data-ranking-participant-column>
                   <div className={styles.participantCell}>
                     <LeaderboardEntryAvatar entry={entry} className={styles.tableAvatar} onEditLocalProfile={onEditLocalProfile} />
-                    <strong>{entry.display_name}</strong>
+                    <strong title={entry.display_name}>{entry.display_name}</strong>
                   </div>
                 </td>
                 {RANKING_METRICS.map((metric) => (
