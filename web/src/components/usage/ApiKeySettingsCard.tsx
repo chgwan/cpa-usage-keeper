@@ -8,7 +8,18 @@ import { Modal } from '@/components/ui/Modal';
 import { IconCheck, IconCopy, IconEye, IconEyeOff, IconMaximize2, IconMinimize2 } from '@/components/ui/icons';
 import { useScrollBoundaryContainment } from '@/hooks/useScrollBoundaryContainment';
 import { resolveQuotaProgress } from '@/lib/quotaProgress';
-import type { ApiKeyLimitWindow, CreatedApiKey, CpaApiKeySettingsItem } from '@/lib/types';
+import type {
+  ApiKeyLimitWindow,
+  ApiKeyModelAccessState,
+  ApiKeyModelAccessUpdateRequest,
+  CreatedApiKey,
+  CpaApiKeySettingsItem,
+} from '@/lib/types';
+import {
+  ApiKeyModelAccessModal,
+  formatModelAccessTooltip,
+  hasModelAccessRules,
+} from './ApiKeyModelAccessDialogs';
 import {
   ApiKeyQuotaResetModal,
   ApiKeyQuotaSettingsModal,
@@ -288,6 +299,12 @@ export interface ApiKeySettingsCardProps {
   onAdjustQuotas?: (request: QuotaAdjustmentRequest) => Promise<QuotaAdjustmentResult | null>;
   /** 清除所选 key/周期当前生效的临时调整。 */
   onClearQuotaAdjustments?: (request: { apiKeyIds: string[]; windows: ApiKeyLimitWindow[] }) => Promise<boolean>;
+  /** CPA key-model-access 插件状态与按 key 模型权限；插件未安装时 available 为 false。 */
+  modelAccess?: ApiKeyModelAccessState | null;
+  /** 批量或单 key 保存模型权限，返回是否成功。 */
+  onSaveModelAccess?: (request: ApiKeyModelAccessUpdateRequest) => Promise<boolean>;
+  /** 从 CPA 的 policy_file 重载模型权限策略。 */
+  onReloadModelAccess?: () => Promise<boolean>;
 }
 
 export function ApiKeySettingsCard({
@@ -305,6 +322,9 @@ export function ApiKeySettingsCard({
   onResetQuotas,
   onAdjustQuotas,
   onClearQuotaAdjustments,
+  modelAccess,
+  onSaveModelAccess,
+  onReloadModelAccess,
 }: ApiKeySettingsCardProps) {
   const { t } = useTranslation();
   const [showFullApiKeys, setShowFullApiKeys] = useState(false);
@@ -383,11 +403,12 @@ export function ApiKeySettingsCard({
   }, [createAlias, createCustomKey, onCreateKey, onNotice, t]);
 
   const [quotaDialog, setQuotaDialog] = useState<'settings' | 'reset' | null>(null);
+  const [modelAccessOpen, setModelAccessOpen] = useState(false);
   // 单 key 管理面板打开时也算内层弹窗，卡片展开态下 Esc 只关管理面板，不连带收起卡片。
   // 用 manageDialogItem（而不是 manageDialogId）判断：列表刷新失败把 apiKeys 清空后，
   // id 还留着但对应的 item 已经找不到了，这时必须让 Esc 照常收起卡片，不能被一个
   // 已经指向空气的 id 卡住。
-  const innerModalOpen = createOpen || reveal.phase === 'revealed' || quotaDialog !== null || manageDialogItem !== null;
+  const innerModalOpen = createOpen || reveal.phase === 'revealed' || quotaDialog !== null || modelAccessOpen || manageDialogItem !== null;
 
   useEffect(() => {
     if (!expanded) {
@@ -473,6 +494,19 @@ export function ApiKeySettingsCard({
               {t('usage_stats.api_key_quota_reset_button')}
             </Button>
           )}
+          {modelAccess?.available && onSaveModelAccess && (
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              appearance="action"
+              onClick={() => setModelAccessOpen(true)}
+              disabled={manageableApiKeys.length === 0}
+              data-api-key-model-access-open
+            >
+              {t('usage_stats.api_key_model_access_button')}
+            </Button>
+          )}
           <ApiKeySortMenu value={sortKey} onChange={changeSort} />
           <Button
             type="button"
@@ -531,6 +565,15 @@ export function ApiKeySettingsCard({
               // 紧凑限额进度条：无限额摘要（tightest 缺失）时不渲染；超限切红色轨道。
               const quota = resolveQuotaProgress(item.policy);
               const quotaPercent = quota === null ? 0 : Math.round(quota.ratio * 100);
+              const modelRule = !plugin && modelAccess?.available ? modelAccess.policies[item.id] : undefined;
+              const modelRuleConfigured = hasModelAccessRules(modelRule);
+              const modelRuleTooltip = modelRule && modelRuleConfigured
+                ? formatModelAccessTooltip(
+                  modelRule,
+                  t('usage_stats.api_key_model_access_allow_title'),
+                  t('usage_stats.api_key_model_access_deny_title'),
+                )
+                : '';
               return (
                 <div key={item.id} className={styles.apiKeySettingsItem} data-api-key-settings-item={item.id}>
                   <div className={styles.apiKeySettingsSummary}>
@@ -561,17 +604,37 @@ export function ApiKeySettingsCard({
                         {copiedId === item.id ? <IconCheck size={14} /> : <IconCopy size={14} />}
                       </button>}
                     </div>
-                    {plugin && (
-                      <span className={styles.apiKeyBadge} data-api-key-plugin-source={item.id}>
-                        {`${t('usage_stats.api_key_settings_plugin')} · ${t('usage_stats.api_key_settings_source')}: ${item.accessProvider.replace(/^plugin:/, '')}`}
-                      </span>
-                    )}
-                    {stateBadge && (
-                      <span
-                        className={`${styles.apiKeyBadge} ${enforcementState === 'disabled_by_quota' ? styles.apiKeyBadgeBreached : ''}`.trim()}
-                      >
-                        {stateBadge}
-                      </span>
+                    {(plugin || stateBadge || modelRuleConfigured) && (
+                      <div className={styles.apiKeyBadgesRow}>
+                        {plugin && (
+                          <span className={styles.apiKeyBadge} data-api-key-plugin-source={item.id}>
+                            {`${t('usage_stats.api_key_settings_plugin')} · ${t('usage_stats.api_key_settings_source')}: ${item.accessProvider.replace(/^plugin:/, '')}`}
+                          </span>
+                        )}
+                        {stateBadge && (
+                          <span
+                            className={`${styles.apiKeyBadge} ${enforcementState === 'disabled_by_quota' ? styles.apiKeyBadgeBreached : ''}`.trim()}
+                          >
+                            {stateBadge}
+                          </span>
+                        )}
+                        {modelRule && modelRuleConfigured && (
+                          <span
+                            className={`${styles.apiKeyBadge} ${styles.apiKeyModelAccessBadge}`.trim()}
+                            title={modelRuleTooltip}
+                            data-api-key-model-access-badge={item.id}
+                          >
+                            {[
+                              modelRule.allowModels.length > 0
+                                ? t('usage_stats.api_key_model_access_badge_allow', { count: modelRule.allowModels.length })
+                                : '',
+                              modelRule.denyModels.length > 0
+                                ? t('usage_stats.api_key_model_access_badge_deny', { count: modelRule.denyModels.length })
+                                : '',
+                            ].filter(Boolean).join(' · ')}
+                          </span>
+                        )}
+                      </div>
                     )}
                     {quota && (
                       <div
@@ -664,6 +727,15 @@ export function ApiKeySettingsCard({
       {quotaDialog === 'reset' && onResetQuotas && (
         <ApiKeyQuotaResetModal apiKeys={manageableApiKeys} onClose={() => setQuotaDialog(null)} onSubmit={onResetQuotas} />
       )}
+      {modelAccessOpen && modelAccess?.available && onSaveModelAccess && (
+        <ApiKeyModelAccessModal
+          apiKeys={manageableApiKeys}
+          modelAccess={modelAccess}
+          onClose={() => setModelAccessOpen(false)}
+          onSubmit={onSaveModelAccess}
+          onReload={onReloadModelAccess}
+        />
+      )}
 
       {manageDialogItem && (
         <ApiKeyManageDialog
@@ -681,6 +753,9 @@ export function ApiKeySettingsCard({
           onResetQuotas={onResetQuotas}
           onAdjustQuotas={onAdjustQuotas}
           onClearQuotaAdjustments={onClearQuotaAdjustments}
+          modelAccess={modelAccess}
+          onSaveModelAccess={onSaveModelAccess}
+          onReloadModelAccess={onReloadModelAccess}
         />
       )}
 

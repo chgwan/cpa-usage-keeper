@@ -244,8 +244,10 @@ func buildReadyApp(cfg config.Config, db, readDB *gorm.DB, logCloser io.Closer, 
 		OnDisplayNameChanged: quotaService.UpdateUsageIdentityDisplayNameSnapshot,
 	})
 	cpaAPIKeyService := service.NewCPAAPIKeyService(db)
+	// key-model-access 服务复用同一个 DB 与 CPA client，并作为生命周期回调注入 key 管理服务。
+	keyModelAccessService := service.NewKeyModelAccessService(db, cpaClient)
 	// 生命周期与限额策略服务复用同一个 DB 和 CPA client，并与限额 runner 共享 key 变更互斥锁。
-	cpaAPIKeyManagementService := service.NewCPAAPIKeyManagementServiceWithWaker(db, cpaClient, keyMutationMutex, keyPolicyRunner.WakeNow)
+	cpaAPIKeyManagementService := service.NewCPAAPIKeyManagementServiceWithModelAccessHook(db, cpaClient, keyMutationMutex, keyPolicyRunner.WakeNow, keyModelAccessService)
 	// 单条凭证开关成功后立即与 CPA 对齐；runner 自带合并窗口和 nil 保护。
 	credentialMutationLocks := &service.CredentialMutationLocks{}
 	credentialsManagementService := service.NewCredentialsManagementService(cpaClient, metadataSyncRunner, credentialMutationLocks, credentialMetadata)
@@ -325,7 +327,9 @@ func buildReadyApp(cfg config.Config, db, readDB *gorm.DB, logCloser io.Closer, 
 				CPAAPIKeys:             cpaAPIKeyService,
 				// CPAAPIKeyManagement 让管理端 key 生命周期与限额策略路由可用。
 				CPAAPIKeyManagement: cpaAPIKeyManagementService,
-				Credentials:         credentialsManagementService,
+				// CPAAPIKeyModelAccess 对接 CPA 的 key-model-access 插件管理按 Key 模型权限。
+				CPAAPIKeyModelAccess: keyModelAccessService,
+				Credentials:          credentialsManagementService,
 				// 凭证与 AI 供应商共用一个 service，路由层按类型分发。
 				CredentialStatus:   credentialStatusService,
 				CredentialPriority: credentialPriorityService,

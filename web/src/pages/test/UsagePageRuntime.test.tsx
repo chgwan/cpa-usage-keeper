@@ -30,6 +30,7 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   fetchVersion: async () => ({ version: 'test' }),
   fetchCpaApiKeyOptions: async () => ({ options: [] }),
   fetchCpaApiKeySettings: async () => ({ items: [] }),
+  fetchCpaApiKeyModelAccess: async () => ({ available: false, models: [], policies: {} }),
   fetchAuthSessions: async () => ({ items: [] }),
   fetchTOTPStatus: async () => ({ enabled: false, pending: false }),
   fetchPricingModels: async () => ({ models: [], config_revision: 0 }),

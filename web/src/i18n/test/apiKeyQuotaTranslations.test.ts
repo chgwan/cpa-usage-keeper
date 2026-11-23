@@ -8,4 +8,10 @@ describe('API key quota translations', () => {
     expect(i18n.getResource('zh', 'translation', 'usage_stats.api_key_policy_progress_label')).toBe('用量配额进度');
     expect(i18n.getResource('zh-TW', 'translation', 'usage_stats.api_key_policy_progress_label')).toBe('用量限額進度');
   });
+
+  it('localizes api key model access labels in every language', () => {
+    expect(i18n.getResource('en', 'translation', 'usage_stats.api_key_model_access_title')).toBe('Model access');
+    expect(i18n.getResource('zh', 'translation', 'usage_stats.api_key_model_access_title')).toBe('模型权限');
+    expect(i18n.getResource('zh-TW', 'translation', 'usage_stats.api_key_model_access_title')).toBe('模型權限');
+  });
 });

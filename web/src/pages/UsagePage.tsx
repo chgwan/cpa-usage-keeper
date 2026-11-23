@@ -4,11 +4,11 @@ import { UsageComparisonCharts } from '@/components/usage/UsageComparisonCharts'
 import type { ModelSpeedRefreshSignal } from '@/components/usage/model-speed/modelSpeedAnimation';
 import { useState, useMemo, useCallback, useEffect, useRef, type MouseEvent as ReactMouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ApiError, appPath, clearCpaApiKeyQuotaAdjustments, createCpaApiKey, createUsageEventRequestLogDownloadURL, deleteCpaApiKey, disableCpaApiKey, exportUsageEvents, fetchAnalysis, fetchAnalysisLatency, fetchAuthSessions, fetchCpaApiKeyOptions, fetchCpaApiKeySettings, fetchStatus, fetchUpdateCheck, fetchUsageEventModelFilterOptions, fetchUsageEventRequestLog, fetchUsageEventSourceFilterOptions, fetchUsageIdentity, fetchVersion, isCostsBusy, isUsageRangeBoundsConflict, logout, regenerateCpaApiKey, resetCpaApiKeyQuotas, restoreCpaApiKey, revokeAuthSession, setCpaApiKeyQuotaAdjustments, updateAuthSessionAlias, updateCpaApiKeyAlias, updateCpaApiKeyPolicies, type UsageEventsExportFormat, type CpaApiKeyOptionsRequest } from '@/lib/api';
+import { ApiError, appPath, clearCpaApiKeyQuotaAdjustments, createCpaApiKey, createUsageEventRequestLogDownloadURL, deleteCpaApiKey, disableCpaApiKey, exportUsageEvents, fetchAnalysis, fetchAnalysisLatency, fetchAuthSessions, fetchCpaApiKeyModelAccess, fetchCpaApiKeyOptions, fetchCpaApiKeySettings, fetchStatus, fetchUpdateCheck, fetchUsageEventModelFilterOptions, fetchUsageEventRequestLog, fetchUsageEventSourceFilterOptions, fetchUsageIdentity, fetchVersion, isCostsBusy, isUsageRangeBoundsConflict, logout, regenerateCpaApiKey, reloadCpaApiKeyModelAccess, resetCpaApiKeyQuotas, restoreCpaApiKey, revokeAuthSession, setCpaApiKeyQuotaAdjustments, updateAuthSessionAlias, updateCpaApiKeyAlias, updateCpaApiKeyModelAccess, updateCpaApiKeyPolicies, type UsageEventsExportFormat, type CpaApiKeyOptionsRequest } from '@/lib/api';
 import { useScopedAPIKeyOptions } from '@/components/usage/hooks/useScopedAPIKeyOptions';
 import { useRequestEventsFeed } from '@/components/usage/useRequestEventsFeed';
 import { useModelPricingData } from '@/components/usage/hooks/useModelPricingData';
-import type { AnalysisLatencyDiagnostics, AnalysisResponse, ApiKeyLimitWindow, AuthManagedSessionItem, CpaApiKeyOption, CpaApiKeySettingsItem, CreatedApiKey, OverviewRealtimeWindow, StatusResponse, UsageCustomRange, UsageEvent, UsageEventRequestLogResponse, UsageSourceFilterOption, UsageTimeRange, VersionResponse } from '@/lib/types';
+import type { AnalysisLatencyDiagnostics, AnalysisResponse, ApiKeyLimitWindow, ApiKeyModelAccessState, ApiKeyModelAccessUpdateRequest, AuthManagedSessionItem, CpaApiKeyOption, CpaApiKeySettingsItem, CreatedApiKey, OverviewRealtimeWindow, StatusResponse, UsageCustomRange, UsageEvent, UsageEventRequestLogResponse, UsageSourceFilterOption, UsageTimeRange, VersionResponse } from '@/lib/types';
 import { DEFAULT_USAGE_TAB, getUsageTabPath, handleUsageTabKeyActivation, resolveInitialUsageTab, shouldHandleUsageNavigation, USAGE_TAB_OPTIONS, type UsageTab } from '@/lib/usageNavigation';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { LanguageSwitcher } from '@/components/ui/LanguageSwitcher';
@@ -861,6 +861,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const [apiKeySettingsError, setApiKeySettingsError] = useState('');
   const [apiKeySettingsSavingId, setApiKeySettingsSavingId] = useState<string | null>(null);
   const apiKeySettingsRequestControllerRef = useRef<AbortController | null>(null);
+  const [apiKeyModelAccess, setApiKeyModelAccess] = useState<ApiKeyModelAccessState | null>(null);
+  const apiKeyModelAccessRequestControllerRef = useRef<AbortController | null>(null);
   const [authSessions, setAuthSessions] = useState<AuthManagedSessionItem[]>([]);
   const [authSessionsLoading, setAuthSessionsLoading] = useState(false);
   const [authSessionsError, setAuthSessionsError] = useState('');
@@ -1102,6 +1104,35 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     }
   }, [onAuthRequired]);
 
+  const loadApiKeyModelAccess = useCallback(async () => {
+    apiKeyModelAccessRequestControllerRef.current?.abort();
+    const controller = new AbortController();
+    apiKeyModelAccessRequestControllerRef.current = controller;
+    try {
+      const response = await fetchCpaApiKeyModelAccess(controller.signal);
+      if (apiKeyModelAccessRequestControllerRef.current !== controller) {
+        return;
+      }
+      setApiKeyModelAccess(response);
+    } catch (error) {
+      if (controller.signal.aborted) {
+        return;
+      }
+      if (error instanceof ApiError && error.status === 401) {
+        onAuthRequired?.();
+        return;
+      }
+      // 插件未安装或暂时不可达时静默降级，不阻断 API Key 设置页的主功能。
+      if (apiKeyModelAccessRequestControllerRef.current === controller) {
+        setApiKeyModelAccess((current) => current ?? { available: false, models: [], policies: {} });
+      }
+    } finally {
+      if (apiKeyModelAccessRequestControllerRef.current === controller) {
+        apiKeyModelAccessRequestControllerRef.current = null;
+      }
+    }
+  }, [onAuthRequired]);
+
   const loadAuthSessions = useCallback(async () => {
     authSessionsRequestControllerRef.current?.abort();
     const controller = new AbortController();
@@ -1167,6 +1198,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     try {
       const result = await action();
       void loadApiKeySettings();
+      void loadApiKeyModelAccess();
       return result;
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
@@ -1176,7 +1208,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       setApiKeySettingsError(error instanceof Error ? error.message : fallbackMessage);
       return null;
     }
-  }, [loadApiKeySettings, onAuthRequired]);
+  }, [loadApiKeyModelAccess, loadApiKeySettings, onAuthRequired]);
 
   const handleCreateApiKey = useCallback(async (alias: string, customKey: string) => {
     const created = await runApiKeyLifecycle('Failed to create CPA API key', () => createCpaApiKey(alias, customKey));
@@ -1251,6 +1283,46 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     if (cleared) showTopNotice('success', t('usage_stats.api_key_quota_adjustment_clear_success'));
     return cleared;
   }, [runApiKeyLifecycle, showTopNotice, t]);
+
+  const handleSaveApiKeyModelAccess = useCallback(async (request: ApiKeyModelAccessUpdateRequest) => {
+    setApiKeySettingsError('');
+    try {
+      const next = await updateCpaApiKeyModelAccess(request);
+      setApiKeyModelAccess(next);
+      showTopNotice('success', t('usage_stats.api_key_model_access_save_success'));
+      return true;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        onAuthRequired?.();
+        return false;
+      }
+      const message = error instanceof ApiError && error.code === 'policy_conflict'
+        ? t('usage_stats.api_key_model_access_conflict')
+        : (error instanceof Error ? error.message : t('usage_stats.api_key_model_access_save_failed'));
+      setApiKeySettingsError(message);
+      showTopNotice('error', message);
+      return false;
+    }
+  }, [onAuthRequired, showTopNotice, t]);
+
+  const handleReloadApiKeyModelAccess = useCallback(async () => {
+    setApiKeySettingsError('');
+    try {
+      const next = await reloadCpaApiKeyModelAccess();
+      setApiKeyModelAccess(next);
+      showTopNotice('success', t('usage_stats.api_key_model_access_reload_success'));
+      return true;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        onAuthRequired?.();
+        return false;
+      }
+      const message = error instanceof Error ? error.message : t('usage_stats.api_key_model_access_reload_failed');
+      setApiKeySettingsError(message);
+      showTopNotice('error', message);
+      return false;
+    }
+  }, [onAuthRequired, showTopNotice, t]);
 
   const handleRevokeAuthSession = useCallback(async (session: AuthManagedSessionItem) => {
     setAuthSessionRevokingId(session.id);
@@ -1736,11 +1808,11 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       return;
     }
     if (activeTab === 'settings') {
-      await Promise.all([loadAuthSessions(), loadApiKeySettings()]);
+      await Promise.all([loadAuthSessions(), loadApiKeySettings(), loadApiKeyModelAccess()]);
       return;
     }
     await Promise.all([loadUsage(markOverviewLoaded), loadActivity(), loadComparisons({ onLoaded: markComparisonsLoaded })]);
-  }, [activeTab, apiKeyFilterReady, credentialSectionVisibility.enabled, loadActivity, loadAnalysis, loadApiKeySettings, loadAuthSessions, loadComparisons, loadEventFilterOptions, loadEvents, loadRealtime, loadUsage, refreshCredentialDetail, refreshCredentials, refreshRanking, markOverviewLoaded, markComparisonsLoaded]);
+  }, [activeTab, apiKeyFilterReady, credentialSectionVisibility.enabled, loadActivity, loadAnalysis, loadApiKeyModelAccess, loadApiKeySettings, loadAuthSessions, loadComparisons, loadEventFilterOptions, loadEvents, loadRealtime, loadUsage, refreshCredentialDetail, refreshCredentials, refreshRanking, markOverviewLoaded, markComparisonsLoaded]);
 
   const refreshActiveTab = useCallback(async () => {
     if (!apiKeyFilterReady && shouldShowApiKeyFilter(activeTab)) return;
@@ -1883,20 +1955,25 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       apiKeySettingsRequestControllerRef.current?.abort();
       apiKeySettingsRequestControllerRef.current = null;
       setApiKeySettingsLoading(false);
+      apiKeyModelAccessRequestControllerRef.current?.abort();
+      apiKeyModelAccessRequestControllerRef.current = null;
       authSessionsRequestControllerRef.current?.abort();
       authSessionsRequestControllerRef.current = null;
       setAuthSessionsLoading(false);
       return;
     }
     void loadApiKeySettings();
+    void loadApiKeyModelAccess();
     void loadAuthSessions();
     return () => {
       apiKeySettingsRequestControllerRef.current?.abort();
       apiKeySettingsRequestControllerRef.current = null;
+      apiKeyModelAccessRequestControllerRef.current?.abort();
+      apiKeyModelAccessRequestControllerRef.current = null;
       authSessionsRequestControllerRef.current?.abort();
       authSessionsRequestControllerRef.current = null;
     };
-  }, [activeTab, loadApiKeySettings, loadAuthSessions]);
+  }, [activeTab, loadApiKeyModelAccess, loadApiKeySettings, loadAuthSessions]);
 
   useEffect(() => {
     const next = sanitizeRequestEventFilters(
@@ -2394,6 +2471,9 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                   onResetQuotas={handleResetApiKeyQuotas}
                   onAdjustQuotas={handleAdjustApiKeyQuotas}
                   onClearQuotaAdjustments={handleClearApiKeyQuotaAdjustments}
+                  modelAccess={apiKeyModelAccess}
+                  onSaveModelAccess={handleSaveApiKeyModelAccess}
+                  onReloadModelAccess={handleReloadApiKeyModelAccess}
                 />
               </div>
             )}

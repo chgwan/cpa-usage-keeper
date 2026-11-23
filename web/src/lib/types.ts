@@ -987,6 +987,38 @@ export interface CpaApiKeyOptionsResponse {
   options: CpaApiKeyOption[]
 }
 
+export interface ApiKeyModelAccessStatus {
+  version: string
+  policyCount: number
+  revision: number
+  policyFile: string
+  persistentUpdates: boolean
+  source: string
+  updatedAt: string
+  failClosed: boolean
+  lastError: string
+  persistenceSetupError?: string
+}
+
+export interface ApiKeyModelAccessRule {
+  allowModels: string[]
+  denyModels: string[]
+}
+
+export interface ApiKeyModelAccessState {
+  available: boolean
+  status?: ApiKeyModelAccessStatus
+  models: string[]
+  modelsError?: string
+  policies: Record<string, ApiKeyModelAccessRule>
+}
+
+export interface ApiKeyModelAccessUpdateRequest {
+  apiKeyIds: string[]
+  allowModels: string[]
+  denyModels: string[]
+}
+
 export type PricingStyle = 'openai' | 'claude'
 
 // 完整模型配置与后端保存合同一致；条件只携带当前 type 允许的字段。

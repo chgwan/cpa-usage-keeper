@@ -118,6 +118,8 @@ type cpaAPIKeyManagementService struct {
 	now func() time.Time
 	// wakeRunner 在限额或清零点变化后立即唤醒限额 runner；nil 时等兜底 tick。
 	wakeRunner func()
+	// modelAccessHook 在 key 重新生成或删除后同步更新 CPA key-model-access 插件策略；nil 时跳过。
+	modelAccessHook KeyModelAccessLifecycleHook
 }
 
 // NewCPAAPIKeyManagementService 组装生命周期服务；费用来自入库时已计价的 usage 事件。
@@ -128,17 +130,29 @@ func NewCPAAPIKeyManagementService(db *gorm.DB, client *cpa.Client, keyMutations
 
 // NewCPAAPIKeyManagementServiceWithWaker 额外注入限额 runner 的唤醒函数，生产 App 使用。
 func NewCPAAPIKeyManagementServiceWithWaker(db *gorm.DB, client *cpa.Client, keyMutations sync.Locker, wakeRunner func()) CPAAPIKeyManagementProvider {
+	return NewCPAAPIKeyManagementServiceWithModelAccessHook(db, client, keyMutations, wakeRunner, nil)
+}
+
+// NewCPAAPIKeyManagementServiceWithModelAccessHook 额外注入 key-model-access 生命周期回调。
+func NewCPAAPIKeyManagementServiceWithModelAccessHook(
+	db *gorm.DB,
+	client *cpa.Client,
+	keyMutations sync.Locker,
+	wakeRunner func(),
+	modelAccessHook KeyModelAccessLifecycleHook,
+) CPAAPIKeyManagementProvider {
 	if keyMutations == nil {
 		keyMutations = &sync.Mutex{}
 	}
 	return &cpaAPIKeyManagementService{
-		db:           db,
-		client:       client,
-		store:        keypolicy.NewStore(db),
-		keyMutations: keyMutations,
-		logger:       logrus.StandardLogger(),
-		now:          time.Now,
-		wakeRunner:   wakeRunner,
+		db:              db,
+		client:          client,
+		store:           keypolicy.NewStore(db),
+		keyMutations:    keyMutations,
+		logger:          logrus.StandardLogger(),
+		now:             time.Now,
+		wakeRunner:      wakeRunner,
+		modelAccessHook: modelAccessHook,
 	}
 }
 
@@ -310,6 +324,9 @@ func (s *cpaAPIKeyManagementService) RegenerateCPAAPIKey(ctx context.Context, id
 	if err != nil {
 		return entities.CPAAPIKey{}, "", err
 	}
+	if s.modelAccessHook != nil {
+		s.modelAccessHook.OnAPIKeyRegenerated(ctx, row.APIKey, newKey)
+	}
 	return updated, newKey, nil
 }
 
@@ -343,6 +360,9 @@ func (s *cpaAPIKeyManagementService) DeleteCPAAPIKey(ctx context.Context, id int
 	}
 	if err := s.syncLocalKeys(current); err != nil {
 		return err
+	}
+	if s.modelAccessHook != nil {
+		s.modelAccessHook.OnAPIKeyDeleted(ctx, row.APIKey)
 	}
 	// 审计日志保留。
 	return nil

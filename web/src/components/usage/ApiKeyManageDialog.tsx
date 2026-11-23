@@ -2,7 +2,14 @@ import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
-import type { ApiKeyLimitWindow, CreatedApiKey, CpaApiKeySettingsItem } from '@/lib/types';
+import type {
+  ApiKeyLimitWindow,
+  ApiKeyModelAccessState,
+  ApiKeyModelAccessUpdateRequest,
+  CreatedApiKey,
+  CpaApiKeySettingsItem,
+} from '@/lib/types';
+import { ApiKeyModelAccessSection } from './ApiKeyModelAccessDialogs';
 import {
   ApiKeyQuotaSection,
   PeriodPicker,
@@ -82,9 +89,12 @@ export interface ApiKeyManageDialogProps {
   onResetQuotas?: (request: QuotaResetRequest) => Promise<boolean>;
   onAdjustQuotas?: (request: QuotaAdjustmentRequest) => Promise<QuotaAdjustmentResult | null>;
   onClearQuotaAdjustments?: (request: { apiKeyIds: string[]; windows: ApiKeyLimitWindow[] }) => Promise<boolean>;
+  modelAccess?: ApiKeyModelAccessState | null;
+  onSaveModelAccess?: (request: ApiKeyModelAccessUpdateRequest) => Promise<boolean>;
+  onReloadModelAccess?: () => Promise<boolean>;
 }
 
-// 单 key 管理面板：把原来分散在行内的限额 / 重置 / 重新生成 / 启停 / 删除全部收进一个弹窗，
+// 单 key 管理面板：把原来分散在行内的限额 / 模型权限 / 重置 / 重新生成 / 启停 / 删除全部收进一个弹窗，
 // 行内只留别名与保存。配额与执行审计区块直接复用 ApiKeyQuotaSection（它内部已经渲染了
 // SingleKeyEnforcementLogs），不单独再起一个日志区块，避免重复挂载同一份审计请求。
 export function ApiKeyManageDialog({
@@ -100,6 +110,9 @@ export function ApiKeyManageDialog({
   onResetQuotas,
   onAdjustQuotas,
   onClearQuotaAdjustments,
+  modelAccess,
+  onSaveModelAccess,
+  onReloadModelAccess,
 }: ApiKeyManageDialogProps) {
   const { t } = useTranslation();
   const [confirmKind, setConfirmKind] = useState<'regenerate' | 'delete' | null>(null);
@@ -174,6 +187,17 @@ export function ApiKeyManageDialog({
             <section className={styles.apiKeyManageSection}>
               <h3 className={styles.apiKeyManageSectionTitle}>{t('usage_stats.api_key_quota_reset_title')}</h3>
               <ResetQuotaSection item={item} onResetQuotas={onResetQuotas} />
+            </section>
+          )}
+          {modelAccess?.available && onSaveModelAccess && (
+            <section className={styles.apiKeyManageSection} data-api-key-manage-model-access>
+              <h3 className={styles.apiKeyManageSectionTitle}>{t('usage_stats.api_key_model_access_title')}</h3>
+              <ApiKeyModelAccessSection
+                item={item}
+                modelAccess={modelAccess}
+                onSubmit={onSaveModelAccess}
+                onReload={onReloadModelAccess}
+              />
             </section>
           )}
           {(onRegenerateKey || onDisableKey || onRestoreKey || onDeleteKey) && (

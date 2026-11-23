@@ -1,4 +1,4 @@
-import { type AnalysisLatencyDiagnostics, type AnalysisResponse, type ApiKeyEnforcementLogsResponse, type ApiKeyLimitWindow, type ApiKeyPolicyLimit, type ApiKeyPolicyResponse, type CreatedApiKey, type CredentialsManagementResponse, type AuthManagedSessionsResponse, type AuthSessionResponse, type CodexQuotaHistoryResponse, type KeyOverviewQuota, type CpaApiKeyDisplayItem, type CpaApiKeyOptionsResponse, type CpaApiKeySettingsResponse, type CpaApiKeysResponse, type ErrorEventsResponse, type OverviewRealtimeBlock, type OverviewRealtimeWindow, type PricingSyncSource, type QuotaAutoRefreshSettings, type StatusResponse, type UpdateCheckResponse, type UsageActivityRequest, type UsageActivityResponse, type UsageEventModelFilterOptionsResponse, type UsageEventRequestLogResponse, type UsageEventSourceFilterOptionsResponse, type UsageRangeRequest, type UsageIdentitiesPageResponse, type UsageIdentitiesResponse, type UsageEventsResponse, type UsageIdentity, type UsageIdentityAuthType, type UsageOverviewComparisons, type UsageOverviewResponse, type UsageQuotaCacheResponse, type UsageQuotaInspectionStatusResponse, type UsageQuotaRefreshResponse, type UsageQuotaRefreshTaskResponse, type UsageQuotaResetCreditsResponse, type UsageQuotaResetResponse, type VersionResponse } from './types'
+import { type AnalysisLatencyDiagnostics, type AnalysisResponse, type ApiKeyEnforcementLogsResponse, type ApiKeyLimitWindow, type ApiKeyModelAccessState, type ApiKeyModelAccessUpdateRequest, type ApiKeyPolicyLimit, type ApiKeyPolicyResponse, type CreatedApiKey, type CredentialsManagementResponse, type AuthManagedSessionsResponse, type AuthSessionResponse, type CodexQuotaHistoryResponse, type KeyOverviewQuota, type CpaApiKeyDisplayItem, type CpaApiKeyOptionsResponse, type CpaApiKeySettingsResponse, type CpaApiKeysResponse, type ErrorEventsResponse, type OverviewRealtimeBlock, type OverviewRealtimeWindow, type PricingSyncSource, type QuotaAutoRefreshSettings, type StatusResponse, type UpdateCheckResponse, type UsageActivityRequest, type UsageActivityResponse, type UsageEventModelFilterOptionsResponse, type UsageEventRequestLogResponse, type UsageEventSourceFilterOptionsResponse, type UsageRangeRequest, type UsageIdentitiesPageResponse, type UsageIdentitiesResponse, type UsageEventsResponse, type UsageIdentity, type UsageIdentityAuthType, type UsageOverviewComparisons, type UsageOverviewResponse, type UsageQuotaCacheResponse, type UsageQuotaInspectionStatusResponse, type UsageQuotaRefreshResponse, type UsageQuotaRefreshTaskResponse, type UsageQuotaResetCreditsResponse, type UsageQuotaResetResponse, type VersionResponse } from './types'
 import type { DeletePricingModelResponse, ModelPricingConfig, PricingErrorResponse, PricingFieldError, PricingModelOptionsResponse, PricingModelsResponse, PricingRecalculationOptions, PricingRecalculationTask, PricingSyncApplyRequest, PricingSyncApplyResponse, PricingSyncFetchResponse, SavePricingModelResponse, StartPricingRecalculationRequest, StartPricingRecalculationResponse } from './types'
 import { isCPAMCEmbed } from '@/embed/cpamcEmbed'
 import { resolveUsageRequestRange } from '@/utils/usage/rangeQuery'
@@ -1210,6 +1210,38 @@ export async function fetchCpaApiKeyEnforcementLogs(id: string, limit = 50, sign
     await parseApiError(response, `Failed to load CPA API key enforcement logs: ${response.status}`)
   }
   return (await response.json()) as ApiKeyEnforcementLogsResponse
+}
+
+export async function fetchCpaApiKeyModelAccess(signal?: AbortSignal): Promise<ApiKeyModelAccessState> {
+  const response = await apiFetch(apiPath('/usage/api-keys/model-access'), { signal, cache: 'no-store' })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to load CPA API key model access: ${response.status}`)
+  }
+  return (await response.json()) as ApiKeyModelAccessState
+}
+
+export async function updateCpaApiKeyModelAccess(request: ApiKeyModelAccessUpdateRequest): Promise<ApiKeyModelAccessState> {
+  const response = await apiFetch(apiPath('/usage/api-keys/model-access'), {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to update CPA API key model access: ${response.status}`)
+  }
+  return (await response.json()) as ApiKeyModelAccessState
+}
+
+export async function reloadCpaApiKeyModelAccess(): Promise<ApiKeyModelAccessState> {
+  const response = await apiFetch(apiPath('/usage/api-keys/model-access/reload'), {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to reload CPA API key model access: ${response.status}`)
+  }
+  return (await response.json()) as ApiKeyModelAccessState
 }
 
 export async function fetchStatus(signal?: AbortSignal): Promise<StatusResponse> {

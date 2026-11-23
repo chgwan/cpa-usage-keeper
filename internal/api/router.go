@@ -60,7 +60,9 @@ type OptionalProviders struct {
 	CPAAPIKeys             service.CPAAPIKeyProvider
 	// CPAAPIKeyManagement 提供 key 生命周期与限额策略管理路由；为空时相关路由统一返回 501。
 	CPAAPIKeyManagement service.CPAAPIKeyManagementProvider
-	Credentials         service.CredentialsManagementProvider
+	// CPAAPIKeyModelAccess 对接 CPA 的 key-model-access 插件，提供按 Key 模型权限管理路由。
+	CPAAPIKeyModelAccess service.KeyModelAccessProvider
+	Credentials          service.CredentialsManagementProvider
 	CredentialStatus    service.CredentialStatusProvider
 	CredentialPriority  service.CredentialPriorityProvider
 	RequestLogs         service.RequestLogProvider
@@ -118,6 +120,7 @@ func NewRouter(
 	var quotaProvider QuotaProvider
 	var cpaAPIKeyProvider service.CPAAPIKeyProvider
 	var cpaAPIKeyManagementProvider service.CPAAPIKeyManagementProvider
+	var cpaAPIKeyModelAccessProvider service.KeyModelAccessProvider
 	var credentialsProvider service.CredentialsManagementProvider
 	var credentialStatusProvider service.CredentialStatusProvider
 	var credentialPriorityProvider service.CredentialPriorityProvider
@@ -134,6 +137,7 @@ func NewRouter(
 		quotaProvider = optionalProviders[0].Quota
 		cpaAPIKeyProvider = optionalProviders[0].CPAAPIKeys
 		cpaAPIKeyManagementProvider = optionalProviders[0].CPAAPIKeyManagement
+		cpaAPIKeyModelAccessProvider = optionalProviders[0].CPAAPIKeyModelAccess
 		credentialsProvider = optionalProviders[0].Credentials
 		credentialStatusProvider = optionalProviders[0].CredentialStatus
 		credentialPriorityProvider = optionalProviders[0].CredentialPriority
@@ -170,6 +174,7 @@ func NewRouter(
 	registerTOTPManagementRoutes(adminProtected, authHandler)
 	registerCPAAPIKeyRoutes(adminProtected, cpaAPIKeyProvider, usageProvider, cpaAPIKeyManagementProvider)
 	registerCPAAPIKeyManagementRoutes(adminProtected, cpaAPIKeyManagementProvider)
+	registerCPAAPIKeyModelAccessRoutes(adminProtected, cpaAPIKeyModelAccessProvider)
 	registerPricingRoutes(adminProtected, pricingProvider)
 	registerModelsRoutes(adminProtected, modelsProvider)
 	registerQuotaRoutes(adminProtected, quotaProvider)

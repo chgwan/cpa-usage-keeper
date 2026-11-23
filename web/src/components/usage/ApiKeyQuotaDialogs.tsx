@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -120,15 +120,16 @@ export function buildQuotaAdjustmentRequest(
   return { request: { apiKeyIds: [...selectedIds], windows: selectedWindows, deltaUsd }, error: null };
 }
 
-interface ApiKeyPickerProps {
+export interface ApiKeyPickerProps {
   apiKeys: CpaApiKeySettingsItem[];
   selected: ReadonlySet<string>;
   onChange: (next: Set<string>) => void;
   disabled?: boolean;
+  renderBadge?: (item: CpaApiKeySettingsItem) => ReactNode;
 }
 
 // 多选 key 列表：顶部“全选”三态复选框 + 按别名 / key 过滤。
-function ApiKeyPicker({ apiKeys, selected, onChange, disabled = false }: ApiKeyPickerProps) {
+export function ApiKeyPicker({ apiKeys, selected, onChange, disabled = false, renderBadge }: ApiKeyPickerProps) {
   const { t } = useTranslation();
   const [filter, setFilter] = useState('');
   const visible = useMemo(() => {
@@ -185,6 +186,7 @@ function ApiKeyPicker({ apiKeys, selected, onChange, disabled = false }: ApiKeyP
               />
               <span className={styles.apiKeyQuotaKeyName}>{keyLabel(item)}</span>
               {item.keyAlias.trim() && <span className={styles.apiKeyQuotaKeyMeta}>{item.displayKey}</span>}
+              {renderBadge?.(item)}
             </label>
           </li>
         ))}

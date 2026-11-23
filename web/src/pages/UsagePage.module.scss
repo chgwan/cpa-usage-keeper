@@ -2028,6 +2028,13 @@
   justify-content: center;
 }
 
+.apiKeyBadgesRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
 .apiKeyBadge {
   align-self: flex-start;
   padding: 2px 8px;
@@ -2038,6 +2045,13 @@
   font-size: 10px;
   font-weight: 700;
   line-height: 1.4;
+}
+
+.apiKeyModelAccessBadge {
+  color: var(--primary-color);
+  border-color: color-mix(in srgb, var(--primary-color) 42%, var(--border-color));
+  background: color-mix(in srgb, var(--primary-color) 10%, var(--bg-primary));
+  cursor: help;
 }
 
 .apiKeyBadgeBreached {
@@ -2530,6 +2544,417 @@
   > :global(.btn) {
     flex: 1 1 140px;
     justify-content: center;
+  }
+}
+
+.apiKeyModelStatusBar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-secondary) 64%, transparent);
+}
+
+.apiKeyModelStatusRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.apiKeyModelStatusMeta {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.apiKeyModelReloadButton:global(.btn) {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.apiKeyModelPickerBadge {
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--primary-color) 36%, var(--border-color));
+  color: var(--primary-color);
+  background: color-mix(in srgb, var(--primary-color) 10%, transparent);
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.apiKeyModelRuleEditor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-primary) 72%, transparent);
+}
+
+.apiKeyModelRuleEditorDeny {
+  border-color: color-mix(in srgb, var(--danger-color, #ef4444) 28%, var(--border-color));
+}
+
+.apiKeyModelRuleHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.apiKeyModelRuleTitleGroup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.apiKeyModelRuleTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.apiKeyModelKindDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--primary-color);
+}
+
+.apiKeyModelKindDotDeny {
+  background: var(--danger-color, #ef4444);
+}
+
+.apiKeyModelRuleDesc {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.apiKeyModelRuleCount {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.apiKeyModelChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 24px;
+  align-items: center;
+}
+
+.apiKeyModelEmptyChips {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.apiKeyModelChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--primary-color) 36%, var(--border-color));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary-color) 10%, var(--bg-primary));
+  color: var(--text-primary);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.apiKeyModelChipDeny {
+  border-color: color-mix(in srgb, var(--danger-color, #ef4444) 42%, var(--border-color));
+  background: color-mix(in srgb, var(--danger-color, #ef4444) 10%, var(--bg-primary));
+}
+
+.apiKeyModelChipLabel {
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.apiKeyModelChipTag {
+  padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border-color) 55%, transparent);
+  color: var(--text-secondary);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.apiKeyModelChipRemove {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--border-color) 70%, transparent);
+    color: var(--text-primary);
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+}
+
+.apiKeyModelCustomRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+
+  > :global(.form-group) {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin-bottom: 0;
+  }
+}
+
+.apiKeyModelCustomInput:global(.input) {
+  width: 100%;
+  height: 30px;
+  min-height: 30px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.apiKeyModelTrigger {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 12px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-secondary) 55%, transparent);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+
+  &:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--primary-color) 50%, var(--border-color));
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+}
+
+.apiKeyModelTriggerChevron {
+  flex: 0 0 auto;
+  transition: transform 0.15s ease;
+}
+
+.apiKeyModelTriggerOpen .apiKeyModelTriggerChevron {
+  transform: rotate(180deg);
+}
+
+.apiKeyModelPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
+  border-radius: 10px;
+  background: var(--bg-primary);
+}
+
+.apiKeyModelSearch {
+  :global(.form-group) {
+    margin-bottom: 0;
+  }
+}
+
+.apiKeyModelSearchInput:global(.input) {
+  width: 100%;
+  height: 30px;
+  min-height: 30px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.apiKeyModelList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.apiKeyModelOption {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--primary-color) 8%, transparent);
+  }
+
+  &:disabled {
+    cursor: default;
+  }
+}
+
+.apiKeyModelOptionSelected {
+  background: color-mix(in srgb, var(--primary-color) 10%, transparent);
+}
+
+.apiKeyModelOptionDerived {
+  opacity: 0.72;
+}
+
+.apiKeyModelCheckbox {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 90%, transparent);
+  border-radius: 4px;
+  background: var(--bg-primary);
+  color: var(--primary-color);
+}
+
+.apiKeyModelOptionSelected .apiKeyModelCheckbox {
+  border-color: var(--primary-color);
+  background: var(--primary-color);
+  color: var(--bg-primary);
+}
+
+.apiKeyModelRuleEditorDeny .apiKeyModelOptionSelected .apiKeyModelCheckbox {
+  border-color: var(--danger-color, #ef4444);
+  background: var(--danger-color, #ef4444);
+  color: #fff;
+}
+
+.apiKeyModelOptionCopy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1 1 auto;
+
+  strong {
+    overflow: hidden;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 12px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  small {
+    color: var(--text-secondary);
+    font-size: 10px;
+  }
+}
+
+.apiKeyModelOptionBadge {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border-color) 55%, transparent);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.apiKeyModelNoMatch,
+.apiKeyModelCatalogNotice {
+  margin: 0;
+  padding: 6px 8px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.apiKeyModelPanelFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.apiKeyModelPanelFooterActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.apiKeyModelFooterLink {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--primary-color);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    text-decoration: underline;
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
   }
 }
 

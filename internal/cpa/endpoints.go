@@ -38,4 +38,13 @@ const (
 	cpaManagementInteractionsAPIKeyEndpoint = "/v8/management/config/api-keys/interactions"
 	// cpaManagementXAIAPIKeyEndpoint 只读取 xAI API Key metadata，不改变现有 xAI OAuth 或 quota 路径。
 	cpaManagementXAIAPIKeyEndpoint = "/v8/management/config/api-keys/xai"
+
+	// key-model-access 插件管理接口（LTbinglingfeng/key-model-access，v0 管理路由）。
+	cpaManagementPluginsEndpoint                   = "/v0/management/plugins"
+	cpaManagementKeyModelAccessStatusEndpoint      = "/v0/management/plugins/key-model-access/status"
+	cpaManagementKeyModelAccessModelsEndpoint      = "/v0/management/plugins/key-model-access/models"
+	cpaManagementKeyModelAccessPoliciesEndpoint    = "/v0/management/plugins/key-model-access/policies"
+	cpaManagementKeyModelAccessReloadEndpoint      = "/v0/management/plugins/key-model-access/reload"
+	cpaManagementKeyModelAccessInitStorageEndpoint = "/v0/management/plugins/key-model-access/initialize-storage"
+	cpaManagementKeyModelAccessConfigEndpoint      = "/v0/management/plugins/key-model-access/config"
 )
