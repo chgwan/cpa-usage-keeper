@@ -63,49 +63,92 @@ type CopyContext = {
   document?: CopyDocument;
 };
 
-export type ApiKeySortKey = 'name_asc' | 'name_desc' | 'status' | 'quota_ratio' | 'quota_spend' | 'quota_limit';
+export type ApiKeySortKey = 'name' | 'status' | 'quota_ratio' | 'quota_spend' | 'quota_limit';
 
-export const API_KEY_SORT_KEYS: readonly ApiKeySortKey[] = ['name_asc', 'name_desc', 'status', 'quota_ratio', 'quota_spend', 'quota_limit'];
+export type ApiKeySortOrder = 'sequential' | 'reverse';
 
-export const DEFAULT_API_KEY_SORT: ApiKeySortKey = 'name_asc';
+export interface ApiKeySortPreference {
+  key: ApiKeySortKey;
+  order: ApiKeySortOrder;
+}
 
-const API_KEY_SETTINGS_SORT_STORAGE_KEY = 'cpa-usage-keeper-api-key-settings-sort-v2';
-// 旧版存的是 {alphabetical, status} 两个开关；首次读取时迁移为单一排序键。
+export const API_KEY_SORT_KEYS: readonly ApiKeySortKey[] = ['name', 'status', 'quota_ratio', 'quota_spend', 'quota_limit'];
+
+export const DEFAULT_API_KEY_SORT: ApiKeySortKey = 'name';
+
+export const DEFAULT_API_KEY_SORT_ORDER: ApiKeySortOrder = 'sequential';
+
+export const DEFAULT_API_KEY_SORT_PREFERENCE: ApiKeySortPreference = {
+  key: DEFAULT_API_KEY_SORT,
+  order: DEFAULT_API_KEY_SORT_ORDER,
+};
+
+const API_KEY_SETTINGS_SORT_V3_STORAGE_KEY = 'cpa-usage-keeper-api-key-settings-sort-v3';
+// v2 只存单一排序键（含 name_asc / name_desc）；首次读取时迁移到 v3 的 {key, order}。
+const API_KEY_SETTINGS_SORT_V2_STORAGE_KEY = 'cpa-usage-keeper-api-key-settings-sort-v2';
+// 更早期存的是 {alphabetical, status} 两个开关；首次读取时迁移为排序字段与方向。
 const LEGACY_API_KEY_SETTINGS_SORT_STORAGE_KEY = 'cpa-usage-keeper-api-key-settings-sort';
 
 const isApiKeySortKey = (value: unknown): value is ApiKeySortKey => (
   typeof value === 'string' && (API_KEY_SORT_KEYS as readonly string[]).includes(value)
 );
 
-export function resolveStoredApiKeySort(v2Raw: string | null, legacyJsonRaw: string | null): ApiKeySortKey {
+const isApiKeySortOrder = (value: unknown): value is ApiKeySortOrder => (
+  value === 'sequential' || value === 'reverse'
+);
+
+export function resolveStoredApiKeySort(
+  v3Raw: string | null,
+  v2Raw: string | null,
+  legacyJsonRaw: string | null,
+): ApiKeySortPreference {
+  if (v3Raw) {
+    try {
+      const parsed = JSON.parse(v3Raw) as Record<string, unknown> | null;
+      if (parsed && !Array.isArray(parsed) && isApiKeySortKey(parsed.key) && isApiKeySortOrder(parsed.order)) {
+        return { key: parsed.key, order: parsed.order };
+      }
+    } catch {
+      // 损坏的 v3 值跳过，继续尝试从旧版本恢复。
+    }
+  }
+  if (v2Raw === 'name_asc') {
+    return { key: 'name', order: 'sequential' };
+  }
+  if (v2Raw === 'name_desc') {
+    return { key: 'name', order: 'reverse' };
+  }
   if (isApiKeySortKey(v2Raw)) {
-    return v2Raw;
+    return { key: v2Raw, order: 'sequential' };
   }
   if (!legacyJsonRaw) {
-    return DEFAULT_API_KEY_SORT;
+    return DEFAULT_API_KEY_SORT_PREFERENCE;
   }
   try {
     const legacy = JSON.parse(legacyJsonRaw) as Record<string, unknown> | null;
     if (legacy?.status === 'asc' || legacy?.status === 'desc') {
-      return 'status';
+      return { key: 'status', order: 'sequential' };
     }
-    return legacy?.alphabetical === 'desc' ? 'name_desc' : DEFAULT_API_KEY_SORT;
+    return legacy?.alphabetical === 'desc'
+      ? { key: 'name', order: 'reverse' }
+      : DEFAULT_API_KEY_SORT_PREFERENCE;
   } catch {
-    return DEFAULT_API_KEY_SORT;
+    return DEFAULT_API_KEY_SORT_PREFERENCE;
   }
 }
 
-const getInitialSort = (): ApiKeySortKey => {
+const getInitialSort = (): ApiKeySortPreference => {
   try {
     if (typeof window === 'undefined') {
-      return DEFAULT_API_KEY_SORT;
+      return DEFAULT_API_KEY_SORT_PREFERENCE;
     }
     return resolveStoredApiKeySort(
-      window.localStorage.getItem(API_KEY_SETTINGS_SORT_STORAGE_KEY),
+      window.localStorage.getItem(API_KEY_SETTINGS_SORT_V3_STORAGE_KEY),
+      window.localStorage.getItem(API_KEY_SETTINGS_SORT_V2_STORAGE_KEY),
       window.localStorage.getItem(LEGACY_API_KEY_SETTINGS_SORT_STORAGE_KEY),
     );
   } catch {
-    return DEFAULT_API_KEY_SORT;
+    return DEFAULT_API_KEY_SORT_PREFERENCE;
   }
 };
 
@@ -136,7 +179,7 @@ const compareApiKeyNames = (left: CpaApiKeySettingsItem, right: CpaApiKeySetting
   || apiKeySortCollator.compare(left.id, right.id)
 );
 
-// 限额排序取最紧窗口（与行内进度条一致）；未配置限额的 key 无论如何都排在最后。
+// 限额排序取最紧窗口（与行内进度条一致）；未配置限额的 key 顺序时排最后，倒序时排最前。
 const apiKeyQuotaMetric = (sortKey: ApiKeySortKey) => {
   if (sortKey === 'quota_ratio') return (item: CpaApiKeySettingsItem) => item.policy?.tightest?.ratio;
   if (sortKey === 'quota_spend') return (item: CpaApiKeySettingsItem) => item.policy?.tightest?.used;
@@ -148,24 +191,29 @@ const apiKeyQuotaMetric = (sortKey: ApiKeySortKey) => {
   return null;
 };
 
-// 每次只按一个键排序，名称 A → Z 作为所有排序的兜底次序。
-export function sortApiKeySettingsItems(items: CpaApiKeySettingsItem[], sortKey: ApiKeySortKey) {
+// 每次只按一个键排序；倒序翻转主序（含未配置限额 / 未知状态置顶），同组仍按名称 A → Z 兜底。
+export function sortApiKeySettingsItems(
+  items: CpaApiKeySettingsItem[],
+  sortKey: ApiKeySortKey,
+  sortOrder: ApiKeySortOrder = DEFAULT_API_KEY_SORT_ORDER,
+) {
+  const direction = sortOrder === 'reverse' ? -1 : 1;
   const metric = apiKeyQuotaMetric(sortKey);
   return [...items].sort((left, right) => {
-    if (sortKey === 'name_desc') {
-      return compareApiKeyNames(right, left);
+    if (sortKey === 'name') {
+      return direction * compareApiKeyNames(left, right);
     }
     if (sortKey === 'status') {
       const byStatus = apiKeyStatusRank(left) - apiKeyStatusRank(right);
-      if (byStatus !== 0) return byStatus;
+      if (byStatus !== 0) return direction * byStatus;
     }
     if (metric) {
       const leftValue = metric(left);
       const rightValue = metric(right);
       if (leftValue === undefined || rightValue === undefined) {
-        if (leftValue !== rightValue) return leftValue === undefined ? 1 : -1;
+        if (leftValue !== rightValue) return direction * (leftValue === undefined ? 1 : -1);
       } else if (leftValue !== rightValue) {
-        return rightValue - leftValue;
+        return direction * (rightValue - leftValue);
       }
     }
     return compareApiKeyNames(left, right);
@@ -328,10 +376,13 @@ export function ApiKeySettingsCard({
 }: ApiKeySettingsCardProps) {
   const { t } = useTranslation();
   const [showFullApiKeys, setShowFullApiKeys] = useState(false);
-  const [sortKey, setSortKey] = useState<ApiKeySortKey>(getInitialSort);
+  const [sortPreference, setSortPreference] = useState<ApiKeySortPreference>(getInitialSort);
   // 展开态把同一张卡片挂到 body 上的全屏遮罩里；状态都在本组件内，切换时草稿不丢。
   const [expanded, setExpanded] = useState(false);
-  const sortedApiKeys = useMemo(() => sortApiKeySettingsItems(apiKeys, sortKey), [apiKeys, sortKey]);
+  const sortedApiKeys = useMemo(
+    () => sortApiKeySettingsItems(apiKeys, sortPreference.key, sortPreference.order),
+    [apiKeys, sortPreference.key, sortPreference.order],
+  );
   // 插件统计身份不在 CPA api-keys 里，生命周期与限额操作只面向原生 key。
   const manageableApiKeys = useMemo(() => sortedApiKeys.filter((item) => item.sourceType !== 'plugin'), [sortedApiKeys]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -435,14 +486,26 @@ export function ApiKeySettingsCard({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [expanded, innerModalOpen]);
 
-  const changeSort = useCallback((next: ApiKeySortKey) => {
-    setSortKey(next);
-    try {
-      window.localStorage.setItem(API_KEY_SETTINGS_SORT_STORAGE_KEY, next);
-    } catch {
-      // 存储不可用（隐私模式等）时只在本次会话内生效。
-    }
+  const updateSortPreference = useCallback((updater: (current: ApiKeySortPreference) => ApiKeySortPreference) => {
+    setSortPreference((current) => {
+      const next = updater(current);
+      try {
+        window.localStorage.setItem(API_KEY_SETTINGS_SORT_V3_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // 存储不可用（隐私模式等）时只在本次会话内生效。
+      }
+      return next;
+    });
   }, []);
+  const changeSortKey = useCallback((next: ApiKeySortKey) => {
+    updateSortPreference((current) => ({ ...current, key: next }));
+  }, [updateSortPreference]);
+  const toggleSortOrder = useCallback(() => {
+    updateSortPreference((current) => ({
+      ...current,
+      order: current.order === 'reverse' ? 'sequential' : 'reverse',
+    }));
+  }, [updateSortPreference]);
   const toggleLabel = showFullApiKeys
     ? t('usage_stats.api_key_settings_hide_full')
     : t('usage_stats.api_key_settings_show_full');
@@ -507,7 +570,12 @@ export function ApiKeySettingsCard({
               {t('usage_stats.api_key_model_access_button')}
             </Button>
           )}
-          <ApiKeySortMenu value={sortKey} onChange={changeSort} />
+          <ApiKeySortMenu
+            value={sortPreference.key}
+            order={sortPreference.order}
+            onChange={changeSortKey}
+            onOrderToggle={toggleSortOrder}
+          />
           <Button
             type="button"
             variant="ghost"

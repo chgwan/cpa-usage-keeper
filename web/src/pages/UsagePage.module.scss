@@ -744,6 +744,7 @@
 }
 
 .apiKeyVisibilityToggle:global(.btn) {
+  flex-shrink: 0;
   width: 28px;
   height: 28px;
   min-height: 28px;
@@ -761,11 +762,22 @@
 }
 
 .apiKeySortToggle:global(.btn) {
+  flex-shrink: 0;
   width: auto;
   padding: 0 8px;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+// 排序字段与正/倒序按钮成对出现，窄屏折行时不拆散到两行。
+.apiKeySortControls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
 }
 
 .apiKeySortMenu {
@@ -782,10 +794,11 @@
   @include menu.surface;
   position: absolute;
   top: calc(100% + 8px);
-  right: 0;
+  left: 0;
   z-index: 2020;
   width: max-content;
-  min-width: 140px;
+  min-width: 124px;
+  max-width: calc(100vw - 48px);
 
   button { @include menu.item; }
 
@@ -2017,8 +2030,15 @@
   justify-content: center;
 }
 
+// 平板或窄桌面窗口下标题与操作按钮放不下同一行时自然折行，避免挤压排序按钮文字。
+.apiKeySettingsCard :global(.keeper-card-title-track) {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
 .apiKeySettingsHeaderActions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   min-width: 0;

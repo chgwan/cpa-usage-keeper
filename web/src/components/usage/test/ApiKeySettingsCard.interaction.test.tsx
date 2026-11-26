@@ -37,12 +37,14 @@ const translations: Record<string, string> = {
   'usage_stats.api_key_settings_disabled_by_quota': 'Disabled (quota)',
   'usage_stats.api_key_settings_disabled_manual': 'Manually disabled',
   'usage_stats.api_key_settings_sort': 'Sort keys',
-  'usage_stats.api_key_settings_sort_name_asc': 'Name A → Z',
-  'usage_stats.api_key_settings_sort_name_desc': 'Name Z → A',
+  'usage_stats.api_key_settings_sort_name': 'Name',
   'usage_stats.api_key_settings_sort_status': 'Status',
   'usage_stats.api_key_settings_sort_quota_ratio': 'Quota used %',
   'usage_stats.api_key_settings_sort_quota_spend': 'Quota spend',
   'usage_stats.api_key_settings_sort_quota_limit': 'Quota limit',
+  'usage_stats.api_key_settings_sort_order': 'Sort order',
+  'usage_stats.api_key_settings_sort_order_sequential': 'Sequential',
+  'usage_stats.api_key_settings_sort_order_reverse': 'Reverse',
   'usage_stats.api_key_settings_manage_aria': 'Manage {{key}}',
   'usage_stats.api_key_manage_actions_title': 'Key actions',
 }
@@ -529,30 +531,78 @@ describe('ApiKeySettingsCard row actions', () => {
     expect(onDisableKey).not.toHaveBeenCalled()
   })
 
-  it('reorders rows from the sort menu and remembers the choice', () => {
+  it('reorders rows from the sort menu and direction toggle, keeping direction across field switches', () => {
     window.localStorage.clear()
     const keys: CpaApiKeySettingsItem[] = [
       { ...apiKey, id: 'a', keyAlias: 'alpha', policy: { enabled: true, enforcementState: 'active', tightest: { type: 'cost', window: 'daily', value: 10, used: 1, ratio: 0.1 } } },
       { ...apiKey, id: 'b', keyAlias: 'bravo', policy: { enabled: true, enforcementState: 'active', tightest: { type: 'cost', window: 'daily', value: 10, used: 9, ratio: 0.9 } } },
+      { ...apiKey, id: 'c', keyAlias: 'charlie', policy: undefined },
     ]
     act(() => {
       root.render(<ApiKeySettingsCard apiKeys={keys} loading={false} savingId={null} onSaveAlias={() => undefined} />)
     })
     const rowIds = () => Array.from(container.querySelectorAll('[data-api-key-settings-item]')).map((row) => row.getAttribute('data-api-key-settings-item'))
-    expect(rowIds()).toEqual(['a', 'b'])
+    expect(rowIds()).toEqual(['a', 'b', 'c'])
 
+    const sortControls = container.querySelector<HTMLElement>('[data-api-key-sort-controls]')
     const trigger = container.querySelector<HTMLButtonElement>('[data-api-key-sort-trigger]')!
+    const orderToggle = container.querySelector<HTMLButtonElement>('[data-api-key-sort-order-toggle]')!
+    expect(sortControls).not.toBeNull()
+    expect(sortControls!.contains(trigger)).toBe(true)
+    expect(sortControls!.contains(orderToggle)).toBe(true)
+    expect(trigger.textContent).toContain('Name')
+    expect(orderToggle.textContent).toContain('Sequential')
+    expect(orderToggle.getAttribute('data-api-key-sort-order')).toBe('sequential')
+    expect(orderToggle.getAttribute('aria-label')).toBe('Sort order: Sequential')
+    expect(orderToggle.hasAttribute('aria-pressed')).toBe(false)
+    expect(orderToggle.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true')
+
     act(() => { trigger.click() })
     expect(trigger.getAttribute('aria-expanded')).toBe('true')
     const options = Array.from(container.querySelectorAll('[data-api-key-sort-option]')).map((option) => option.getAttribute('data-api-key-sort-option'))
-    expect(options).toEqual(['name_asc', 'name_desc', 'status', 'quota_ratio', 'quota_spend', 'quota_limit'])
-    expect(container.querySelector('[data-api-key-sort-option="name_asc"]')!.getAttribute('aria-checked')).toBe('true')
+    expect(options).toEqual(['name', 'status', 'quota_ratio', 'quota_spend', 'quota_limit'])
+    expect(container.querySelector('[data-api-key-sort-option="name"]')!.getAttribute('aria-checked')).toBe('true')
 
+    // 切到倒序：收起已展开菜单，Name 从 Z → A，并写入 v3 存储。
+    act(() => { orderToggle.click() })
+    expect(container.querySelector('[role="menu"]')).toBeNull()
+    expect(rowIds()).toEqual(['c', 'b', 'a'])
+    expect(orderToggle.textContent).toContain('Reverse')
+    expect(orderToggle.getAttribute('data-api-key-sort-order')).toBe('reverse')
+    expect(orderToggle.getAttribute('aria-label')).toBe('Sort order: Reverse')
+    expect(orderToggle.hasAttribute('aria-pressed')).toBe(false)
+    expect(window.localStorage.getItem('cpa-usage-keeper-api-key-settings-sort-v3')).toBe('{"key":"name","order":"reverse"}')
+
+    // 切换排序字段时保持当前倒序标志：未配置限额的 charlie 置顶，其后按消费从低到高。
+    act(() => { trigger.click() })
     act(() => { container.querySelector<HTMLButtonElement>('[data-api-key-sort-option="quota_spend"]')!.click() })
-    expect(rowIds()).toEqual(['b', 'a'])
+    expect(rowIds()).toEqual(['c', 'a', 'b'])
     expect(container.querySelector('[role="menu"]')).toBeNull()
     expect(trigger.textContent).toContain('Quota spend')
-    expect(window.localStorage.getItem('cpa-usage-keeper-api-key-settings-sort-v2')).toBe('quota_spend')
+    expect(orderToggle.getAttribute('data-api-key-sort-order')).toBe('reverse')
+    expect(window.localStorage.getItem('cpa-usage-keeper-api-key-settings-sort-v3')).toBe('{"key":"quota_spend","order":"reverse"}')
+
+    // 再点一次方向按钮回到顺序：高消费在前，无限额在后。
+    act(() => { orderToggle.click() })
+    expect(rowIds()).toEqual(['b', 'a', 'c'])
+    expect(orderToggle.getAttribute('data-api-key-sort-order')).toBe('sequential')
+    expect(window.localStorage.getItem('cpa-usage-keeper-api-key-settings-sort-v3')).toBe('{"key":"quota_spend","order":"sequential"}')
+  })
+
+  it('migrates stored v2 name_desc into Name + Reverse on mount', () => {
+    window.localStorage.clear()
+    window.localStorage.setItem('cpa-usage-keeper-api-key-settings-sort-v2', 'name_desc')
+    const keys: CpaApiKeySettingsItem[] = [
+      { ...apiKey, id: 'a', keyAlias: 'alpha' },
+      { ...apiKey, id: 'b', keyAlias: 'bravo' },
+    ]
+    act(() => {
+      root.render(<ApiKeySettingsCard apiKeys={keys} loading={false} savingId={null} onSaveAlias={() => undefined} />)
+    })
+    const rowIds = Array.from(container.querySelectorAll('[data-api-key-settings-item]')).map((row) => row.getAttribute('data-api-key-settings-item'))
+    expect(rowIds).toEqual(['b', 'a'])
+    expect(container.querySelector<HTMLButtonElement>('[data-api-key-sort-trigger]')!.textContent).toContain('Name')
+    expect(container.querySelector<HTMLButtonElement>('[data-api-key-sort-order-toggle]')!.getAttribute('data-api-key-sort-order')).toBe('reverse')
   })
 })
 

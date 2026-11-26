@@ -2,7 +2,7 @@ import React from 'react';
 import '@/i18n';
 import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ApiKeySettingsCard, copyApiKeyToClipboard, getApiKeySettingsVisibleKey, resolveStoredApiKeySort, sortApiKeySettingsItems, type ApiKeySortKey } from '../ApiKeySettingsCard';
+import { ApiKeySettingsCard, copyApiKeyToClipboard, getApiKeySettingsVisibleKey, resolveStoredApiKeySort, sortApiKeySettingsItems, type ApiKeySortKey, type ApiKeySortOrder } from '../ApiKeySettingsCard';
 import type { CpaApiKeySettingsItem } from '@/lib/types';
 
 const apiKeys: CpaApiKeySettingsItem[] = [
@@ -24,7 +24,7 @@ const renderCard = (props: Partial<React.ComponentProps<typeof ApiKeySettingsCar
 const countOccurrences = (text: string, value: string) => text.split(value).length - 1;
 
 describe('ApiKeySettingsCard', () => {
-  it('sorts by one key at a time, with name A–Z as the tie-break', () => {
+  it('sorts by one field in sequential and reverse order, with name A–Z tie-breaking and missing values flipping to top on reverse', () => {
     const tightest = (ratio: number, used: number) => ({ type: 'cost' as const, window: 'daily' as const, value: 10, used, ratio });
     const item = (
       id: string,
@@ -43,19 +43,26 @@ describe('ApiKeySettingsCard', () => {
       item('4', 'key10', 'sk-***4', 'active', tightest(0.9, 1.8)),
       item('5', 'key9', 'sk-***5'),
       item('6', 'beta', 'sk-***6', 'active', tightest(0.5, 5)),
+      // 显式区分 0 用量与未配置限额：倒序时未配置排最前，0 用量排在其后。
+      item('7', 'zero', 'sk-***7', 'active', tightest(0, 0)),
     ];
-    const ids = (sortKey: ApiKeySortKey) => sortApiKeySettingsItems(items, sortKey).map((value) => value.id);
+    const ids = (sortKey: ApiKeySortKey, sortOrder: ApiKeySortOrder = 'sequential') => (
+      sortApiKeySettingsItems(items, sortKey, sortOrder).map((value) => value.id)
+    );
 
-    expect(ids('name_asc')).toEqual(['3', '6', '5', '4', '2', '1']);
-    expect(ids('name_desc')).toEqual(['1', '2', '4', '5', '6', '3']);
-    expect(ids('status')).toEqual(['6', '4', '1', '2', '3', '5']);
-    // 无限额（tightest 为空）的 key 在两种限额排序下都排在最后。
-    expect(ids('quota_ratio')).toEqual(['3', '4', '6', '1', '5', '2']);
-    expect(ids('quota_spend')).toEqual(['3', '6', '1', '4', '5', '2']);
-    expect(items.map((value) => value.id)).toEqual(['1', '2', '3', '4', '5', '6']);
+    expect(ids('name', 'sequential')).toEqual(['3', '6', '5', '4', '2', '7', '1']);
+    expect(ids('name', 'reverse')).toEqual(['1', '7', '2', '4', '5', '6', '3']);
+    expect(ids('status', 'sequential')).toEqual(['6', '4', '7', '1', '2', '3', '5']);
+    expect(ids('status', 'reverse')).toEqual(['5', '3', '2', '6', '4', '7', '1']);
+    // 无限额（tightest 为空）的 key：顺序排最后，倒序排最前；0 值不视作无限额。
+    expect(ids('quota_ratio', 'sequential')).toEqual(['3', '4', '6', '1', '7', '5', '2']);
+    expect(ids('quota_ratio', 'reverse')).toEqual(['5', '2', '7', '6', '1', '4', '3']);
+    expect(ids('quota_spend', 'sequential')).toEqual(['3', '6', '1', '4', '7', '5', '2']);
+    expect(ids('quota_spend', 'reverse')).toEqual(['5', '2', '7', '4', '6', '1', '3']);
+    expect(items.map((value) => value.id)).toEqual(['1', '2', '3', '4', '5', '6', '7']);
   });
 
-  it('sorts by the set quota using the normal limit and ignores temporary adjustments', () => {
+  it('sorts by the set quota using the normal limit and ignores temporary adjustments in both orders', () => {
     const limited = (id: string, keyAlias: string, value: number, baseValue?: number): CpaApiKeySettingsItem => ({
       id, apiKey: '', keyAlias, displayKey: `sk-***${id}`, label: keyAlias, lastSyncedAt: null,
       policy: { enabled: true, enforcementState: 'active', tightest: { type: 'cost', window: 'weekly', value, used: 1, ratio: 1 / value, baseValue } },
@@ -71,44 +78,62 @@ describe('ApiKeySettingsCard', () => {
       limited('4', 'large', 200),
       limited('5', 'tie', 20),
     ];
-    const ids = sortApiKeySettingsItems(items, 'quota_limit').map((value) => value.id);
 
-    // 设定限额从大到小，同额按名称兜底，未设限额的 key 排在最后。
-    expect(ids).toEqual(['4', '3', '1', '5', '2']);
-    expect(resolveStoredApiKeySort('quota_limit', null)).toBe('quota_limit');
+    // 顺序：设定限额从大到小，未设限额排最后；倒序：未设限额排最前，设定限额从小到大，同额仍按名称 A → Z。
+    expect(sortApiKeySettingsItems(items, 'quota_limit', 'sequential').map((value) => value.id)).toEqual(['4', '3', '1', '5', '2']);
+    expect(sortApiKeySettingsItems(items, 'quota_limit', 'reverse').map((value) => value.id)).toEqual(['2', '1', '5', '3', '4']);
   });
 
-  it('sorts Chinese names by pinyin after the other names', () => {
+  it('sorts Chinese names by pinyin after the other names in both orders', () => {
     const item = (id: string, keyAlias: string): CpaApiKeySettingsItem => ({
       id, apiKey: '', keyAlias, displayKey: `sk-***${id}`, label: keyAlias, lastSyncedAt: null,
     });
     const items = [item('1', '张三'), item('2', 'zebra'), item('3', '李四'), item('4', 'Alice'), item('5', '阿明'), item('6', '王五')];
-    const names = (sortKey: ApiKeySortKey) => sortApiKeySettingsItems(items, sortKey).map((value) => value.keyAlias);
+    const names = (sortOrder: ApiKeySortOrder) => sortApiKeySettingsItems(items, 'name', sortOrder).map((value) => value.keyAlias);
 
-    expect(names('name_asc')).toEqual(['Alice', 'zebra', '阿明', '李四', '王五', '张三']);
-    expect(names('name_desc')).toEqual(['张三', '王五', '李四', '阿明', 'zebra', 'Alice']);
+    expect(names('sequential')).toEqual(['Alice', 'zebra', '阿明', '李四', '王五', '张三']);
+    expect(names('reverse')).toEqual(['张三', '王五', '李四', '阿明', 'zebra', 'Alice']);
   });
 
-  it('restores the saved sort key and migrates the old toggle settings', () => {
-    expect(resolveStoredApiKeySort(null, null)).toBe('name_asc');
-    expect(resolveStoredApiKeySort('quota_spend', null)).toBe('quota_spend');
-    expect(resolveStoredApiKeySort('bogus', null)).toBe('name_asc');
-    expect(resolveStoredApiKeySort(null, '{"alphabetical":"desc","status":null}')).toBe('name_desc');
-    expect(resolveStoredApiKeySort(null, '{"alphabetical":"asc","status":"desc"}')).toBe('status');
-    expect(resolveStoredApiKeySort(null, '{"alphabetical":null,"status":null}')).toBe('name_asc');
-    expect(resolveStoredApiKeySort(null, 'not json')).toBe('name_asc');
-    // 新值优先于旧值。
-    expect(resolveStoredApiKeySort('name_asc', '{"alphabetical":"desc","status":null}')).toBe('name_asc');
+  it('restores the saved v3 sort preference and migrates v2 and legacy settings', () => {
+    expect(resolveStoredApiKeySort(null, null, null)).toEqual({ key: 'name', order: 'sequential' });
+    expect(resolveStoredApiKeySort('{"key":"quota_spend","order":"reverse"}', null, null)).toEqual({ key: 'quota_spend', order: 'reverse' });
+    // 损坏或不完整的 v3 必须回落到 v2 / 旧版 / 默认，不能拼出半有效值。
+    expect(resolveStoredApiKeySort('not json', 'quota_limit', null)).toEqual({ key: 'quota_limit', order: 'sequential' });
+    expect(resolveStoredApiKeySort('{"key":"name","order":"bogus"}', 'name_desc', null)).toEqual({ key: 'name', order: 'reverse' });
+    expect(resolveStoredApiKeySort('{"key":"bogus","order":"reverse"}', null, null)).toEqual({ key: 'name', order: 'sequential' });
+    expect(resolveStoredApiKeySort('null', 'status', null)).toEqual({ key: 'status', order: 'sequential' });
+    // v2 迁移。
+    expect(resolveStoredApiKeySort(null, 'name_asc', null)).toEqual({ key: 'name', order: 'sequential' });
+    expect(resolveStoredApiKeySort(null, 'name_desc', null)).toEqual({ key: 'name', order: 'reverse' });
+    expect(resolveStoredApiKeySort(null, 'status', null)).toEqual({ key: 'status', order: 'sequential' });
+    expect(resolveStoredApiKeySort(null, 'quota_ratio', null)).toEqual({ key: 'quota_ratio', order: 'sequential' });
+    expect(resolveStoredApiKeySort(null, 'quota_spend', null)).toEqual({ key: 'quota_spend', order: 'sequential' });
+    expect(resolveStoredApiKeySort(null, 'quota_limit', null)).toEqual({ key: 'quota_limit', order: 'sequential' });
+    expect(resolveStoredApiKeySort(null, 'bogus', null)).toEqual({ key: 'name', order: 'sequential' });
+    // 更早期双开关 JSON 迁移。
+    expect(resolveStoredApiKeySort(null, null, '{"alphabetical":"desc","status":null}')).toEqual({ key: 'name', order: 'reverse' });
+    expect(resolveStoredApiKeySort(null, null, '{"alphabetical":"asc","status":"desc"}')).toEqual({ key: 'status', order: 'sequential' });
+    expect(resolveStoredApiKeySort(null, null, '{"alphabetical":null,"status":null}')).toEqual({ key: 'name', order: 'sequential' });
+    expect(resolveStoredApiKeySort(null, null, 'not json')).toEqual({ key: 'name', order: 'sequential' });
+    // 优先级：v3 > v2 > 旧版。
+    expect(resolveStoredApiKeySort('{"key":"status","order":"reverse"}', 'name_desc', '{"alphabetical":"asc","status":null}')).toEqual({ key: 'status', order: 'reverse' });
+    expect(resolveStoredApiKeySort(null, 'name_asc', '{"alphabetical":"desc","status":null}')).toEqual({ key: 'name', order: 'sequential' });
   });
 
-  it('renders one closed sort menu trigger showing the default order', () => {
+  it('renders one closed sort menu trigger and sequential order toggle by default', () => {
     const html = renderCard();
 
     expect(countOccurrences(html, 'data-api-key-sort-trigger')).toBe(1);
     expect(html).toContain('aria-haspopup="menu"');
     expect(html).toContain('aria-expanded="false"');
-    expect(html).toContain('Name A → Z');
+    expect(html).toContain('aria-label="Sort keys: Name"');
+    expect(html).not.toContain('Name A → Z');
     expect(html).not.toContain('role="menu"');
+    expect(countOccurrences(html, 'data-api-key-sort-order-toggle')).toBe(1);
+    expect(html).toContain('data-api-key-sort-order="sequential"');
+    expect(html).toContain('aria-label="Sort order: Sequential"');
+    expect(html).toContain('>Sequential<');
   });
 
   it('renders alias, masked key, and string ids without local ids by default', () => {

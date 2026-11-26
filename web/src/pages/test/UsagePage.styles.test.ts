@@ -227,6 +227,26 @@ describe('UsagePage responsive layout and accessibility', () => {
     expect(styleRuleBlock(usagePageStyles, '.apiKeySettingsNameRow')).toContain('grid-template-columns: minmax(0, 1fr) auto;')
   })
 
+  it('keeps API Key sort controls paired, non-shrinking, and anchored inside narrow viewports', () => {
+    const sortControls = styleRuleBlock(usagePageStyles, '.apiKeySortControls')
+    const sortToggle = styleRuleBlock(usagePageStyles, '.apiKeySortToggle:global(.btn) {')
+    const visibilityToggle = styleRuleBlock(usagePageStyles, '.apiKeyVisibilityToggle:global(.btn) {')
+    const headerActions = styleRuleBlock(usagePageStyles, '.apiKeySettingsHeaderActions {')
+    const sortDropdown = styleRuleBlock(usagePageStyles, '.apiKeySortDropdown {')
+
+    expect(sortControls).toContain('display: inline-flex;')
+    expect(sortControls).toContain('flex-wrap: nowrap;')
+    expect(sortControls).toContain('flex-shrink: 0;')
+    expect(sortToggle).toContain('white-space: nowrap;')
+    expect(sortToggle).toContain('flex-shrink: 0;')
+    expect(visibilityToggle).toContain('flex-shrink: 0;')
+    expect(headerActions).toContain('flex-wrap: wrap;')
+    expect(usagePageStyles).toMatch(/\.apiKeySettingsCard\s+:global\(\.keeper-card-title-track\)\s*\{[\s\S]*?flex-wrap:\s*wrap;/)
+    expect(sortDropdown).toContain('left: 0;')
+    expect(sortDropdown).not.toContain('right: 0;')
+    expect(sortDropdown).toContain('max-width: calc(100vw - 48px);')
+  })
+
   it('keeps session alias editing within the card and visibly focusable', () => {
     expect(styleRuleBlock(usagePageStyles, '.sessionSettingsAliasEditorEditing')).toContain('width: min(236px, 100%);')
     expect(styleRuleBlock(usagePageStyles, '.sessionSettingsAliasEditButton,')).toMatch(/&:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--primary-color\);/)

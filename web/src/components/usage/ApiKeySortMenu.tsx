@@ -1,18 +1,31 @@
 import { useRef, useState, type FocusEvent, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
-import { IconChevronDown } from '@/components/ui/icons';
+import { IconArrowDown, IconArrowUp, IconChevronDown } from '@/components/ui/icons';
 import styles from '@/pages/UsagePage.module.scss';
-import { API_KEY_SORT_KEYS, type ApiKeySortKey } from './ApiKeySettingsCard';
+import { API_KEY_SORT_KEYS, type ApiKeySortKey, type ApiKeySortOrder } from './ApiKeySettingsCard';
 
-// 单选排序菜单：触发按钮显示当前排序，选中后立即关闭。
+// 排序字段下拉 + 相邻方向切换按钮：字段选中后立即关闭，方向一键在顺序/倒序间切换。
 // 不复用 RequestEventsDetailsCard 的 shouldCloseMenuOnFocusLeave：会带入 i18n 副作用，mock 测试缺 initReactI18next 会炸。
-export function ApiKeySortMenu({ value, onChange }: { value: ApiKeySortKey; onChange: (next: ApiKeySortKey) => void }) {
+export function ApiKeySortMenu({
+  value,
+  order,
+  onChange,
+  onOrderToggle,
+}: {
+  value: ApiKeySortKey;
+  order: ApiKeySortOrder;
+  onChange: (next: ApiKeySortKey) => void;
+  onOrderToggle: () => void;
+}) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const menuLabel = t('usage_stats.api_key_settings_sort');
   const optionLabel = (key: ApiKeySortKey) => t(`usage_stats.api_key_settings_sort_${key}`);
+  const orderMenuLabel = t('usage_stats.api_key_settings_sort_order');
+  const orderLabel = t(`usage_stats.api_key_settings_sort_order_${order}`);
+  const isReverse = order === 'reverse';
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     // 只有菜单自己在打开状态下才消费这次 Escape：调用 stopPropagation 阻止它继续冒泡到
@@ -35,41 +48,62 @@ export function ApiKeySortMenu({ value, onChange }: { value: ApiKeySortKey; onCh
   };
 
   return (
-    <div ref={wrapperRef} className={styles.apiKeySortMenu} onKeyDown={handleKeyDown} onBlur={handleBlur}>
+    <div className={styles.apiKeySortControls} data-api-key-sort-controls>
+      <div ref={wrapperRef} className={styles.apiKeySortMenu} onKeyDown={handleKeyDown} onBlur={handleBlur}>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className={`${styles.apiKeyVisibilityToggle} ${styles.apiKeySortToggle}`}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-label={`${menuLabel}: ${optionLabel(value)}`}
+          title={menuLabel}
+          onClick={() => setOpen((current) => !current)}
+          data-api-key-sort-trigger
+        >
+          {optionLabel(value)}
+          <IconChevronDown size={12} aria-hidden="true" />
+        </Button>
+        {open && (
+          <div className={styles.apiKeySortDropdown} role="menu" aria-label={menuLabel}>
+            {API_KEY_SORT_KEYS.map((key) => (
+              <button
+                key={key}
+                type="button"
+                role="menuitemradio"
+                aria-checked={key === value}
+                data-api-key-sort-option={key}
+                onClick={() => {
+                  setOpen(false);
+                  onChange(key);
+                }}
+              >
+                {optionLabel(key)}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      {/* 可见文案本身在顺序/倒序间切换，aria-label 包含当前文案即可，不叠 aria-pressed 避免读屏重复播报状态。 */}
       <Button
         type="button"
         variant="ghost"
         size="sm"
-        className={`${styles.apiKeyVisibilityToggle} ${styles.apiKeySortToggle}`}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label={`${menuLabel}: ${optionLabel(value)}`}
-        title={menuLabel}
-        onClick={() => setOpen((current) => !current)}
-        data-api-key-sort-trigger
+        className={`${styles.apiKeyVisibilityToggle} ${styles.apiKeySortToggle} ${isReverse ? styles.apiKeyVisibilityToggleActive : ''}`.trim()}
+        aria-label={`${orderMenuLabel}: ${orderLabel}`}
+        title={orderMenuLabel}
+        onClick={() => {
+          // Safari/iOS 点击按钮不转移焦点，显式收起已展开的排序菜单。
+          setOpen(false);
+          onOrderToggle();
+        }}
+        data-api-key-sort-order-toggle
+        data-api-key-sort-order={order}
       >
-        {optionLabel(value)}
-        <IconChevronDown size={12} aria-hidden="true" />
+        {isReverse ? <IconArrowUp size={12} /> : <IconArrowDown size={12} />}
+        {orderLabel}
       </Button>
-      {open && (
-        <div className={styles.apiKeySortDropdown} role="menu" aria-label={menuLabel}>
-          {API_KEY_SORT_KEYS.map((key) => (
-            <button
-              key={key}
-              type="button"
-              role="menuitemradio"
-              aria-checked={key === value}
-              data-api-key-sort-option={key}
-              onClick={() => {
-                setOpen(false);
-                onChange(key);
-              }}
-            >
-              {optionLabel(key)}
-            </button>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
